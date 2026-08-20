@@ -24,6 +24,25 @@ npx skills update exec-review -g
 
 Browse the ecosystem: https://skills.sh/
 
+## Develop on this machine (live edit)
+
+Clone/work in this repo, then junction each skill into `~/.agents/skills` so Agent reads the repo files directly:
+
+```powershell
+cd C:\projects\agent-skills
+pwsh -File .\scripts\sync-links.ps1
+```
+
+When you **add a new skill** under `skills/<name>/SKILL.md`, run `sync-links.ps1` once. You do not need to hand-write `mklink` each time.
+
+If an old real copy already occupies `~/.agents/skills/<name>`:
+
+```powershell
+pwsh -File .\scripts\sync-links.ps1 -Force
+```
+
+Then commit/push as usual. Other machines still use `npx skills add/update` (install copies), not junctions.
+
 ## Skills
 
 | Skill | Description |
