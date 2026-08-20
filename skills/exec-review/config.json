@@ -1,0 +1,20 @@
+{
+  "runner": "codex",
+  "sandbox": "workspace-write",
+  "maxRounds": 3,
+  "approve": true,
+  "executor": {
+    "runner": "codex",
+    "bin": "",
+    "model": "",
+    "provider": "",
+    "thinking": ""
+  },
+  "reviewer": {
+    "runner": "codex",
+    "bin": "",
+    "model": "",
+    "provider": "",
+    "thinking": ""
+  }
+}

@@ -4,14 +4,13 @@
  * 输入：任务说明。输出：stdout 摘要 JSON。日志：--cache-dir。
  *
  * 用法：
- *   node run-task.mjs --workdir <仓库> --task-file task.md [--max-rounds 3]
+ *   node run-task.mjs --workdir <仓库> --task-file task.md [--max-rounds 3] [--runner codex|pi]
  *   node run-task.mjs --workdir <仓库> --stdin
  *   node run-task.mjs --workdir <仓库> --title "…" --body "…" [--requirements "…"] [--id "…"]
  */
 
 import { spawn } from 'node:child_process'
 import {
-  createWriteStream,
   mkdirSync,
   readFileSync,
   writeFileSync,
@@ -20,17 +19,25 @@ import {
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
+import { createRunner } from './runners/index.mjs'
+import { loadConfigFile, resolveSettings } from './load-config.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = resolve(__dirname, '..')
-const DEFAULT_MAX_ROUNDS = 3
 
 function usage(code = 1) {
   const text = `用法:
   node run-task.mjs --workdir <仓库> (--task-file <路径> | --stdin | --title <t> --body <b>)
     [--id <标签>] [--requirements <文本>] [--max-rounds N] [--cache-dir <目录>]
+    [--config <config.json>]
+    [--runner codex|pi] [--executor-runner …] [--reviewer-runner …]
+    [--bin <路径>] [--model <id>] [--provider <name>] [--thinking <level>]
+    [--executor-model …] [--reviewer-model …] [--executor-thinking …] [--reviewer-thinking …]
     [--sandbox workspace-write|danger-full-access|read-only]
-    [--codex-bin <路径>] [--model <id>] [--dry-run]`
+    [--no-approve] [--dry-run]
+    [--codex-bin <路径>]  (兼容旧参数)
+
+默认来自技能根 config.json（默认 runner=codex）。优先级：CLI > 环境变量 > config.json > 内置。`
   console.error(text)
   process.exit(code)
 }
@@ -44,11 +51,27 @@ function parseArgs(argv) {
     title: '',
     body: '',
     requirements: '',
-    maxRounds: DEFAULT_MAX_ROUNDS,
+    maxRounds: null,
     cacheDir: null,
-    sandbox: 'workspace-write',
-    codexBin: process.env.CODEX_BIN || 'codex',
-    model: process.env.CODEX_MODEL || '',
+    configPath: null,
+    sandbox: '',
+    runner: '',
+    executorRunner: '',
+    reviewerRunner: '',
+    bin: '',
+    executorBin: '',
+    reviewerBin: '',
+    codexBin: '',
+    model: '',
+    executorModel: '',
+    reviewerModel: '',
+    provider: '',
+    executorProvider: '',
+    reviewerProvider: '',
+    thinking: '',
+    executorThinking: '',
+    reviewerThinking: '',
+    approve: null,
     dryRun: false,
   }
   for (let i = 0; i < argv.length; i++) {
@@ -87,19 +110,68 @@ function parseArgs(argv) {
         out.requirements = next()
         break
       case '--max-rounds':
-        out.maxRounds = Math.max(1, Number(next()) || DEFAULT_MAX_ROUNDS)
+        out.maxRounds = Math.max(1, Number(next()) || 3)
         break
       case '--cache-dir':
         out.cacheDir = next()
         break
+      case '--config':
+        out.configPath = next()
+        break
       case '--sandbox':
         out.sandbox = next()
+        break
+      case '--runner':
+      case '--provider-runner':
+        out.runner = String(next()).toLowerCase()
+        break
+      case '--executor-runner':
+        out.executorRunner = String(next()).toLowerCase()
+        break
+      case '--reviewer-runner':
+        out.reviewerRunner = String(next()).toLowerCase()
+        break
+      case '--bin':
+        out.bin = next()
+        break
+      case '--executor-bin':
+        out.executorBin = next()
+        break
+      case '--reviewer-bin':
+        out.reviewerBin = next()
         break
       case '--codex-bin':
         out.codexBin = next()
         break
       case '--model':
         out.model = next()
+        break
+      case '--executor-model':
+        out.executorModel = next()
+        break
+      case '--reviewer-model':
+        out.reviewerModel = next()
+        break
+      case '--provider':
+        out.provider = next()
+        break
+      case '--executor-provider':
+        out.executorProvider = next()
+        break
+      case '--reviewer-provider':
+        out.reviewerProvider = next()
+        break
+      case '--thinking':
+        out.thinking = next()
+        break
+      case '--executor-thinking':
+        out.executorThinking = next()
+        break
+      case '--reviewer-thinking':
+        out.reviewerThinking = next()
+        break
+      case '--no-approve':
+        out.approve = false
         break
       case '--dry-run':
         out.dryRun = true
@@ -110,6 +182,17 @@ function parseArgs(argv) {
     }
   }
   return out
+}
+
+function createRoleRunner(roleSettings, shared) {
+  return createRunner(roleSettings.runner, {
+    bin: roleSettings.bin,
+    model: roleSettings.model,
+    provider: roleSettings.provider,
+    thinking: roleSettings.thinking,
+    sandbox: shared.sandbox,
+    approve: shared.approve,
+  })
 }
 
 function localTimestamp(d = new Date()) {
@@ -279,101 +362,6 @@ async function countCommits(workdir, baseSha) {
   }
 }
 
-function runCodex({
-  codexBin,
-  workdir,
-  sandbox,
-  model,
-  prompt,
-  outFile,
-  logFile,
-  schemaFile,
-  dryRun,
-}) {
-  const args = [
-    'exec',
-    '-C',
-    workdir,
-    '-s',
-    sandbox,
-    '-o',
-    outFile,
-    '--color',
-    'never',
-  ]
-  if (schemaFile) args.push('--output-schema', schemaFile)
-  if (model) args.push('-m', model)
-  args.push('-')
-
-  if (dryRun) {
-    writeFileSync(outFile, '{"status":"blocked","note":"dry-run"}\n', 'utf8')
-    writeFileSync(logFile, `[dry-run] ${codexBin} ${args.join(' ')}\n`, 'utf8')
-    return Promise.resolve({ code: 0, dryRun: true })
-  }
-
-  return new Promise((resolvePromise, reject) => {
-    const logStream = createWriteStream(logFile, { flags: 'w' })
-    logStream.write(`$ ${codexBin} ${args.join(' ')}\n\n`)
-
-    // Windows: spawning npm's codex.cmd with piped stdin yields spawn EINVAL on
-    // modern Node. Prefer `node <codex.js> …`; fall back to shell for .cmd/.bat.
-    let command = codexBin
-    let spawnArgs = args
-    let shell = false
-    if (process.platform === 'win32') {
-      const hasSep = /[\\/]/.test(codexBin)
-      const hasExt = /\.(cmd|exe|bat|js|mjs)$/i.test(codexBin)
-      const bare = !hasSep && !hasExt
-      const asCmd = bare ? `${codexBin}.cmd` : codexBin
-      if (/\.m?js$/i.test(codexBin)) {
-        command = process.execPath
-        spawnArgs = [resolve(codexBin), ...args]
-      } else if (bare || /\.(cmd|bat)$/i.test(asCmd)) {
-        const jsGuess = process.env.APPDATA
-          ? join(
-              process.env.APPDATA,
-              'npm',
-              'node_modules',
-              '@openai',
-              'codex',
-              'bin',
-              'codex.js',
-            )
-          : ''
-        if (jsGuess && existsSync(jsGuess)) {
-          command = process.execPath
-          spawnArgs = [jsGuess, ...args]
-        } else {
-          command = asCmd
-          shell = true
-        }
-      }
-    }
-
-    const child = spawn(command, spawnArgs, {
-      cwd: workdir,
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env,
-      shell,
-    })
-
-    child.stdin.write(prompt)
-    child.stdin.end()
-
-    child.stdout.on('data', (d) => logStream.write(d))
-    child.stderr.on('data', (d) => logStream.write(d))
-    child.on('error', (err) => {
-      logStream.end()
-      reject(err)
-    })
-    child.on('close', (code) => {
-      logStream.end()
-      resolvePromise({ code: code ?? 1 })
-    })
-  })
-}
-
 function emitSummary(summary, summaryPath) {
   const text = JSON.stringify(summary, null, 2)
   writeFileSync(summaryPath, text + '\n', 'utf8')
@@ -394,6 +382,25 @@ async function main() {
     console.error(`workdir 不存在: ${workdir}`)
     process.exit(2)
   }
+
+  let loaded
+  try {
+    loaded = loadConfigFile(args.configPath || undefined)
+  } catch (err) {
+    console.error(String(err.message || err))
+    process.exit(2)
+  }
+
+  let settings
+  try {
+    settings = resolveSettings(args, loaded)
+  } catch (err) {
+    console.error(String(err.message || err))
+    process.exit(2)
+  }
+
+  const executorRunner = createRoleRunner(settings.executor, settings)
+  const reviewerRunner = createRoleRunner(settings.reviewer, settings)
 
   let rawTask = ''
   if (args.taskFile) {
@@ -421,6 +428,23 @@ async function main() {
   mkdirSync(runDir, { recursive: true })
   const mainLogPath = join(runDir, 'main.log')
   writeFileSync(mainLogPath, '', 'utf8')
+  writeFileSync(
+    join(runDir, 'settings.json'),
+    JSON.stringify(
+      {
+        configPath: settings.configPath,
+        configMissing: !!loaded.missing,
+        sandbox: settings.sandbox,
+        maxRounds: settings.maxRounds,
+        approve: settings.approve,
+        executor: settings.executor,
+        reviewer: settings.reviewer,
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  )
 
   const taskSnap = [
     `# ${task.title}`,
@@ -446,7 +470,7 @@ async function main() {
 
   logMain(
     mainLogPath,
-    `start id=${task.id || '-'} title=${JSON.stringify(task.title)} workdir=${workdir} rounds=${args.maxRounds} cache=${runDir}`,
+    `start config=${settings.configPath} executor=${settings.executor.runner}/${settings.executor.bin} reviewer=${settings.reviewer.runner}/${settings.reviewer.bin} id=${task.id || '-'} title=${JSON.stringify(task.title)} workdir=${workdir} rounds=${settings.maxRounds} cache=${runDir}`,
   )
 
   let lastFindings = ''
@@ -456,7 +480,7 @@ async function main() {
   let lastRound = 0
   let settled = false
 
-  for (let round = 1; round <= args.maxRounds && !settled; round++) {
+  for (let round = 1; round <= settings.maxRounds && !settled; round++) {
     lastRound = round
     const loopName = uniqueDir(runDir, `${String(round).padStart(2, '0')}-${localTimestamp()}`)
     const loopDir = join(runDir, loopName)
@@ -498,15 +522,18 @@ async function main() {
     writeFileSync(executorPromptPath, executorPrompt, 'utf8')
 
     logMain(mainLogPath, `round ${round}: executor baseSha=${baseSha}`)
-    const execRun = await runCodex({
-      codexBin: args.codexBin,
+    const execRun = await executorRunner.runTurn({
+      role: 'executor',
       workdir,
-      sandbox: args.sandbox,
-      model: args.model,
       prompt: executorPrompt,
+      promptFile: executorPromptPath,
       outFile: executorOut,
       logFile: executorLog,
       schemaFile: outcomeSchema,
+      sandbox: settings.sandbox,
+      model: settings.executor.model,
+      provider: settings.executor.provider,
+      thinking: settings.executor.thinking,
       dryRun: args.dryRun,
     })
 
@@ -600,15 +627,18 @@ async function main() {
     writeFileSync(reviewerPromptPath, reviewerPrompt, 'utf8')
 
     logMain(mainLogPath, `round ${round}: reviewer range ${baseSha}..HEAD`)
-    await runCodex({
-      codexBin: args.codexBin,
+    await reviewerRunner.runTurn({
+      role: 'reviewer',
       workdir,
-      sandbox: args.sandbox === 'read-only' ? 'read-only' : args.sandbox,
-      model: args.model,
       prompt: reviewerPrompt,
+      promptFile: reviewerPromptPath,
       outFile: reviewerOut,
       logFile: reviewerLog,
       schemaFile: reviewSchema,
+      sandbox: settings.sandbox === 'read-only' ? 'read-only' : settings.sandbox,
+      model: settings.reviewer.model,
+      provider: settings.reviewer.provider,
+      thinking: settings.reviewer.thinking,
       dryRun: args.dryRun,
     })
 
