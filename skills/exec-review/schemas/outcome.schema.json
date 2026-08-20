@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["done", "no_change", "blocked", "empty"]
+    },
+    "taskId": { "type": "string" },
+    "baseSha": { "type": "string" },
+    "note": { "type": "string" }
+  },
+  "required": ["status", "taskId", "baseSha", "note"],
+  "additionalProperties": false
+}

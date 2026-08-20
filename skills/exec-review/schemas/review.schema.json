@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["APPROVE", "REVISE"]
+    },
+    "verdictSpec": {
+      "type": "string",
+      "enum": ["APPROVE", "REVISE"]
+    },
+    "verdictStandards": {
+      "type": "string",
+      "enum": ["APPROVE", "REVISE"]
+    },
+    "findings": { "type": "string" }
+  },
+  "required": ["verdict", "verdictSpec", "verdictStandards", "findings"],
+  "additionalProperties": false
+}
