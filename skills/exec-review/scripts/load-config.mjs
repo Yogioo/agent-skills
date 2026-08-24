@@ -213,6 +213,17 @@ export function resolveSettings(args, loaded) {
     ) || 10000,
   )
 
+  const timeout = Math.max(
+    0,
+    Number(
+      firstNonEmpty(
+        args.timeout != null && args.timeout !== '' ? String(args.timeout) : '',
+        process.env.EXEC_REVIEW_TIMEOUT,
+        cfg.timeout != null ? String(cfg.timeout) : '',
+      ),
+    ) || 0,
+  )
+
   const openBrowser =
     args.open === false
       ? false
@@ -232,6 +243,7 @@ export function resolveSettings(args, loaded) {
     port,
     returnLevel,
     heartbeatMs,
+    timeout,
     openBrowser,
     executor,
     reviewer,

@@ -4,6 +4,7 @@
   "maxRounds": 3,
   "approve": true,
   "gitCommit": true,
+  "timeout": 0,
   "executor": {
     "runner": "codex",
     "bin": "",

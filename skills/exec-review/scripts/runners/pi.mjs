@@ -35,6 +35,7 @@ export function createPiRunner(opts = {}) {
      * @param {string} [turn.thinking]
      * @param {'executor'|'reviewer'} [turn.role]
      * @param {boolean} [turn.dryRun]
+     * @param {AbortSignal} [turn.signal]
      */
     runTurn(turn) {
       const sandbox = turn.sandbox || defaultSandbox
@@ -71,6 +72,7 @@ export function createPiRunner(opts = {}) {
         outFile: turn.outFile,
         logFile: turn.logFile,
         dryRun: turn.dryRun,
+        signal: turn.signal,
         stdoutIsOutput: true,
       })
     },

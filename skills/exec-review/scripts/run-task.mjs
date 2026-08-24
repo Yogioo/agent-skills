@@ -41,6 +41,7 @@ function usage(code = 1) {
     [--git-commit <true|false>]
     [--no-approve] [--dry-run]
     [--no-serve] [--port <端口>] [--return-level <0-3>] [--heartbeat-ms <ms>]
+    [--timeout <秒>]
     [--codex-bin <路径>]  (兼容旧参数)
 
 默认来自技能根 config.json（默认 runner=codex）。优先级：CLI > 环境变量 > config.json > 内置。`
@@ -83,6 +84,7 @@ function parseArgs(argv) {
     port: 0,
     returnLevel: 0,
     heartbeatMs: 0,
+    timeout: 0,
     dryRun: false,
   }
   for (let i = 0; i < argv.length; i++) {
@@ -198,6 +200,9 @@ function parseArgs(argv) {
         break
       case '--heartbeat-ms':
         out.heartbeatMs = Math.max(1000, Number(next()) || 10000)
+        break
+      case '--timeout':
+        out.timeout = Math.max(0, Number(next()) || 0)
         break
       case '--dry-run':
         out.dryRun = true
@@ -505,6 +510,7 @@ async function main() {
         port: settings.port,
         returnLevel: settings.returnLevel,
         heartbeatMs: settings.heartbeatMs,
+        timeout: settings.timeout,
         executor: settings.executor,
         reviewer: settings.reviewer,
       },
@@ -606,6 +612,9 @@ async function main() {
   progress.setStage('executing')
   progress.write('executor_start', {})
   progress.write('context_start', { role: 'executor', file: executorLog }, 2)
+  const execCtrl = new AbortController()
+  const execTimer =
+    settings.timeout > 0 ? setTimeout(() => execCtrl.abort(), settings.timeout * 1000) : null
   const execRun = await executorRunner.runTurn({
     role: 'executor',
     workdir,
@@ -619,7 +628,9 @@ async function main() {
     provider: settings.executor.provider,
     thinking: settings.executor.thinking,
     dryRun: args.dryRun,
+    signal: execCtrl.signal,
   })
+  if (execTimer) clearTimeout(execTimer)
 
   const execText = existsSync(executorOut) ? readFileSync(executorOut, 'utf8') : ''
   let outcome = extractJson(execText)
@@ -629,6 +640,21 @@ async function main() {
   const changedFiles = [...execDiff.changed, ...execDiff.added]
   const changedAny = changedFiles.length > 0 || execDiff.removed.length > 0
   progress.write('executor_end', { code: execRun.code, status: outcome?.status, changed: changedFiles.length })
+
+  if (execRun.aborted) {
+    const summary = {
+      status: 'timeout',
+      id: task.id || undefined,
+      workdir,
+      cacheDir: runDir,
+      summary: `执行端超时（${settings.timeout}s）`,
+      changedFiles,
+      outcome,
+    }
+    logMain(mainLogPath, `execute: 超时中止（${settings.timeout}s，改动 ${changedFiles.length} 个）`)
+    finalize(summary, join(runDir, 'summary.json'))
+    return
+  }
 
   if (!outcome) {
     if (changedAny) {
@@ -707,7 +733,10 @@ async function main() {
   progress.setStage('reviewing')
   progress.write('reviewer_start', {})
   progress.write('context_start', { role: 'reviewer', file: reviewerLog }, 2)
-  await reviewerRunner.runTurn({
+  const reviewCtrl = new AbortController()
+  const reviewTimer =
+    settings.timeout > 0 ? setTimeout(() => reviewCtrl.abort(), settings.timeout * 1000) : null
+  const reviewerRun = await reviewerRunner.runTurn({
     role: 'reviewer',
     workdir,
     prompt: reviewerPrompt,
@@ -720,12 +749,31 @@ async function main() {
     provider: settings.reviewer.provider,
     thinking: settings.reviewer.thinking,
     dryRun: args.dryRun,
+    signal: reviewCtrl.signal,
   })
+  if (reviewTimer) clearTimeout(reviewTimer)
 
   const reviewText = existsSync(reviewerOut) ? readFileSync(reviewerOut, 'utf8') : ''
   let review = extractJson(reviewText)
   if (!review || !review.status) {
     review = { status: 'clean', note: reviewText.trim() || '审查输出缺失或无法解析' }
+  }
+
+  if (reviewerRun.aborted) {
+    const summary = {
+      status: 'review_timeout',
+      id: task.id || undefined,
+      workdir,
+      cacheDir: runDir,
+      summary: `审查端超时（${settings.timeout}s）`,
+      changedFiles,
+      reviewChangedFiles: [],
+      review: { status: 'timeout', note: '审查超时' },
+      outcome,
+    }
+    logMain(mainLogPath, `review: 超时中止（${settings.timeout}s）`)
+    finalize(summary, join(runDir, 'summary.json'))
+    return
   }
   const afterReview = snapshot(workdir)
   const reviewDiff = diff(afterExec, afterReview)

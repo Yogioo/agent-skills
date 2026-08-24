@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createWriteStream, writeFileSync } from 'node:fs'
 import { resolveBin } from './resolve-bin.mjs'
 
@@ -15,6 +15,7 @@ import { resolveBin } from './resolve-bin.mjs'
  * @property {string} [dryRunBody]
  * @property {boolean} [stdoutIsOutput] when true (default), write stdout to outFile
  * @property {NodeJS.ProcessEnv} [env]
+ * @property {AbortSignal} [signal] abort → kill the whole process tree
  */
 
 /**
@@ -22,8 +23,33 @@ import { resolveBin } from './resolve-bin.mjs'
  * By default also write stdout to outFile. Set stdoutIsOutput=false when the CLI
  * itself writes outFile (e.g. Codex `-o`).
  * @param {TurnRequest} req
- * @returns {Promise<{ code: number, dryRun?: boolean }>}
+ * @returns {Promise<{ code: number, dryRun?: boolean, aborted?: boolean }>}
  */
+
+/** Kill the whole process tree (Windows: taskkill /T; else process group). */
+function killTree(child) {
+  if (!child || child.pid == null) return
+  if (process.platform === 'win32') {
+    try {
+      execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+      })
+    } catch {
+      // 已退出或无法杀：忽略
+    }
+    return
+  }
+  try {
+    process.kill(-child.pid, 'SIGTERM')
+  } catch {
+    try {
+      child.kill('SIGTERM')
+    } catch {
+      // 已退出：忽略
+    }
+  }
+}
+
 export function spawnTurn(req) {
   const {
     bin,
@@ -37,6 +63,7 @@ export function spawnTurn(req) {
     dryRunBody = '{"status":"blocked","note":"dry-run"}\n',
     stdoutIsOutput = true,
     env = process.env,
+    signal,
   } = req
 
   const resolved = resolveBin(bin, { knownName })
@@ -54,13 +81,28 @@ export function spawnTurn(req) {
     logStream.write(cmdline)
 
     const outChunks = []
+    // 非 Windows：detached 让子进程成为进程组组长，abort 时可按组杀（含孙进程）
     const child = spawn(resolved.command, spawnArgs, {
       cwd: workdir,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
       shell: resolved.shell,
+      detached: process.platform !== 'win32',
     })
+
+    let settled = false
+    const onAbort = () => {
+      if (settled) return
+      settled = true
+      killTree(child)
+      logStream.end()
+      resolvePromise({ code: 124, aborted: true })
+    }
+    if (signal) {
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
 
     child.stdout.on('data', (d) => {
       if (stdoutIsOutput) outChunks.push(d)
@@ -68,10 +110,15 @@ export function spawnTurn(req) {
     })
     child.stderr.on('data', (d) => logStream.write(d))
     child.on('error', (err) => {
+      if (settled) return
+      settled = true
       logStream.end()
       reject(err)
     })
     child.on('close', (code) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
       if (stdoutIsOutput) {
         writeFileSync(outFile, Buffer.concat(outChunks).toString('utf8'), 'utf8')
       }
