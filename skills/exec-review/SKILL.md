@@ -1,6 +1,6 @@
 ---
 name: exec-review
-description: 对一段任务说明跑执行→审查（可插 runner，默认 Codex，可选 pi；exec/review 可分别配置）。审查端在同一工作区直接改进，无需执行端新开上下文回炉。git 仓库默认允许执行端提交，`gitCommit: false` 或非 git 场景由调用方提交。日志进缓存，标准输出只给摘要。用户给出任务文本或任务文件时加载。
+description: '对一段任务说明跑执行→审查（可插 runner，默认 Codex，可选 pi；exec/review 可分别配置）。审查端在同一工作区直接改进，无需执行端新开上下文回炉。git 仓库默认允许执行端提交，`gitCommit: false` 或非 git 场景由调用方提交。日志进缓存，标准输出只给摘要。用户给出任务文本或任务文件时加载。'
 ---
 
 # 执行审查（单次任务）
