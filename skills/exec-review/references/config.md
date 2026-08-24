@@ -53,6 +53,8 @@
 | `returnLevel` | 摘要里附带进度投影的深度；`0` = 不附带（极简） |
 | `heartbeatMs` | 存活心跳间隔（毫秒） |
 
+> **注意（gitCommit 与 sandbox）**：执行端自行 `git commit` 需要能写入 `.git` 目录的沙箱。默认 `sandbox: "danger-full-access"` 可正常提交；若改用 `workspace-write`，`.git` 目录只读，执行端会报 `index.lock: Permission denied` 而 `blocked`（修复已完成但无法提交）。需要提交时请保持 `danger-full-access`。
+
 `thinking` 常见取值（视模型而定）：`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
 
 ## 示例

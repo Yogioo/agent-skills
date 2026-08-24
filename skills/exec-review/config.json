@@ -1,6 +1,6 @@
 {
   "runner": "codex",
-  "sandbox": "workspace-write",
+  "sandbox": "danger-full-access",
   "maxRounds": 3,
   "approve": true,
   "gitCommit": true,
