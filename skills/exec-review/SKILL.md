@@ -1,6 +1,6 @@
 ---
 name: exec-review
-description: 对一段任务说明跑执行→审查（可插 runner，默认 Codex，可选 pi；exec/review 可分别配置）。审查端在同一工作区直接改进，无需执行端新开上下文回炉。两端都只改文件、不提交。日志进缓存，标准输出只给摘要。用户给出任务文本或任务文件时加载。
+description: 对一段任务说明跑执行→审查（可插 runner，默认 Codex，可选 pi；exec/review 可分别配置）。审查端在同一工作区直接改进，无需执行端新开上下文回炉。git 仓库默认允许执行端提交，`gitCommit: false` 或非 git 场景由调用方提交。日志进缓存，标准输出只给摘要。用户给出任务文本或任务文件时加载。
 ---
 
 # 执行审查（单次任务）
@@ -10,7 +10,7 @@ description: 对一段任务说明跑执行→审查（可插 runner，默认 Co
 - **执行**：改工作区文件，报告简单 JSON outcome
 - **审查**：对照任务说明与仓库规范，审查执行端改动涉及的文件并**直接改进**；若已干净则不改
 
-**高度可复用：** 不假设目标目录是 git 仓库（改动检测用内容快照，跳过 `.git`/`node_modules`）；两端只改文件、不提交，提交由调用方负责。让审查端直接改，是为了避免「审查端只报结论 → 执行端新开一次上下文处理」的低效往返。
+**高度可复用：** 不假设目标目录是 git 仓库（改动检测用内容快照，跳过 `.git`/`node_modules`）。git 仓库默认允许执行端提交；`gitCommit: false` 或非 git 场景由调用方提交。让审查端直接改，是为了避免「审查端只报结论 → 执行端新开一次上下文处理」的低效往返。
 
 入口：本目录 `scripts/run-task.mjs`。
 
@@ -48,7 +48,7 @@ Get-Content task.md -Raw | node …/run-task.mjs --workdir <目录> --stdin
 node …/run-task.mjs --workdir <目录> --id 可选标签 --title "…" --body "…" --requirements "…"
 ```
 
-常用可选参数：`--config`、`--runner` / `--executor-runner` / `--reviewer-runner`、`--model` / `--thinking`（及角色级变体）、`--bin`、`--provider`（pi）、`--cache-dir`、`--sandbox`、`--dry-run`、`--no-open`。`--codex-bin` 仍兼容。
+常用可选参数：`--config`、`--runner` / `--executor-runner` / `--reviewer-runner`、`--model` / `--thinking`（及角色级变体）、`--bin`、`--provider`（pi）、`--git-commit <true|false>`、`--cache-dir`、`--sandbox`、`--dry-run`、`--no-open`。`--codex-bin` 仍兼容。
 
 进度相关：`--no-serve` / `--port` / `--return-level` / `--heartbeat-ms`。
 
@@ -79,11 +79,11 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 
 - **标准输出**：仅摘要 JSON（含 `status`、`changedFiles`、`reviewChangedFiles`、`summary`、`review`、`outcome`）
 - **`cacheDir`**：`task.md`、`settings.json`（本次实际生效配置）、执行与审查的提示词/输出/日志、`main.log`
-- 两端改动都在工作区里（未提交）——**由调用方决定何时提交**
+- git 仓库且 `gitCommit` 为 `true` 时，执行端可在完成后自行提交；`gitCommit: false` 或非 git 场景的改动由调用方提交
 
 | `status` | 含义 / 下一步 |
 |----------|--------------|
-| `approved` | 执行已实现，审查端（可能）直接改进后通过 → 向用户汇报通过（改动未提交，留给调用方） |
+| `approved` | 执行已实现，审查端（可能）直接改进后通过 → 向用户汇报通过（提交行为按 `gitCommit` 模式决定） |
 | `no_change` | 无需改代码（执行端回报 done 但工作区无改动） |
 | `blocked` / `empty` | 执行端做不完 / 无事可做 → 记录原因；`blocked` 考虑升级问人 |
 | `executor_failed` / `error` | 先看 `cacheDir`，查清再开下一次 |
@@ -98,8 +98,8 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 
 ## 目录
 
-- `config.json` — 默认 runner / 模型 / 思考等级（exec、review 可分开）+ serve / returnLevel / heartbeatMs
-- `scripts/run-task.mjs` — 入口（单次 执行→审查）
+- `config.json` — 默认 runner / 模型 / 思考等级（exec、review 可分开）+ gitCommit + serve / returnLevel / heartbeatMs
+- `scripts/run-task.mjs` — 入口（单次 执行→审查；按 `gitCommit` 注入 git 只读上下文与执行端提交规则）
 - `scripts/workspace.mjs` — 内容快照改动检测
 - `scripts/progress.mjs` — 单条进度事件流（level + 心跳）
 - `scripts/serve.mjs` — 独立实时进度服务（SSE → HTML，两阶段视图）

@@ -3,6 +3,7 @@
   "sandbox": "workspace-write",
   "maxRounds": 3,
   "approve": true,
+  "gitCommit": true,
   "executor": {
     "runner": "codex",
     "bin": "",

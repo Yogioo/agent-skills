@@ -8,6 +8,8 @@
 
 {{CHANGED_FILES}}
 
+{{GIT_REVIEW_CONTEXT}}
+
 - 标签：`{{TASK_ID}}`
 - 标题：`{{TASK_TITLE}}`
 

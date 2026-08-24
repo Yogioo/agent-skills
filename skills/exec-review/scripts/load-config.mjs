@@ -218,10 +218,16 @@ export function resolveSettings(args, loaded) {
       ? false
       : asBool(process.env.EXEC_REVIEW_OPEN_BROWSER, cfg.openBrowser !== false)
 
+  const gitCommit = asBool(
+    args.gitCommit,
+    asBool(process.env.EXEC_REVIEW_GIT_COMMIT, asBool(cfg.gitCommit, true)),
+  )
+
   return {
     configPath: loaded?.path || DEFAULT_CONFIG_PATH,
     sandbox,
     approve,
+    gitCommit,
     serve,
     port,
     returnLevel,

@@ -16,6 +16,7 @@
   "runner": "codex",
   "sandbox": "workspace-write",
   "approve": true,
+  "gitCommit": true,
   "serve": true,
   "port": 0,
   "returnLevel": 0,
@@ -46,6 +47,7 @@
 | `provider` | 仅 pi：`--provider`；空 = 不传 |
 | `thinking` | 思考等级；**空 = 不传**。pi → `--thinking`；codex → `-c model_reasoning_effort=…` |
 | `sandbox` / `approve` | 全局默认（仍可被 CLI 覆盖） |
+| `gitCommit` | git 仓库中是否允许执行端完成后提交；默认 `true`，`false` 或非 git 场景由调用方提交 |
 | `serve` | 是否启动独立实时进度服务（默认 `true`） |
 | `port` | 进度服务端口；`0` = 由 workdir 自动派生（避免多工作区冲突） |
 | `returnLevel` | 摘要里附带进度投影的深度；`0` = 不附带（极简） |
@@ -82,6 +84,7 @@
 - `--model` / `--executor-model` / `--reviewer-model`
 - `--thinking` / `--executor-thinking` / `--reviewer-thinking`
 - `--provider` / `--executor-provider` / `--reviewer-provider`
+- `--git-commit <true|false>`：覆盖 `gitCommit`（环境变量为 `EXEC_REVIEW_GIT_COMMIT`）
 
 ## 实时可视化（`serve`）
 

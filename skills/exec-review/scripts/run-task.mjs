@@ -3,7 +3,7 @@
  * 执行→审查 runner（单次任务文本）。
  * 输入：任务说明。输出：stdout 摘要 JSON。日志：--cache-dir。
  *
- * 用「前后内容快照」检测改动；执行端 / 审查端都只改文件、不提交。
+ * 用「前后内容快照」检测改动；git 仓库按 gitCommit 模式决定执行端提交行为。
  *
  * 用法：
  *   node run-task.mjs --workdir <目录> --task-file task.md [--runner codex|pi]
@@ -11,7 +11,7 @@
  *   node run-task.mjs --workdir <目录> --title "…" --body "…" [--requirements "…"] [--id "…"]
  */
 
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import {
   mkdirSync,
   readFileSync,
@@ -38,6 +38,7 @@ function usage(code = 1) {
     [--bin <路径>] [--model <id>] [--provider <name>] [--thinking <level>]
     [--executor-model …] [--reviewer-model …] [--executor-thinking …] [--reviewer-thinking …]
     [--sandbox workspace-write|danger-full-access|read-only]
+    [--git-commit <true|false>]
     [--no-approve] [--dry-run]
     [--no-serve] [--port <端口>] [--return-level <0-3>] [--heartbeat-ms <ms>]
     [--codex-bin <路径>]  (兼容旧参数)
@@ -76,6 +77,7 @@ function parseArgs(argv) {
     executorThinking: '',
     reviewerThinking: '',
     approve: null,
+    gitCommit: null,
     serve: null,
     open: null,
     port: 0,
@@ -178,6 +180,9 @@ function parseArgs(argv) {
         break
       case '--no-approve':
         out.approve = false
+        break
+      case '--git-commit':
+        out.gitCommit = next()
         break
       case '--no-serve':
         out.serve = false
@@ -364,6 +369,30 @@ function renderTemplate(template, vars) {
   )
 }
 
+function gitOutput(workdir, args) {
+  try {
+    return execFileSync('git', args, {
+      cwd: workdir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return ''
+  }
+}
+
+function collectGitContext(workdir) {
+  const isGit =
+    existsSync(join(workdir, '.git')) ||
+    gitOutput(workdir, ['rev-parse', '--is-inside-work-tree']) === 'true'
+  if (!isGit) return { isGit: false, recentLog: '', baseHead: '' }
+  return {
+    isGit: true,
+    recentLog: gitOutput(workdir, ['log', '--oneline', '-20']),
+    baseHead: gitOutput(workdir, ['rev-parse', 'HEAD']),
+  }
+}
+
 function extractJson(text) {
   const raw = String(text || '').trim()
   if (!raw) return null
@@ -471,6 +500,7 @@ async function main() {
         configMissing: !!loaded.missing,
         sandbox: settings.sandbox,
         approve: settings.approve,
+        gitCommit: settings.gitCommit,
         serve: settings.serve,
         port: settings.port,
         returnLevel: settings.returnLevel,
@@ -542,15 +572,30 @@ async function main() {
 
   let lastReview = null
 
-  // 执行前快照：用内容哈希对比检测改动
+  // 执行前快照与 git 上下文：快照检测改动，git 查询只读
   const before = snapshot(workdir)
+  const gitContext = collectGitContext(workdir)
+  const commitRule =
+    gitContext.isGit && settings.gitCommit
+      ? '完成后自行 `git commit`，message 清晰描述本次实际修改；blocked / 无改动则不要提交。'
+      : '不要提交（提交由调用方负责）。'
+  const gitLog =
+    gitContext.isGit && gitContext.recentLog
+      ? `\n## 参考：最近变更（git log）\n\n\`\`\`\n${gitContext.recentLog}\n\`\`\`\n`
+      : ''
+  const gitReviewContext =
+    gitContext.isGit && gitContext.baseHead
+      ? `\n## Git 参考\n\n执行端开始前的 BASE_HEAD：\`${gitContext.baseHead}\`。使用 \`git diff BASE_HEAD\`（将 BASE_HEAD 替换为上述 hash）查看执行端改动。\n`
+      : ''
 
-  // ---- 执行阶段：实现（只改文件，不提交）----
+  // ---- 执行阶段：实现 ----
   const executorPrompt = renderTemplate(executorTpl, {
     TASK_ID: task.id || task.title,
     TASK_TITLE: task.title,
     TASK_BODY: task.body,
     TASK_REQUIREMENTS: task.requirements,
+    COMMIT_RULE: commitRule,
+    GIT_LOG: gitLog,
   })
   const executorPromptPath = join(runDir, 'executor.prompt.md')
   const executorOut = join(runDir, 'executor.out.md')
@@ -611,6 +656,10 @@ async function main() {
     outcome.note = (outcome.note || '') + ' (empty+改动→done)'
   }
 
+  if (args.dryRun && execRun.dryRun && outcome.status === 'blocked') {
+    outcome.status = 'done'
+  }
+
   if (outcome.status !== 'done') {
     const status = ['blocked', 'no_change', 'empty'].includes(outcome.status)
       ? outcome.status
@@ -640,13 +689,14 @@ async function main() {
     return
   }
 
-  // ---- 审查阶段：审查端直接改进（只改文件，不提交）----
+  // ---- 审查阶段：审查端直接改进 ----
   const reviewerPrompt = renderTemplate(reviewerTpl, {
     TASK_ID: task.id || task.title,
     TASK_TITLE: task.title,
     TASK_BODY: task.body,
     TASK_REQUIREMENTS: task.requirements,
     CHANGED_FILES: changedFiles.length ? changedFiles.join('\n') : '（执行端未报告改动文件）',
+    GIT_REVIEW_CONTEXT: gitReviewContext,
   })
   const reviewerPromptPath = join(runDir, 'reviewer.prompt.md')
   const reviewerOut = join(runDir, 'reviewer.out.md')

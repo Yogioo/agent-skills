@@ -14,7 +14,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import http from 'node:http'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -167,14 +167,16 @@ function read(p) {
 
 test('run-task 已移除回炉循环词汇（lastFindings / revise / escalate / round_start）', () => {
   const src = read(RUN)
-  for (const token of ['lastFindings', "'revise'", "'escalate'", "'round_start'", 'runGit', 'rev-parse']) {
+  for (const token of ['lastFindings', "'revise'", "'escalate'", "'round_start'", 'runGit']) {
     assert.ok(!src.includes(token), `run-task.mjs 不应再包含 ${token}`)
   }
 })
 
-test('run-task 不调用 git 命令，用工作区快照检测改动', () => {
+test('run-task 收集 git 只读上下文，并以工作区快照检测改动', () => {
   const src = read(RUN)
-  assert.ok(!/['"]git['"]/.test(src), 'run-task.mjs 不应出现 git 命令调用（字符串字面量）')
+  assert.match(src, /execFileSync/, '应通过 git 命令收集只读上下文')
+  assert.match(src, /['"]git['"]/, '应调用 git 命令')
+  assert.match(src, /rev-parse/, '应读取仓库状态与 BASE_HEAD')
   assert.ok(src.includes("from './workspace.mjs'"), '应引入 workspace 快照模块')
   assert.match(src, /snapshot\(workdir\)/, '执行前应做工作区快照')
   assert.match(src, /changedFiles/, '应以改动文件为准，而非提交')
@@ -189,21 +191,20 @@ test('run-task 保持单次 执行→审查 两阶段（executor_start / reviewe
   assert.match(src, /审查阶段：审查端直接改进/, '应注释审查端直接改进')
 })
 
-test('执行端与审查端都不提交（提交由调用方负责）', () => {
+test('提示词模板使用动态提交规则和 git 上下文占位符', () => {
   const ex = read(EXEC_PROMPT)
   const rv = read(REVIEW_PROMPT)
-  for (const md of [ex, rv]) {
-    assert.match(md, /不要提交/, '应明确不要提交')
-    assert.ok(!md.includes('git commit'), '不应要求 git commit')
-  }
+  assert.match(ex, /{{COMMIT_RULE}}/, '执行端应有动态提交规则占位符')
+  assert.match(ex, /{{GIT_LOG}}/, '执行端应有 git log 占位符')
+  assert.match(rv, /{{GIT_REVIEW_CONTEXT}}/, '审查端应有 git 上下文占位符')
 })
 
-test('审查端提示词要求直接修改（非只报结论）且输出 clean|refined', () => {
+test('审查端提示词要求直接修改且支持 git diff 上下文', () => {
   const md = read(REVIEW_PROMPT)
   assert.match(md, /直接/, '审查端应被要求直接修改')
   assert.match(md, /clean\|refined/, '审查端输出应为 clean|refined')
+  assert.match(md, /{{GIT_REVIEW_CONTEXT}}/, '审查端应有条件 git diff 上下文')
   assert.ok(!md.includes('REVISE'), '审查端不应再输出 REVISE 交回执行端')
-  assert.ok(!md.includes('git diff'), '审查端不应依赖 git diff')
 })
 
 test('审查 schema 为 clean|refined（非 APPROVE/REVISE）', () => {
@@ -211,4 +212,132 @@ test('审查 schema 为 clean|refined（非 APPROVE/REVISE）', () => {
   const st = schema.properties.status.enum
   assert.deepStrictEqual([...st].sort(), ['clean', 'refined'])
   assert.ok(!JSON.stringify(schema).includes('verdict'), 'schema 不应再含 verdict')
+})
+
+function git(dir, args) {
+  return execFileSync('git', args, {
+    cwd: dir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim()
+}
+
+function makeGitRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'er-git-context-'))
+  try {
+    git(dir, ['init'])
+    git(dir, ['config', 'user.name', 'exec-review test'])
+    git(dir, ['config', 'user.email', 'exec-review@example.test'])
+    for (const [name, message] of [
+      ['one.txt', 'first context commit'],
+      ['two.txt', 'second context commit'],
+      ['three.txt', 'third context commit'],
+    ]) {
+      writeFileSync(join(dir, name), `${message}\n`)
+      git(dir, ['add', name])
+      git(dir, ['commit', '-m', message])
+    }
+    return { dir, head: git(dir, ['rev-parse', 'HEAD']) }
+  } catch (err) {
+    rmSync(dir, { recursive: true, force: true })
+    throw err
+  }
+}
+
+function runDryRun(workdir, cacheDir, extraArgs = []) {
+  return new Promise((resolve, reject) => {
+    const env = { ...process.env }
+    delete env.EXEC_REVIEW_GIT_COMMIT
+    const child = spawn(
+      process.execPath,
+      [
+        RUN,
+        '--workdir',
+        workdir,
+        '--title',
+        'prompt rendering',
+        '--body',
+        'render the prompts',
+        '--dry-run',
+        '--no-serve',
+        '--cache-dir',
+        cacheDir,
+        ...extraArgs,
+      ],
+      { cwd: SKILL, env, stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.stderr.on('data', (chunk) => (stderr += chunk))
+    child.once('error', reject)
+    child.once('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`dry-run exit=${code}: ${stderr}`))
+        return
+      }
+      try {
+        resolve(JSON.parse(stdout.trim()))
+      } catch (err) {
+        reject(new Error(`无法解析 dry-run 摘要: ${err.message}\n${stdout}`))
+      }
+    })
+  })
+}
+
+test('dry-run 在 git 仓库默认注入 log、提交规则和 BASE_HEAD', async () => {
+  const repo = makeGitRepo()
+  const cache = mkdtempSync(join(tmpdir(), 'er-git-cache-'))
+  try {
+    const summary = await runDryRun(repo.dir, cache)
+    const executor = read(join(summary.cacheDir, 'executor.prompt.md'))
+    const reviewer = read(join(summary.cacheDir, 'reviewer.prompt.md'))
+
+    assert.match(executor, /参考：最近变更（git log）/)
+    assert.match(executor, /third context commit/)
+    assert.match(executor, /完成后自行 `git commit`/)
+    assert.match(executor, /blocked \/ 无改动则不要提交/)
+    assert.match(reviewer, new RegExp(`BASE_HEAD：.*${repo.head}`))
+    assert.match(reviewer, /git diff BASE_HEAD/)
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true })
+    rmSync(cache, { recursive: true, force: true })
+  }
+})
+
+test('dry-run 的 gitCommit=false 保留禁止提交但仍注入 git 上下文', async () => {
+  const repo = makeGitRepo()
+  const cache = mkdtempSync(join(tmpdir(), 'er-git-cache-'))
+  try {
+    const summary = await runDryRun(repo.dir, cache, ['--git-commit', 'false'])
+    const executor = read(join(summary.cacheDir, 'executor.prompt.md'))
+    const reviewer = read(join(summary.cacheDir, 'reviewer.prompt.md'))
+
+    assert.doesNotMatch(executor, /完成后自行 `git commit`/)
+    assert.match(executor, /不要提交（提交由调用方负责）/)
+    assert.match(executor, /参考：最近变更（git log）/)
+    assert.match(reviewer, new RegExp(`BASE_HEAD：.*${repo.head}`))
+    assert.match(reviewer, /git diff BASE_HEAD/)
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true })
+    rmSync(cache, { recursive: true, force: true })
+  }
+})
+
+test('dry-run 在非 git 目录不注入 git 相关提示词', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'er-no-git-'))
+  const cache = mkdtempSync(join(tmpdir(), 'er-no-git-cache-'))
+  try {
+    const summary = await runDryRun(dir, cache)
+    const prompts = [
+      read(join(summary.cacheDir, 'executor.prompt.md')),
+      read(join(summary.cacheDir, 'reviewer.prompt.md')),
+    ]
+    for (const prompt of prompts) {
+      assert.doesNotMatch(prompt, /\bgit\b|BASE_HEAD|最近变更/)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cache, { recursive: true, force: true })
+  }
 })
