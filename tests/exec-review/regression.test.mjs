@@ -153,3 +153,62 @@ test('serve：推送里程碑 + 上下文，且新连接回放上下文', async 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ---------- 4：单次「执行→审查」两阶段契约（防回炉循环回归） ----------
+
+const RUN = join(SKILL, 'scripts', 'run-task.mjs')
+const EXEC_PROMPT = join(SKILL, 'prompts', 'executor.md')
+const REVIEW_PROMPT = join(SKILL, 'prompts', 'reviewer.md')
+const REVIEW_SCHEMA = join(SKILL, 'schemas', 'review.schema.json')
+
+function read(p) {
+  return readFileSync(p, 'utf8')
+}
+
+test('run-task 已移除回炉循环词汇（lastFindings / revise / escalate / round_start）', () => {
+  const src = read(RUN)
+  for (const token of ['lastFindings', "'revise'", "'escalate'", "'round_start'", 'runGit', 'rev-parse']) {
+    assert.ok(!src.includes(token), `run-task.mjs 不应再包含 ${token}`)
+  }
+})
+
+test('run-task 不调用 git 命令，用工作区快照检测改动', () => {
+  const src = read(RUN)
+  assert.ok(!/['"]git['"]/.test(src), 'run-task.mjs 不应出现 git 命令调用（字符串字面量）')
+  assert.ok(src.includes("from './workspace.mjs'"), '应引入 workspace 快照模块')
+  assert.match(src, /snapshot\(workdir\)/, '执行前应做工作区快照')
+  assert.match(src, /changedFiles/, '应以改动文件为准，而非提交')
+})
+
+test('run-task 保持单次 执行→审查 两阶段（executor_start / reviewer_start / approved）', () => {
+  const src = read(RUN)
+  assert.match(src, /progress\.write\('executor_start'/, '应发射执行阶段开始')
+  assert.match(src, /progress\.write\('reviewer_start'/, '应发射审查阶段开始')
+  assert.match(src, /status: 'approved'/, '审查后应定案 approved')
+  // 审查端直接改进：审查阶段不再把结论交回执行端
+  assert.match(src, /审查阶段：审查端直接改进/, '应注释审查端直接改进')
+})
+
+test('执行端与审查端都不提交（提交由调用方负责）', () => {
+  const ex = read(EXEC_PROMPT)
+  const rv = read(REVIEW_PROMPT)
+  for (const md of [ex, rv]) {
+    assert.match(md, /不要提交/, '应明确不要提交')
+    assert.ok(!md.includes('git commit'), '不应要求 git commit')
+  }
+})
+
+test('审查端提示词要求直接修改（非只报结论）且输出 clean|refined', () => {
+  const md = read(REVIEW_PROMPT)
+  assert.match(md, /直接/, '审查端应被要求直接修改')
+  assert.match(md, /clean\|refined/, '审查端输出应为 clean|refined')
+  assert.ok(!md.includes('REVISE'), '审查端不应再输出 REVISE 交回执行端')
+  assert.ok(!md.includes('git diff'), '审查端不应依赖 git diff')
+})
+
+test('审查 schema 为 clean|refined（非 APPROVE/REVISE）', () => {
+  const schema = JSON.parse(read(REVIEW_SCHEMA))
+  const st = schema.properties.status.enum
+  assert.deepStrictEqual([...st].sort(), ['clean', 'refined'])
+  assert.ok(!JSON.stringify(schema).includes('verdict'), 'schema 不应再含 verdict')
+})

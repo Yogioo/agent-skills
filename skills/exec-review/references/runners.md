@@ -1,6 +1,6 @@
 # Runners（执行引擎）
 
-`run-task.mjs` 的循环逻辑与摘要契约不绑定具体 CLI。一次 agent turn 通过 **runner** 完成。
+`run-task.mjs` 的执行流程与摘要契约不绑定具体 CLI。一次 agent turn 通过 **runner** 完成。单次任务 = 一次执行 turn + 一次审查 turn（审查端直接改进，不循环）。两端都只改工作区文件、**不提交**（提交由调用方负责）。
 
 默认值优先读技能根 [`config.json`](../config.json)（见 [config.md](config.md)）；未配置时内置默认 **codex**。
 

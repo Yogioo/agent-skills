@@ -3,10 +3,12 @@
  * 执行→审查 runner（单次任务文本）。
  * 输入：任务说明。输出：stdout 摘要 JSON。日志：--cache-dir。
  *
+ * 用「前后内容快照」检测改动；执行端 / 审查端都只改文件、不提交。
+ *
  * 用法：
- *   node run-task.mjs --workdir <仓库> --task-file task.md [--max-rounds 3] [--runner codex|pi]
- *   node run-task.mjs --workdir <仓库> --stdin
- *   node run-task.mjs --workdir <仓库> --title "…" --body "…" [--requirements "…"] [--id "…"]
+ *   node run-task.mjs --workdir <目录> --task-file task.md [--runner codex|pi]
+ *   node run-task.mjs --workdir <目录> --stdin
+ *   node run-task.mjs --workdir <目录> --title "…" --body "…" [--requirements "…"] [--id "…"]
  */
 
 import { spawn } from 'node:child_process'
@@ -22,14 +24,15 @@ import { tmpdir } from 'node:os'
 import { createRunner } from './runners/index.mjs'
 import { loadConfigFile, resolveSettings } from './load-config.mjs'
 import { ProgressWriter } from './progress.mjs'
+import { snapshot, diff } from './workspace.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = resolve(__dirname, '..')
 
 function usage(code = 1) {
   const text = `用法:
-  node run-task.mjs --workdir <仓库> (--task-file <路径> | --stdin | --title <t> --body <b>)
-    [--id <标签>] [--requirements <文本>] [--max-rounds N] [--cache-dir <目录>]
+  node run-task.mjs --workdir <目录> (--task-file <路径> | --stdin | --title <t> --body <b>)
+    [--id <标签>] [--requirements <文本>] [--cache-dir <目录>]
     [--config <config.json>]
     [--runner codex|pi] [--executor-runner …] [--reviewer-runner …]
     [--bin <路径>] [--model <id>] [--provider <name>] [--thinking <level>]
@@ -53,7 +56,6 @@ function parseArgs(argv) {
     title: '',
     body: '',
     requirements: '',
-    maxRounds: null,
     cacheDir: null,
     configPath: null,
     sandbox: '',
@@ -114,9 +116,6 @@ function parseArgs(argv) {
       case '--requirements':
       case '--spec':
         out.requirements = next()
-        break
-      case '--max-rounds':
-        out.maxRounds = Math.max(1, Number(next()) || 3)
         break
       case '--cache-dir':
         out.cacheDir = next()
@@ -345,11 +344,6 @@ function extractJson(text) {
   }
   let v = tryParse(raw)
   if (v) return v
-  const outcome = raw.match(/<outcome>\s*([\s\S]*?)\s*<\/outcome>/i)
-  if (outcome) {
-    v = tryParse(outcome[1].trim())
-    if (v) return v
-  }
   const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
   if (fence) {
     v = tryParse(fence[1].trim())
@@ -362,44 +356,6 @@ function extractJson(text) {
     if (v) return v
   }
   return null
-}
-
-function normalizeOutcome(outcome) {
-  if (!outcome || typeof outcome !== 'object') return outcome
-  if (!outcome.taskId && outcome.ticketId) outcome.taskId = outcome.ticketId
-  return outcome
-}
-
-function runGit(workdir, args) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn('git', args, {
-      cwd: workdir,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (d) => {
-      stdout += d
-    })
-    child.stderr.on('data', (d) => {
-      stderr += d
-    })
-    child.on('error', reject)
-    child.on('close', (code) => {
-      if (code === 0) resolvePromise(stdout.trim())
-      else reject(new Error(`git ${args.join(' ')} failed (${code}): ${stderr || stdout}`))
-    })
-  })
-}
-
-async function countCommits(workdir, baseSha) {
-  try {
-    const out = await runGit(workdir, ['rev-list', '--count', `${baseSha}..HEAD`])
-    return Number(out) || 0
-  } catch {
-    return 0
-  }
 }
 
 function emitSummary(summary, summaryPath, runCtx = {}) {
@@ -482,7 +438,6 @@ async function main() {
         configPath: settings.configPath,
         configMissing: !!loaded.missing,
         sandbox: settings.sandbox,
-        maxRounds: settings.maxRounds,
         approve: settings.approve,
         serve: settings.serve,
         port: settings.port,
@@ -510,7 +465,6 @@ async function main() {
     title: task.title,
     workdir,
     runner: settings.executor.runner,
-    maxRounds: settings.maxRounds,
     heartbeatMs: settings.heartbeatMs,
     serveUrl,
   })
@@ -519,7 +473,9 @@ async function main() {
   /** 收尾：写 settle 事件 → 停止心跳 → 发射摘要（含指针/可选进度投影）→ 关闭流 */
   function finalize(summary, summaryPath) {
     progress.stopHeartbeat()
-    progress.write('settle', { status: summary.status, round: summary.round ?? lastRound, summary: summary.summary || '' }, 0)
+    const settleData = { status: summary.status, summary: summary.summary || '' }
+    if (summary.round != null) settleData.round = summary.round
+    progress.write('settle', settleData, 0)
     emitSummary(summary, summaryPath, { ...runCtx, events: progress.all })
     progress.end()
     logMain(mainLogPath, `end ${summary.status}`)
@@ -549,228 +505,166 @@ async function main() {
 
   logMain(
     mainLogPath,
-    `start config=${settings.configPath} executor=${settings.executor.runner}/${settings.executor.bin} reviewer=${settings.reviewer.runner}/${settings.reviewer.bin} id=${task.id || '-'} title=${JSON.stringify(task.title)} workdir=${workdir} rounds=${settings.maxRounds} cache=${runDir}`,
+    `start config=${settings.configPath} executor=${settings.executor.runner}/${settings.executor.bin} reviewer=${settings.reviewer.runner}/${settings.reviewer.bin} id=${task.id || '-'} title=${JSON.stringify(task.title)} workdir=${workdir} cache=${runDir}`,
   )
 
-  let lastFindings = ''
   let lastReview = null
-  let lastBaseSha = ''
-  let lastStatus = 'escalate'
-  let lastRound = 0
-  let settled = false
 
-  for (let round = 1; round <= settings.maxRounds && !settled; round++) {
-    lastRound = round
-    const loopName = uniqueDir(runDir, `${String(round).padStart(2, '0')}-${localTimestamp()}`)
-    const loopDir = join(runDir, loopName)
-    mkdirSync(loopDir, { recursive: true })
+  // 执行前快照：用内容哈希对比检测改动
+  const before = snapshot(workdir)
 
-    let baseSha
-    try {
-      baseSha = await runGit(workdir, ['rev-parse', 'HEAD'])
-    } catch (err) {
-      finalize(
-        {
-          status: 'error',
-          id: task.id || undefined,
-          round,
-          workdir,
-          cacheDir: runDir,
-          summary: String(err.message || err),
-        },
-        join(loopDir, 'summary.json'),
-      )
-      process.exit(2)
-    }
-    lastBaseSha = baseSha
+  // ---- 执行阶段：实现（只改文件，不提交）----
+  const executorPrompt = renderTemplate(executorTpl, {
+    TASK_ID: task.id || task.title,
+    TASK_TITLE: task.title,
+    TASK_BODY: task.body,
+    TASK_REQUIREMENTS: task.requirements,
+  })
+  const executorPromptPath = join(runDir, 'executor.prompt.md')
+  const executorOut = join(runDir, 'executor.out.md')
+  const executorLog = join(runDir, 'executor.log')
+  writeFileSync(executorPromptPath, executorPrompt, 'utf8')
 
-    const fixBlock = lastFindings
-      ? `\n# 上一轮审查要求修改\n\n${lastFindings}\n\n只处理上述要点，其余行为保持不变；重新提交并给出新的 outcome。\n`
-      : ''
+  logMain(mainLogPath, 'execute: 执行端开始')
+  progress.setStage('executing')
+  progress.write('executor_start', {})
+  progress.write('context_start', { role: 'executor', file: executorLog }, 2)
+  const execRun = await executorRunner.runTurn({
+    role: 'executor',
+    workdir,
+    prompt: executorPrompt,
+    promptFile: executorPromptPath,
+    outFile: executorOut,
+    logFile: executorLog,
+    schemaFile: outcomeSchema,
+    sandbox: settings.sandbox,
+    model: settings.executor.model,
+    provider: settings.executor.provider,
+    thinking: settings.executor.thinking,
+    dryRun: args.dryRun,
+  })
 
-    const executorPrompt = renderTemplate(executorTpl, {
-      TASK_ID: task.id || task.title,
-      TASK_TITLE: task.title,
-      TASK_BODY: task.body,
-      TASK_REQUIREMENTS: task.requirements,
-      FIX_BLOCK: fixBlock,
-    })
-    const executorPromptPath = join(loopDir, 'executor.prompt.md')
-    const executorOut = join(loopDir, 'executor.out.md')
-    const executorLog = join(loopDir, 'executor.log')
-    writeFileSync(executorPromptPath, executorPrompt, 'utf8')
+  const execText = existsSync(executorOut) ? readFileSync(executorOut, 'utf8') : ''
+  let outcome = extractJson(execText)
+  if (!outcome || typeof outcome !== 'object') outcome = null
+  const afterExec = snapshot(workdir)
+  const execDiff = diff(before, afterExec)
+  const changedFiles = [...execDiff.changed, ...execDiff.added]
+  const changedAny = changedFiles.length > 0 || execDiff.removed.length > 0
+  progress.write('executor_end', { code: execRun.code, status: outcome?.status, changed: changedFiles.length })
 
-    logMain(mainLogPath, `round ${round}: executor baseSha=${baseSha}`)
-    progress.setStage('executing')
-    progress.write('round_start', { round, baseSha })
-    progress.write('executor_start', { round })
-    progress.write('context_start', { role: 'executor', file: executorLog }, 2)
-    const execRun = await executorRunner.runTurn({
-      role: 'executor',
-      workdir,
-      prompt: executorPrompt,
-      promptFile: executorPromptPath,
-      outFile: executorOut,
-      logFile: executorLog,
-      schemaFile: outcomeSchema,
-      sandbox: settings.sandbox,
-      model: settings.executor.model,
-      provider: settings.executor.provider,
-      thinking: settings.executor.thinking,
-      dryRun: args.dryRun,
-    })
-
-    const execText = existsSync(executorOut) ? readFileSync(executorOut, 'utf8') : ''
-    let outcome = normalizeOutcome(extractJson(execText))
-    const commits = await countCommits(workdir, baseSha)
-    progress.write('executor_end', { round, code: execRun.code, status: outcome?.status, commits })
-
-    if (!outcome) {
-      if (commits > 0) {
-        outcome = {
-          status: 'done',
-          taskId: task.id || task.title,
-          baseSha,
-          note: '缺少 outcome；根据提交推断为 done',
-        }
-        logMain(mainLogPath, `round ${round}: outcome 缺失；降级为 done (commits=${commits})`)
-      } else {
-        lastStatus = 'executor_failed'
-        settled = true
-        const summary = {
-          status: 'executor_failed',
-          id: task.id || undefined,
-          round,
-          baseSha,
-          workdir,
-          cacheDir: runDir,
-          summary: `执行端 exit=${execRun.code}；无法解析 outcome 且无提交`,
-        }
-        finalize(summary, join(loopDir, 'summary.json'))
-        return
+  if (!outcome) {
+    if (changedAny) {
+      outcome = {
+        status: 'done',
+        taskId: task.id || task.title,
+        note: '缺少 outcome；根据工作区改动推断为 done',
       }
-    }
-
-    if (outcome.status === 'empty' && commits > 0) {
-      outcome.status = 'done'
-      outcome.note = (outcome.note || '') + ' (empty+commits→done)'
-    }
-
-    if (outcome.status !== 'done') {
-      lastStatus =
-        outcome.status === 'blocked' ||
-        outcome.status === 'no_change' ||
-        outcome.status === 'empty'
-          ? outcome.status
-          : 'executor_failed'
-      settled = true
+      logMain(mainLogPath, `execute: outcome 缺失；降级为 done (changed=${changedFiles.length})`)
+    } else {
       const summary = {
-        status: lastStatus,
-        id: task.id || outcome.taskId || undefined,
-        round,
-        baseSha: outcome.baseSha || baseSha,
-        workdir,
-        cacheDir: runDir,
-        summary: outcome.note || `执行端 status=${outcome.status}`,
-        outcome,
-      }
-      finalize(summary, join(loopDir, 'summary.json'))
-      return
-    }
-
-    if (commits === 0 && !args.dryRun) {
-      lastStatus = 'no_change'
-      settled = true
-      const summary = {
-        status: 'no_change',
+        status: 'executor_failed',
         id: task.id || undefined,
-        round,
-        baseSha,
         workdir,
         cacheDir: runDir,
-        summary: '执行端回报 done 但没有新提交',
-        outcome,
+        summary: `执行端 exit=${execRun.code}；无法解析 outcome 且工作区无改动`,
       }
-      finalize(summary, join(loopDir, 'summary.json'))
+      finalize(summary, join(runDir, 'summary.json'))
       return
     }
-
-    const reviewerPrompt = renderTemplate(reviewerTpl, {
-      TASK_ID: task.id || task.title,
-      TASK_TITLE: task.title,
-      TASK_BODY: task.body,
-      TASK_REQUIREMENTS: task.requirements,
-      BASE_SHA: baseSha,
-    })
-    const reviewerPromptPath = join(loopDir, 'reviewer.prompt.md')
-    const reviewerOut = join(loopDir, 'reviewer.out.md')
-    const reviewerLog = join(loopDir, 'reviewer.log')
-    writeFileSync(reviewerPromptPath, reviewerPrompt, 'utf8')
-
-    logMain(mainLogPath, `round ${round}: reviewer range ${baseSha}..HEAD`)
-    progress.setStage('reviewing')
-    progress.write('reviewer_start', { round })
-    progress.write('context_start', { role: 'reviewer', file: reviewerLog }, 2)
-    await reviewerRunner.runTurn({
-      role: 'reviewer',
-      workdir,
-      prompt: reviewerPrompt,
-      promptFile: reviewerPromptPath,
-      outFile: reviewerOut,
-      logFile: reviewerLog,
-      schemaFile: reviewSchema,
-      sandbox: settings.sandbox === 'read-only' ? 'read-only' : settings.sandbox,
-      model: settings.reviewer.model,
-      provider: settings.reviewer.provider,
-      thinking: settings.reviewer.thinking,
-      dryRun: args.dryRun,
-    })
-
-    const reviewText = existsSync(reviewerOut) ? readFileSync(reviewerOut, 'utf8') : ''
-    let review = extractJson(reviewText)
-    if (!review || !review.verdict) {
-      const m = reviewText.match(/\bVERDICT\s*:\s*(APPROVE|REVISE)\b/i)
-      review = {
-        verdict: m ? m[1].toUpperCase() : 'REVISE',
-        findings: reviewText.trim() || '审查输出缺失或无法解析',
-      }
-    }
-    lastReview = review
-    progress.write('reviewer_end', { round, verdict: String(review.verdict).toUpperCase(), verdictSpec: review.verdictSpec, verdictStandards: review.verdictStandards })
-
-    if (String(review.verdict).toUpperCase() === 'APPROVE') {
-      lastStatus = 'approved'
-      settled = true
-      const summary = {
-        status: 'approved',
-        id: task.id || undefined,
-        round,
-        baseSha,
-        workdir,
-        cacheDir: runDir,
-        summary: review.findings || '审查通过',
-        review,
-        outcome,
-      }
-      finalize(summary, join(loopDir, 'summary.json'))
-      return
-    }
-
-    lastFindings = review.findings || '审查要求修改（无细节）'
-    progress.setStage('revising')
-    progress.write('revise', { round, summary: lastFindings.slice(0, 200) })
-    logMain(mainLogPath, `round ${round}: REVISE — 回炉`)
   }
 
+  if (outcome.status === 'empty' && changedAny) {
+    outcome.status = 'done'
+    outcome.note = (outcome.note || '') + ' (empty+改动→done)'
+  }
+
+  if (outcome.status !== 'done') {
+    const status = ['blocked', 'no_change', 'empty'].includes(outcome.status)
+      ? outcome.status
+      : 'executor_failed'
+    const summary = {
+      status,
+      id: task.id || outcome.taskId || undefined,
+      workdir,
+      cacheDir: runDir,
+      summary: outcome.note || `执行端 status=${outcome.status}`,
+      outcome,
+    }
+    finalize(summary, join(runDir, 'summary.json'))
+    return
+  }
+
+  if (!changedAny && !args.dryRun) {
+    const summary = {
+      status: 'no_change',
+      id: task.id || undefined,
+      workdir,
+      cacheDir: runDir,
+      summary: '执行端回报 done 但工作区无改动',
+      outcome,
+    }
+    finalize(summary, join(runDir, 'summary.json'))
+    return
+  }
+
+  // ---- 审查阶段：审查端直接改进（只改文件，不提交）----
+  const reviewerPrompt = renderTemplate(reviewerTpl, {
+    TASK_ID: task.id || task.title,
+    TASK_TITLE: task.title,
+    TASK_BODY: task.body,
+    TASK_REQUIREMENTS: task.requirements,
+    CHANGED_FILES: changedFiles.length ? changedFiles.join('\n') : '（执行端未报告改动文件）',
+  })
+  const reviewerPromptPath = join(runDir, 'reviewer.prompt.md')
+  const reviewerOut = join(runDir, 'reviewer.out.md')
+  const reviewerLog = join(runDir, 'reviewer.log')
+  writeFileSync(reviewerPromptPath, reviewerPrompt, 'utf8')
+
+  logMain(mainLogPath, `review: 审查端开始（改动文件 ${changedFiles.length} 个）`)
+  progress.setStage('reviewing')
+  progress.write('reviewer_start', {})
+  progress.write('context_start', { role: 'reviewer', file: reviewerLog }, 2)
+  await reviewerRunner.runTurn({
+    role: 'reviewer',
+    workdir,
+    prompt: reviewerPrompt,
+    promptFile: reviewerPromptPath,
+    outFile: reviewerOut,
+    logFile: reviewerLog,
+    schemaFile: reviewSchema,
+    sandbox: settings.sandbox === 'read-only' ? 'read-only' : settings.sandbox,
+    model: settings.reviewer.model,
+    provider: settings.reviewer.provider,
+    thinking: settings.reviewer.thinking,
+    dryRun: args.dryRun,
+  })
+
+  const reviewText = existsSync(reviewerOut) ? readFileSync(reviewerOut, 'utf8') : ''
+  let review = extractJson(reviewText)
+  if (!review || !review.status) {
+    review = { status: 'clean', note: reviewText.trim() || '审查输出缺失或无法解析' }
+  }
+  const afterReview = snapshot(workdir)
+  const reviewDiff = diff(afterExec, afterReview)
+  const reviewChanged = [...reviewDiff.changed, ...reviewDiff.added]
+  if (review.status !== 'refined' && reviewChanged.length > 0) {
+    review.status = 'refined'
+    review.note = (review.note || '') + ' (有改动但 status 缺失；按 refined 计)'
+  }
+  lastReview = review
+  progress.write('reviewer_end', { status: review.status, changed: reviewChanged.length })
+
   const summary = {
-    status: settled ? lastStatus : 'escalate',
+    status: 'approved',
     id: task.id || undefined,
-    round: lastRound,
-    baseSha: lastBaseSha || undefined,
     workdir,
     cacheDir: runDir,
-    summary: lastFindings || '达到轮次上限仍未通过',
-    review: lastReview || undefined,
+    summary: review.note || '已实现；审查通过',
+    changedFiles,
+    reviewChangedFiles: reviewChanged,
+    review,
+    outcome,
   }
   finalize(summary, join(runDir, 'summary.json'))
 }

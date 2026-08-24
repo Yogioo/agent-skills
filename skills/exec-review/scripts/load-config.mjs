@@ -170,13 +170,6 @@ export function resolveSettings(args, loaded) {
     firstNonEmpty(args.sandbox, process.env.EXEC_REVIEW_SANDBOX, cfg.sandbox) ||
     'workspace-write'
 
-  const maxRoundsRaw = firstNonEmpty(
-    args.maxRounds != null && args.maxRounds !== '' ? String(args.maxRounds) : '',
-    process.env.EXEC_REVIEW_MAX_ROUNDS,
-    cfg.maxRounds != null ? String(cfg.maxRounds) : '',
-  )
-  const maxRounds = Math.max(1, Number(maxRoundsRaw) || 3)
-
   const approve =
     args.approve === false
       ? false
@@ -223,7 +216,6 @@ export function resolveSettings(args, loaded) {
   return {
     configPath: loaded?.path || DEFAULT_CONFIG_PATH,
     sandbox,
-    maxRounds,
     approve,
     serve,
     port,

@@ -21,8 +21,6 @@ export const EVENT_LEVEL = {
   heartbeat: 0,
   settle: 0,
   run_start: 1,
-  round_start: 1,
-  revise: 1,
   executor_start: 2,
   executor_end: 2,
   reviewer_start: 2,

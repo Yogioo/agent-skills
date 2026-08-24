@@ -6,9 +6,8 @@
       "enum": ["done", "no_change", "blocked", "empty"]
     },
     "taskId": { "type": "string" },
-    "baseSha": { "type": "string" },
     "note": { "type": "string" }
   },
-  "required": ["status", "taskId", "baseSha", "note"],
+  "required": ["status", "taskId", "note"],
   "additionalProperties": false
 }

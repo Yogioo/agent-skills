@@ -4,6 +4,8 @@
  * 读取单条 progress.jsonl，经 SSE 推送给浏览器渲染成实时 HTML。
  * 与 run-task 解耦：无论 loop 由谁启动，用户都能单独打开 URL 观察进度。
  *
+ * 视图为单次「执行 → 审查」两阶段：执行端实现提交后，审查端直接改进提交。
+ *
  * 用法：
  *   node scripts/serve.mjs <runDir> [port]
  */
@@ -48,7 +50,6 @@ const HMTL = `
   }
   .status-badge.run     { color:var(--blue);  border-color:color-mix(in srgb,var(--blue) 45%,transparent);  background:color-mix(in srgb,var(--blue) 12%,transparent); }
   .status-badge.approve { color:var(--green); border-color:color-mix(in srgb,var(--green) 45%,transparent); background:color-mix(in srgb,var(--green) 12%,transparent); }
-  .status-badge.revise  { color:var(--amber); border-color:color-mix(in srgb,var(--amber) 45%,transparent); background:color-mix(in srgb,var(--amber) 12%,transparent); }
   .status-badge.error   { color:var(--red);   border-color:color-mix(in srgb,var(--red) 45%,transparent);   background:color-mix(in srgb,var(--red) 12%,transparent); }
 
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:20px; margin-top:18px; }
@@ -60,7 +61,6 @@ const HMTL = `
   .dot { width:11px; height:11px; border-radius:50%; background:var(--dim); flex:none; transition:background .3s; }
   .dot.alive { background:var(--green); box-shadow:0 0 0 0 color-mix(in srgb,var(--green) 55%,transparent); animation:pulse 2s infinite; }
   .dot.stall { background:var(--amber); box-shadow:0 0 0 0 color-mix(in srgb,var(--amber) 55%,transparent); animation:pulse 1s infinite; }
-  .dot.dead  { background:var(--red); }
   .dot.done  { background:var(--green); box-shadow:none; animation:none; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 50%,transparent);} 70%{box-shadow:0 0 0 9px transparent;} 100%{box-shadow:0 0 0 0 transparent;} }
   .stage { font-size:20px; font-weight:650; letter-spacing:-.01em; }
@@ -75,21 +75,20 @@ const HMTL = `
   .stat .k { color:var(--muted); font-size:12px; }
   .stat .v { font-family:var(--mono); font-size:15px; font-weight:600; }
 
-  .round { display:grid; grid-template-columns:64px 1fr auto; gap:14px; padding:14px 0; border-top:1px dashed var(--border); align-items:start; }
-  .round:first-of-type { border-top:none; }
-  .round-idx { font-family:var(--mono); color:var(--dim); font-weight:600; padding-top:2px; }
-  .round-body { min-width:0; }
-  .round-row { display:flex; gap:8px; align-items:center; font-size:13px; padding:3px 0; color:var(--muted); }
-  .round-row .lbl { color:var(--dim); width:44px; flex:none; }
-  .verdict { padding:2px 9px; border-radius:6px; font-size:11px; font-weight:700; letter-spacing:.05em; }
-  .verdict.APPROVE { color:var(--green); background:color-mix(in srgb,var(--green) 14%,transparent); }
-  .verdict.REVISE  { color:var(--amber); background:color-mix(in srgb,var(--amber) 14%,transparent); }
-  .findings { margin-top:8px; padding:10px 12px; background:var(--panel2); border:1px solid var(--border); border-radius:8px; font-size:12.5px; color:var(--muted); white-space:pre-wrap; word-break:break-word; }
+  .phase { display:grid; grid-template-columns:64px 1fr auto; gap:14px; padding:14px 0; border-top:1px dashed var(--border); align-items:start; }
+  .phase:first-of-type { border-top:none; }
+  .phase-idx { font-family:var(--mono); color:var(--dim); font-weight:600; padding-top:2px; }
+  .phase-body { min-width:0; }
+  .phase-row { display:flex; gap:8px; align-items:center; font-size:13px; padding:3px 0; color:var(--muted); }
+  .phase-row .lbl { color:var(--dim); width:44px; flex:none; }
+  .phase-status { padding:2px 9px; border-radius:6px; font-size:11px; font-weight:700; letter-spacing:.05em; }
+  .phase-status.refined { color:var(--green); background:color-mix(in srgb,var(--green) 14%,transparent); }
+  .phase-status.clean   { color:var(--dim);  background:color-mix(in srgb,var(--dim) 14%,transparent); }
 
   .log-console { background:#0a0d12; border:1px solid var(--border); border-radius:10px; padding:14px 16px; height:260px; overflow:auto; }
   .log-console pre { font-family:var(--mono); font-size:12px; line-height:1.7; color:#9db0c8; white-space:pre-wrap; word-break:break-word; }
   .log-console .stamp { color:var(--dim); }
-  .log-console .ev-approve { color:var(--green); } .log-console .ev-revise { color:var(--amber); }
+  .log-console .ev-approve { color:var(--green); }
   .log-console .ev-run,.log-console .ev-round { color:var(--blue); }
   .log-console .ev-error { color:var(--red); }
 
@@ -119,21 +118,21 @@ const HMTL = `
       </div>
       <div>
         <div class="bar-track"><div class="bar" id="bar"></div></div>
-        <div class="bar-caption" id="barCaption">0 / ?</div>
+        <div class="bar-caption" id="barCaption">0 / 2</div>
       </div>
     </div>
     <div class="hero-stats">
       <div class="stat"><span class="k">耗时</span><span class="v" id="elapsed">0s</span></div>
-      <div class="stat"><span class="k">轮次</span><span class="v" id="roundCount">0</span></div>
-      <div class="stat"><span class="k">本轮进行</span><span class="v" id="stageDur">0s</span></div>
+      <div class="stat"><span class="k">阶段</span><span class="v" id="phaseCount">0</span></div>
+      <div class="stat"><span class="k">本阶段进行</span><span class="v" id="stageDur">0s</span></div>
       <div class="stat"><span class="k">心跳</span><span class="v" id="heartbeatCount">0</span></div>
       <div class="stat"><span class="k">上次事件</span><span class="v" id="lastEvent">—</span></div>
     </div>
   </section>
 
   <section class="panel">
-    <h2>轮次时间线</h2>
-    <div id="rounds"><div class="empty">尚无轮次。</div></div>
+    <h2>阶段时间线</h2>
+    <div id="phases"><div class="empty">尚无阶段。</div></div>
   </section>
 
   <section class="panel split">
@@ -154,15 +153,16 @@ const HMTL = `
   const $ = (id) => document.getElementById(id);
   const events = [];
   const contextLines = []; let ctxDirty = false;
-  const meta = { rounds: {}, maxRounds: null, settled: false, status: '', lastT: Date.now(), started: Date.now(), heartbeats: 0, stageStart: Date.now() };
+  const MAX_PHASES = 2;
+  const meta = { phases: {}, settled: false, status: '', lastT: Date.now(), started: Date.now(), heartbeats: 0, stageStart: Date.now() };
 
   const STAGE_LABEL = {
     idle:'空闲', preparing:'准备中', executing:'执行中', reviewing:'审查中',
-    revising:'回炉中', settle_approved:'已结束 · 已通过', settle_revise:'已结束 · 已升级', settle_other:'已结束'
+    settle_approved:'已结束 · 已通过', settle_other:'已结束'
   };
   const STAGE_COLOR = {
     idle:'var(--dim)', preparing:'var(--blue)', executing:'var(--blue)', reviewing:'var(--purple)',
-    revising:'var(--amber)', settle_approved:'var(--green)', settle_revise:'var(--amber)', settle_other:'var(--red)'
+    settle_approved:'var(--green)', settle_other:'var(--red)'
   };
 
   function ts(t){ const d=new Date(t); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0'); }
@@ -173,8 +173,7 @@ const HMTL = `
       const e=events[i];
       if (e.event==='executor_start') return 'executing';
       if (e.event==='reviewer_start') return 'reviewing';
-      if (e.event==='revise') return 'revising';
-      if (e.event==='settle') return 'settle_'+(e.status==='approved'?'approved':e.status==='escalate'?'revise':'other');
+      if (e.event==='settle') return 'settle_'+(e.status==='approved'?'approved':'other');
     }
     return events.length? 'preparing':'idle';
   }
@@ -182,14 +181,12 @@ const HMTL = `
   function handleEvent(e){
     events.push(e); meta.lastT = e.t;
     if (e.event==='heartbeat'){ meta.heartbeats++; return; }
-    if (e.event==='round_start'||e.event==='executor_start'||e.event==='reviewer_start'||e.event==='revise'){ meta.stageStart=e.t; }
+    if (e.event==='executor_start'||e.event==='reviewer_start'){ meta.stageStart=e.t; }
     if (e.event==='context_start'){ contextLines.push({role:e.role, line:'── '+(e.role==='reviewer'?'审查端':'执行端')+' 上下文 ──', t:e.t, sep:true}); ctxDirty=true; }
-    if (e.event==='run_start'){ meta.maxRounds=e.maxRounds; meta.title=e.title; meta.workdir=e.workdir; meta.runner=e.runner; meta.id=e.id; }
-    if (e.event==='round_start'){ meta.rounds[e.round]=meta.rounds[e.round]||{}; meta.rounds[e.round].base=e.baseSha; }
-    if (e.event==='executor_end'){ (meta.rounds[e.round]=meta.rounds[e.round]||{}).executor={status:e.status,commits:e.commits}; }
-    if (e.event==='reviewer_end'){ (meta.rounds[e.round]=meta.rounds[e.round]||{}).reviewer={verdict:e.verdict}; }
-    if (e.event==='revise'){ (meta.rounds[e.round]=meta.rounds[e.round]||{}).findings=e.summary||e.findings||''; }
-    if (e.event==='settle'){ meta.settled=true; meta.status=e.status; meta.settleRound=e.round; }
+    if (e.event==='run_start'){ meta.title=e.title; meta.workdir=e.workdir; meta.runner=e.runner; meta.id=e.id; }
+    if (e.event==='executor_end'){ meta.phases.executor={status:e.status, changed:e.changed}; }
+    if (e.event==='reviewer_end'){ meta.phases.reviewer={status:e.status, changed:e.changed}; }
+    if (e.event==='settle'){ meta.settled=true; meta.status=e.status; }
   }
 
   function logLine(e){
@@ -197,13 +194,11 @@ const HMTL = `
     let cls='', txt='';
     switch(e.event){
       case 'run_start': cls='ev-run'; txt='运行开始 · '+ (e.title||e.id||'') + (e.runner?' · runner='+e.runner:''); break;
-      case 'round_start': cls='ev-round'; txt='第 '+e.round+' 轮开始 · base '+ (e.baseSha||'').slice(0,7); break;
-      case 'executor_start': txt='执行端启动（第 '+e.round+' 轮）'; break;
-      case 'executor_end': cls='ev-round'; txt='执行端完成 · status='+e.status+' · commits='+e.commits; break;
-      case 'reviewer_start': txt='审查端启动（第 '+e.round+' 轮）'; break;
-      case 'reviewer_end': cls=(e.verdict==='APPROVE'?'ev-approve':'ev-revise'); txt='审查结论 · '+e.verdict; break;
-      case 'revise': cls='ev-revise'; txt='回炉 · 需修改（第 '+e.round+' 轮）'; break;
-      case 'settle': cls=(e.status==='approved'?'ev-approve':e.status==='escalate'?'ev-revise':'ev-error'); txt='定案 · '+e.status; break;
+      case 'executor_start': txt='执行端启动'; break;
+      case 'executor_end': cls='ev-round'; txt='执行端完成 · status='+e.status+' · 改动文件='+e.changed; break;
+      case 'reviewer_start': txt='审查端启动'; break;
+      case 'reviewer_end': cls=(e.status==='refined'?'ev-approve':'ev-round'); txt='审查端完成 · '+e.status+' · 改动文件='+e.changed; break;
+      case 'settle': cls=(e.status==='approved'?'ev-approve':'ev-error'); txt='定案 · '+e.status; break;
       case 'heartbeat': return null;
       default: txt=e.event;
     }
@@ -216,16 +211,16 @@ const HMTL = `
     // status badge
     const sb=$('status');
     if (meta.settled){
-      sb.textContent = meta.status==='approved' ? '✓ 已通过' : meta.status==='escalate' ? '↗ 已升级' : meta.status;
-      sb.className='status-badge '+ (meta.status==='approved'?'approve':meta.status==='escalate'?'revise':'error');
+      sb.textContent = meta.status==='approved' ? '✓ 已通过' : meta.status;
+      sb.className='status-badge '+ (meta.status==='approved'?'approve':'error');
     } else {
       sb.textContent = STAGE_LABEL[stage] || stage;
-      sb.className='status-badge '+(stage==='reviewing'?'revise':stage==='executing'||stage==='preparing'?'run':'run');
+      sb.className='status-badge '+(stage==='executing'||stage==='preparing'?'run':'run');
     }
     // title/meta
     if (meta.title){ $('title').textContent=meta.title; $('meta').textContent=(meta.id?('id '+meta.id+' · '):'')+(meta.workdir||''); }
     // stage
-    $('stage').textContent = meta.settled ? (STAGE_LABEL['settle_'+ (meta.status==='approved'?'approved':meta.status==='escalate'?'revise':'other')]) : (STAGE_LABEL[stage]||stage);
+    $('stage').textContent = meta.settled ? (STAGE_LABEL['settle_'+ (meta.status==='approved'?'approved':'other')]) : (STAGE_LABEL[stage]||stage);
     $('stage').style.color = stColor;
     // dot
     const dot=$('dot');
@@ -237,14 +232,14 @@ const HMTL = `
       dot.style.color = stall?'var(--amber)':'var(--green)';
     }
     // bar
-    const rounds=Object.keys(meta.rounds).length;
-    const pct = meta.settled ? 100 : (meta.maxRounds ? Math.min(100, Math.round((rounds/meta.maxRounds)*100)) : 0);
+    const phasesDone = Object.keys(meta.phases).length;
+    const pct = meta.settled ? 100 : Math.min(100, Math.round((phasesDone/MAX_PHASES)*100));
     $('bar').style.width=pct+'%';
     $('barCaption').textContent = meta.settled
-      ? ('完成 · '+rounds+'/'+(meta.maxRounds||'?')+' 轮')
-      : (rounds+' / '+(meta.maxRounds||'?')+' 轮');
+      ? ('完成 · '+phasesDone+'/'+MAX_PHASES+' 阶段')
+      : (phasesDone+' / '+MAX_PHASES+' 阶段');
     // stats
-    $('roundCount').textContent=rounds;
+    $('phaseCount').textContent=phasesDone;
     $('elapsed').textContent = dur((meta.settled?meta.lastT:Date.now())-meta.started);
     $('stageDur').textContent = dur(Date.now() - (meta.stageStart||meta.started));
     $('heartbeatCount').textContent = meta.heartbeats;
@@ -252,22 +247,20 @@ const HMTL = `
     const le=$('lastEvent');
     le.textContent = meta.settled ? '已结束' : (lastAgo+'s 前');
     le.style.color = meta.settled?'var(--green)':(lastAgo>25?'var(--amber)':'var(--green)');
-    // rounds timeline
-    const rBox=$('rounds');
-    const rkeys=Object.keys(meta.rounds);
-    if (!rkeys.length){ rBox.innerHTML='<div class="empty">尚无轮次。</div>'; }
+    // phases timeline
+    const pBox=$('phases');
+    const keys=Object.keys(meta.phases);
+    if (!keys.length){ pBox.innerHTML='<div class="empty">尚无阶段。</div>'; }
     else {
-      rBox.innerHTML = rkeys.map((k)=>{
-        const r=meta.rounds[k]; const ex=r.executor||{}; const rv=r.reviewer||{};
-        const verdict = rv.verdict ? '<span class="verdict '+rv.verdict+'">'+rv.verdict+'</span>' : '<span class="verdict" style="color:var(--dim)">…</span>';
-        const findings = r.findings ? '<div class="findings">'+esc(r.findings)+'</div>' : '';
-        return '<div class="round"><div class="round-idx">R'+k+'</div>'+
-          '<div class="round-body">'+
-            '<div class="round-row"><span class="lbl">执行</span>'+(ex.status||'…')+(ex.commits!=null?(' · '+ex.commits+' commits'):'')+'</div>'+
-            '<div class="round-row"><span class="lbl">审查</span>'+verdict+'</div>'+
-            findings+
+      pBox.innerHTML = keys.map((k)=>{
+        const p=meta.phases[k];
+        const stt = p.status ? '<span class="phase-status '+(p.status==='refined'?'refined':'clean')+'">'+p.status+'</span>' : '<span class="phase-status">…</span>';
+        const changeInfo = (p.changed!=null && p.changed>0) ? (' · '+p.changed+' 文件改动') : '';
+        return '<div class="phase"><div class="phase-idx">'+k+'</div>'+
+          '<div class="phase-body">'+
+            '<div class="phase-row"><span class="lbl">结果</span>'+stt+changeInfo+'</div>'+
           '</div>'+
-          '<div class="round-idx">'+(r.base?r.base.slice(0,7):'')+'</div>'+
+          '<div class="phase-idx">'+(k==='executor'?'执行':'审查')+'</div>'+
         '</div>';
       }).join('');
     }

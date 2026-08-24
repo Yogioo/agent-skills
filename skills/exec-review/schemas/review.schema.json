@@ -1,20 +1,12 @@
 {
   "type": "object",
   "properties": {
-    "verdict": {
+    "status": {
       "type": "string",
-      "enum": ["APPROVE", "REVISE"]
+      "enum": ["clean", "refined"]
     },
-    "verdictSpec": {
-      "type": "string",
-      "enum": ["APPROVE", "REVISE"]
-    },
-    "verdictStandards": {
-      "type": "string",
-      "enum": ["APPROVE", "REVISE"]
-    },
-    "findings": { "type": "string" }
+    "note": { "type": "string" }
   },
-  "required": ["verdict", "verdictSpec", "verdictStandards", "findings"],
+  "required": ["status", "note"],
   "additionalProperties": false
 }
