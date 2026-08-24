@@ -213,6 +213,11 @@ export function resolveSettings(args, loaded) {
     ) || 10000,
   )
 
+  const openBrowser =
+    args.open === false
+      ? false
+      : asBool(process.env.EXEC_REVIEW_OPEN_BROWSER, cfg.openBrowser !== false)
+
   return {
     configPath: loaded?.path || DEFAULT_CONFIG_PATH,
     sandbox,
@@ -221,6 +226,7 @@ export function resolveSettings(args, loaded) {
     port,
     returnLevel,
     heartbeatMs,
+    openBrowser,
     executor,
     reviewer,
   }

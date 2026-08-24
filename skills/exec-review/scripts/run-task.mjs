@@ -77,6 +77,7 @@ function parseArgs(argv) {
     reviewerThinking: '',
     approve: null,
     serve: null,
+    open: null,
     port: 0,
     returnLevel: 0,
     heartbeatMs: 0,
@@ -181,6 +182,9 @@ function parseArgs(argv) {
       case '--no-serve':
         out.serve = false
         break
+      case '--no-open':
+        out.open = false
+        break
       case '--port':
         out.port = Math.max(0, Number(next()) || 0)
         break
@@ -244,7 +248,31 @@ function hashStr(s) {
 }
 
 /** 启动独立实时进度服务；返回 URL（进程 detached，与 loop 解耦）。 */
-function startServe(runDir, port) {
+function openUrl(url) {
+  // 跨平台打开默认浏览器；失败时静默（URL 仍会打印，用户可手动打开）
+  const { platform } = process
+  let cmd
+  let args
+  if (platform === 'win32') {
+    cmd = 'cmd'
+    args = ['/c', 'start', '', url]
+  } else if (platform === 'darwin') {
+    cmd = 'open'
+    args = [url]
+  } else {
+    cmd = 'xdg-open'
+    args = [url]
+  }
+  try {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true })
+    child.on('error', () => {})
+    child.unref()
+  } catch {
+    // 忽略：URL 已打印，手动打开即可
+  }
+}
+
+function startServe(runDir, port, open = true) {
   const serverPath = join(__dirname, 'serve.mjs')
   const child = spawn(process.execPath, [serverPath, runDir, String(port)], {
     detached: true,
@@ -254,6 +282,10 @@ function startServe(runDir, port) {
   child.unref()
   const url = `http://127.0.0.1:${port}/`
   console.error(`\nexec-review 实时进度（可随时打开）: ${url}\n`)
+  if (open) {
+    // 稍等 serve 完成监听再打开，避免浏览器打到 404
+    setTimeout(() => openUrl(url), 600)
+  }
   return url
 }
 
@@ -456,7 +488,7 @@ async function main() {
   const progress = new ProgressWriter(runDir, { heartbeatMs: settings.heartbeatMs })
   progress.setStage('preparing')
   const derivedPort = settings.port || 8000 + (hashStr(workdir) % 4000)
-  const serveUrl = settings.serve ? startServe(runDir, derivedPort) : ''
+  const serveUrl = settings.serve ? startServe(runDir, derivedPort, settings.openBrowser) : ''
   const returnLevel = settings.returnLevel
   const runCtx = { serveUrl, progressFile: progress.path, returnLevel }
 
