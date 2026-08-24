@@ -49,9 +49,22 @@ node …/run-task.mjs --workdir <仓库> --id 可选标签 --title "…" --body 
 
 常用可选参数：`--config`、`--runner` / `--executor-runner` / `--reviewer-runner`、`--model` / `--thinking`（及角色级变体）、`--bin`、`--provider`（pi）、`--cache-dir`、`--sandbox`、`--dry-run`。`--codex-bin` 仍兼容。
 
+进度相关：`--no-serve` / `--port` / `--return-level` / `--heartbeat-ms`。
+
 优先级：**CLI > 环境变量 > config.json > 内置**。`model` / `thinking` 留空则不传，使用各 CLI 默认。
 
 Shell 等待时间设长（常见数分钟到十余分钟）。同一仓库工作区同一时间只跑一个本脚本。
+
+## 实时进度（用户可视化）
+
+loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度页：进度条、当前阶段、轮次时间线、存活心跳、实时日志。URL 在 stderr 打印，也在摘要 `serveUrl` 字段里。跑起来就能开，不用等结束；长任务期间无需干等。
+
+- `--no-serve` 关掉；`--port` 指定端口（默认按 workdir 派生）
+- 事件流落在 `<runDir>/progress.jsonl`（单条 append-only，带 `level`）
+
+## 渐进式披露（给调用方 Agent）
+
+给上层/后续 agent 的摘要保持**极简**：默认只回 `serveUrl` + `progressFile` 两个指针，不塞冗余事件。需要细节时按需拉取：`--return-level <0-3>` 会把 `level <= N` 的事件作为 `progress` 附进摘要，或直接读 `progressFile`。
 
 ## 读结果
 
@@ -65,14 +78,18 @@ Shell 等待时间设长（常见数分钟到十余分钟）。同一仓库工�
 | `blocked` / `no_change` / `empty` | 记录原因；`blocked` 考虑升级问人 |
 | `executor_failed` / `error` | 先看 `cacheDir`，查清再开下一次 |
 
+摘要 JSON 固定含 `serveUrl` + `progressFile` 指针（渐进式披露，不塞冗余）。
+
 ## 多次任务
 
 需要一张接一张跑时：由上层准备任务文件、串行调用本脚本、读摘要并决定是否问人。复用面就是本脚本的输入格式 + 摘要 JSON（不必改核心循环）。
 
 ## 目录
 
-- `config.json` — 默认 runner / 模型 / 思考等级（exec、review 可分开）
+- `config.json` — 默认 runner / 模型 / 思考等级（exec、review 可分开）+ serve / returnLevel / heartbeatMs
 - `scripts/run-task.mjs` — 入口
+- `scripts/progress.mjs` — 单条进度事件流（level + 心跳）
+- `scripts/serve.mjs` — 独立实时进度服务（SSE → HTML）
 - `scripts/runners/` — `codex` / `pi` adapters
 - `prompts/executor.md`、`prompts/reviewer.md`
 - `schemas/outcome.schema.json`、`schemas/review.schema.json`

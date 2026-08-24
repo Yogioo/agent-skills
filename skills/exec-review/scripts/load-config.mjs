@@ -57,6 +57,14 @@ function firstNonEmpty(...vals) {
   return ''
 }
 
+function asBool(v, def) {
+  if (v == null) return def
+  const s = String(v).toLowerCase()
+  if (s === '0' || s === 'false' || s === 'no' || s === 'off') return false
+  if (s === '1' || s === 'true' || s === 'yes' || s === 'on') return true
+  return def
+}
+
 function assertRunner(name, label) {
   const key = String(name || '').toLowerCase()
   if (!RUNNERS.includes(key)) {
@@ -176,11 +184,51 @@ export function resolveSettings(args, loaded) {
         ? false
         : true
 
+  const serve =
+    args.serve === false ? false : asBool(process.env.EXEC_REVIEW_SERVE, cfg.serve !== false)
+
+  const port = Math.max(
+    0,
+    Number(
+      firstNonEmpty(
+        args.port != null && args.port !== '' ? String(args.port) : '',
+        process.env.EXEC_REVIEW_PORT,
+        cfg.port != null ? String(cfg.port) : '',
+      ),
+    ) || 0,
+  )
+
+  const returnLevel = Math.max(
+    0,
+    Number(
+      firstNonEmpty(
+        args.returnLevel != null && args.returnLevel !== '' ? String(args.returnLevel) : '',
+        process.env.EXEC_REVIEW_RETURN_LEVEL,
+        cfg.returnLevel != null ? String(cfg.returnLevel) : '',
+      ),
+    ) || 0,
+  )
+
+  const heartbeatMs = Math.max(
+    1000,
+    Number(
+      firstNonEmpty(
+        args.heartbeatMs != null && args.heartbeatMs !== '' ? String(args.heartbeatMs) : '',
+        process.env.EXEC_REVIEW_HEARTBEAT_MS,
+        cfg.heartbeatMs != null ? String(cfg.heartbeatMs) : '',
+      ),
+    ) || 10000,
+  )
+
   return {
     configPath: loaded?.path || DEFAULT_CONFIG_PATH,
     sandbox,
     maxRounds,
     approve,
+    serve,
+    port,
+    returnLevel,
+    heartbeatMs,
     executor,
     reviewer,
   }

@@ -17,6 +17,10 @@
   "sandbox": "workspace-write",
   "maxRounds": 3,
   "approve": true,
+  "serve": true,
+  "port": 0,
+  "returnLevel": 0,
+  "heartbeatMs": 10000,
   "executor": {
     "runner": "codex",
     "bin": "",
@@ -43,6 +47,10 @@
 | `provider` | 仅 pi：`--provider`；空 = 不传 |
 | `thinking` | 思考等级；**空 = 不传**。pi → `--thinking`；codex → `-c model_reasoning_effort=…` |
 | `sandbox` / `maxRounds` / `approve` | 全局默认（仍可被 CLI 覆盖） |
+| `serve` | 是否启动独立实时进度服务（默认 `true`） |
+| `port` | 进度服务端口；`0` = 由 workdir 自动派生（避免多工作区冲突） |
+| `returnLevel` | 摘要里附带进度投影的深度；`0` = 不附带（极简） |
+| `heartbeatMs` | 存活心跳间隔（毫秒） |
 
 `thinking` 常见取值（视模型而定）：`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
 
@@ -75,3 +83,19 @@
 - `--model` / `--executor-model` / `--reviewer-model`
 - `--thinking` / `--executor-thinking` / `--reviewer-thinking`
 - `--provider` / `--executor-provider` / `--reviewer-provider`
+
+## 实时可视化（`serve`）
+
+loop 运行时会启动一个**独立进程**（`scripts/serve.mjs`），把单条进度事件流 `progress.jsonl` 经 SSE 推给浏览器，渲染成**实时进度页**（进度条、阶段、轮次时间线、存活心跳、实时日志）。
+
+- 启动时在 stderr 打印 URL（也可从摘要 JSON 的 `serveUrl` 取）
+- `--no-serve`：不启动；`--port <端口>`：指定端口（默认按 workdir 派生）
+- `--heartbeat-ms <ms>`：心跳间隔
+
+## 渐进式披露（给调用方 Agent）
+
+所有观测者订阅**同一根** `progress.jsonl` 事件流，差异只在订阅深度。事件带 `level`（0=settle/heartbeat、1=轮次里程碑、2=单步转换）。
+
+- 默认摘要**只回指针**：`serveUrl` + `progressFile`，不塞冗余事件 → 目标上下文保持极简
+- `--return-level <0-3>`：把 `level <= N` 的事件作为 `progress` 数组附进摘要（按需拉取，不默认推送）
+- 需要更细时，直接读 `progressFile`（`scripts/progress.mjs` 的 `loadEvents`）

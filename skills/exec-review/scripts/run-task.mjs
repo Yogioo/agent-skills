@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { createRunner } from './runners/index.mjs'
 import { loadConfigFile, resolveSettings } from './load-config.mjs'
+import { ProgressWriter } from './progress.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = resolve(__dirname, '..')
@@ -35,6 +36,7 @@ function usage(code = 1) {
     [--executor-model …] [--reviewer-model …] [--executor-thinking …] [--reviewer-thinking …]
     [--sandbox workspace-write|danger-full-access|read-only]
     [--no-approve] [--dry-run]
+    [--no-serve] [--port <端口>] [--return-level <0-3>] [--heartbeat-ms <ms>]
     [--codex-bin <路径>]  (兼容旧参数)
 
 默认来自技能根 config.json（默认 runner=codex）。优先级：CLI > 环境变量 > config.json > 内置。`
@@ -72,6 +74,10 @@ function parseArgs(argv) {
     executorThinking: '',
     reviewerThinking: '',
     approve: null,
+    serve: null,
+    port: 0,
+    returnLevel: 0,
+    heartbeatMs: 0,
     dryRun: false,
   }
   for (let i = 0; i < argv.length; i++) {
@@ -173,6 +179,18 @@ function parseArgs(argv) {
       case '--no-approve':
         out.approve = false
         break
+      case '--no-serve':
+        out.serve = false
+        break
+      case '--port':
+        out.port = Math.max(0, Number(next()) || 0)
+        break
+      case '--return-level':
+        out.returnLevel = Math.max(0, Number(next()) || 0)
+        break
+      case '--heartbeat-ms':
+        out.heartbeatMs = Math.max(1000, Number(next()) || 10000)
+        break
       case '--dry-run':
         out.dryRun = true
         break
@@ -216,6 +234,28 @@ function uniqueDir(parent, prefix) {
     name = `${prefix}-${i}`
   }
   return name
+}
+
+function hashStr(s) {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) >>> 0
+  }
+  return h
+}
+
+/** 启动独立实时进度服务；返回 URL（进程 detached，与 loop 解耦）。 */
+function startServe(runDir, port) {
+  const serverPath = join(__dirname, 'serve.mjs')
+  const child = spawn(process.execPath, [serverPath, runDir, String(port)], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  child.unref()
+  const url = `http://127.0.0.1:${port}/`
+  console.error(`\nexec-review 实时进度（可随时打开）: ${url}\n`)
+  return url
 }
 
 function readStdin() {
@@ -362,8 +402,15 @@ async function countCommits(workdir, baseSha) {
   }
 }
 
-function emitSummary(summary, summaryPath) {
-  const text = JSON.stringify(summary, null, 2)
+function emitSummary(summary, summaryPath, runCtx = {}) {
+  const merged = { ...summary }
+  // 渐进式披露：默认只回指针；仅在 returnLevel>0 时追加过滤后的进度投影
+  if (runCtx.serveUrl) merged.serveUrl = runCtx.serveUrl
+  if (runCtx.progressFile) merged.progressFile = runCtx.progressFile
+  if (runCtx.returnLevel > 0 && Array.isArray(runCtx.events)) {
+    merged.progress = runCtx.events.filter((e) => e.level <= runCtx.returnLevel)
+  }
+  const text = JSON.stringify(merged, null, 2)
   writeFileSync(summaryPath, text + '\n', 'utf8')
   process.stdout.write(text + '\n')
 }
@@ -437,6 +484,10 @@ async function main() {
         sandbox: settings.sandbox,
         maxRounds: settings.maxRounds,
         approve: settings.approve,
+        serve: settings.serve,
+        port: settings.port,
+        returnLevel: settings.returnLevel,
+        heartbeatMs: settings.heartbeatMs,
         executor: settings.executor,
         reviewer: settings.reviewer,
       },
@@ -445,6 +496,34 @@ async function main() {
     ) + '\n',
     'utf8',
   )
+
+  // 单条进度事件流 + 独立实时查看进程（单一事实来源，所有观测者订阅同一根流）
+  const progress = new ProgressWriter(runDir, { heartbeatMs: settings.heartbeatMs })
+  progress.setStage('preparing')
+  const derivedPort = settings.port || 8000 + (hashStr(workdir) % 4000)
+  const serveUrl = settings.serve ? startServe(runDir, derivedPort) : ''
+  const returnLevel = settings.returnLevel
+  const runCtx = { serveUrl, progressFile: progress.path, returnLevel }
+
+  progress.write('run_start', {
+    id: task.id || '',
+    title: task.title,
+    workdir,
+    runner: settings.executor.runner,
+    maxRounds: settings.maxRounds,
+    heartbeatMs: settings.heartbeatMs,
+    serveUrl,
+  })
+  progress.startHeartbeat()
+
+  /** 收尾：写 settle 事件 → 停止心跳 → 发射摘要（含指针/可选进度投影）→ 关闭流 */
+  function finalize(summary, summaryPath) {
+    progress.stopHeartbeat()
+    progress.write('settle', { status: summary.status, round: summary.round ?? lastRound, summary: summary.summary || '' }, 0)
+    emitSummary(summary, summaryPath, { ...runCtx, events: progress.all })
+    progress.end()
+    logMain(mainLogPath, `end ${summary.status}`)
+  }
 
   const taskSnap = [
     `# ${task.title}`,
@@ -490,7 +569,7 @@ async function main() {
     try {
       baseSha = await runGit(workdir, ['rev-parse', 'HEAD'])
     } catch (err) {
-      emitSummary(
+      finalize(
         {
           status: 'error',
           id: task.id || undefined,
@@ -522,6 +601,10 @@ async function main() {
     writeFileSync(executorPromptPath, executorPrompt, 'utf8')
 
     logMain(mainLogPath, `round ${round}: executor baseSha=${baseSha}`)
+    progress.setStage('executing')
+    progress.write('round_start', { round, baseSha })
+    progress.write('executor_start', { round })
+    progress.write('context_start', { role: 'executor', file: executorLog }, 2)
     const execRun = await executorRunner.runTurn({
       role: 'executor',
       workdir,
@@ -540,6 +623,7 @@ async function main() {
     const execText = existsSync(executorOut) ? readFileSync(executorOut, 'utf8') : ''
     let outcome = normalizeOutcome(extractJson(execText))
     const commits = await countCommits(workdir, baseSha)
+    progress.write('executor_end', { round, code: execRun.code, status: outcome?.status, commits })
 
     if (!outcome) {
       if (commits > 0) {
@@ -562,8 +646,7 @@ async function main() {
           cacheDir: runDir,
           summary: `执行端 exit=${execRun.code}；无法解析 outcome 且无提交`,
         }
-        emitSummary(summary, join(loopDir, 'summary.json'))
-        logMain(mainLogPath, `end ${summary.status}`)
+        finalize(summary, join(loopDir, 'summary.json'))
         return
       }
     }
@@ -591,8 +674,7 @@ async function main() {
         summary: outcome.note || `执行端 status=${outcome.status}`,
         outcome,
       }
-      emitSummary(summary, join(loopDir, 'summary.json'))
-      logMain(mainLogPath, `end ${summary.status}`)
+      finalize(summary, join(loopDir, 'summary.json'))
       return
     }
 
@@ -609,8 +691,7 @@ async function main() {
         summary: '执行端回报 done 但没有新提交',
         outcome,
       }
-      emitSummary(summary, join(loopDir, 'summary.json'))
-      logMain(mainLogPath, `end ${summary.status}`)
+      finalize(summary, join(loopDir, 'summary.json'))
       return
     }
 
@@ -627,6 +708,9 @@ async function main() {
     writeFileSync(reviewerPromptPath, reviewerPrompt, 'utf8')
 
     logMain(mainLogPath, `round ${round}: reviewer range ${baseSha}..HEAD`)
+    progress.setStage('reviewing')
+    progress.write('reviewer_start', { round })
+    progress.write('context_start', { role: 'reviewer', file: reviewerLog }, 2)
     await reviewerRunner.runTurn({
       role: 'reviewer',
       workdir,
@@ -652,6 +736,7 @@ async function main() {
       }
     }
     lastReview = review
+    progress.write('reviewer_end', { round, verdict: String(review.verdict).toUpperCase(), verdictSpec: review.verdictSpec, verdictStandards: review.verdictStandards })
 
     if (String(review.verdict).toUpperCase() === 'APPROVE') {
       lastStatus = 'approved'
@@ -667,12 +752,13 @@ async function main() {
         review,
         outcome,
       }
-      emitSummary(summary, join(loopDir, 'summary.json'))
-      logMain(mainLogPath, `end approved`)
+      finalize(summary, join(loopDir, 'summary.json'))
       return
     }
 
     lastFindings = review.findings || '审查要求修改（无细节）'
+    progress.setStage('revising')
+    progress.write('revise', { round, summary: lastFindings.slice(0, 200) })
     logMain(mainLogPath, `round ${round}: REVISE — 回炉`)
   }
 
@@ -686,8 +772,7 @@ async function main() {
     summary: lastFindings || '达到轮次上限仍未通过',
     review: lastReview || undefined,
   }
-  emitSummary(summary, join(runDir, 'summary.json'))
-  logMain(mainLogPath, `end ${summary.status}`)
+  finalize(summary, join(runDir, 'summary.json'))
 }
 
 main().catch((err) => {

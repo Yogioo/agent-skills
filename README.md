@@ -47,4 +47,4 @@ Then commit/push as usual. Other machines still use `npx skills add/update` (ins
 
 | Skill | Description |
 |-------|-------------|
-| [exec-review](./skills/exec-review/SKILL.md) | Run an execute → review loop for one task via Codex; rework until approved or escalate |
+| [exec-review](./skills/exec-review/SKILL.md) | Run an execute → review loop for one task via Codex with a live progress view; rework until approved or escalate |
