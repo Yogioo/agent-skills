@@ -19,6 +19,8 @@ description: AFK（无人值守）任务执行循环。从任务源（默认 bea
 node <技能根>/scripts/loop.mjs --workdir <目录>
 node <技能根>/scripts/loop.mjs --workdir <目录> --max-tasks 5 --retry 0
 node <技能根>/scripts/loop.mjs --workdir <目录> --timeout 600 --runner pi
+
+`--workdir` 必传（由调用方/Agent 按当前任务目录传入，技能不配置固定目录）。
 ```
 
 常用参数：`--source beads`、`--max-tasks N`、`--max-failures N`、`--retry N`、`--stop-file <路径>`、`--allow-dirty`、`--dry-run`。透传 exec-review：`--timeout`、`--runner`、`--executor-runner`、`--reviewer-runner`、`--executor-model`、`--reviewer-model`、`--executor-thinking`、`--reviewer-thinking`。

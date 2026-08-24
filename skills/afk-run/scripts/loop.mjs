@@ -306,7 +306,8 @@ function usage(code = 1) {
     [--executor-thinking <…>] [--reviewer-thinking <…>]
     [--hard-timeout-extra <秒>]
 
-默认来自技能根 config.json。优先级：CLI > env > config > 内置。`
+--workdir 必传（由调用方/Agent 传入）；其余默认来自技能根 config.json。
+优先级：CLI > env > config > 内置。`
   console.error(text)
   process.exit(code)
 }
@@ -422,13 +423,11 @@ function parseArgs(argv) {
 function loadConfig(path) {
   const defaults = {
     source: 'beads',
-    workdir: '',
     maxTasks: 0,
     maxFailures: 3,
     retry: 1,
     allowDirty: false,
     stopFile: '',
-    gitIdentity: { name: 'AFK Bot', email: 'afk@local' },
     execReview: {
       timeout: 600,
       runner: '',
@@ -452,7 +451,6 @@ function loadConfig(path) {
     }
   }
   const cfg = { ...defaults, ...data }
-  cfg.gitIdentity = { ...defaults.gitIdentity, ...(data.gitIdentity || {}) }
   cfg.execReview = { ...defaults.execReview, ...(data.execReview || {}) }
   return { cfg, path: file }
 }
@@ -522,8 +520,12 @@ function main() {
   const args = parseArgs(process.argv.slice(2))
   const { cfg } = loadConfig(args.configPath)
 
-  const workdir = resolve(args.workdir || cfg.workdir || '')
-  if (!workdir || !existsSync(workdir)) {
+  if (!args.workdir) {
+    console.error('workdir 必传：--workdir <目录>（由调用方/Agent 传入，不支持配置默认）')
+    process.exit(2)
+  }
+  const workdir = resolve(args.workdir)
+  if (!existsSync(workdir)) {
     console.error(`workdir 不存在: ${workdir}`)
     process.exit(2)
   }
@@ -531,8 +533,8 @@ function main() {
   const sourceName = args.source || cfg.source || 'beads'
   const stopFile = resolve(args.stopFile || cfg.stopFile || join(workdir, DEFAULT_STOP_FILE))
   const gitIdentity = {
-    name: args.gitName || cfg.gitIdentity.name,
-    email: args.gitEmail || cfg.gitIdentity.email,
+    name: args.gitName,
+    email: args.gitEmail,
   }
   const execCfg = {
     timeout: args.timeout || cfg.execReview.timeout || 0,
