@@ -23,7 +23,7 @@ node <技能根>/scripts/loop.mjs --workdir <目录> --timeout 600 --runner pi
 `--workdir` 必传（由调用方/Agent 按当前任务目录传入，技能不配置固定目录）。
 ```
 
-常用参数：`--source beads|gh`、`--repo owner/name`（gh 可选，默认从 workdir 的 git remote 推断）、`--max-tasks N`、`--max-failures N`、`--retry N`、`--stop-file <路径>`、`--allow-dirty`、`--dry-run`。透传 exec-review：`--timeout`、`--runner`、`--executor-runner`、`--reviewer-runner`、`--executor-model`、`--reviewer-model`、`--executor-thinking`、`--reviewer-thinking`。
+常用参数：`--source beads|gh`、`--repo owner/name`（gh 可选，默认从 workdir 的 git remote 推断）、`--max-tasks N`、`--max-failures N`、`--retry N`、`--stop-file <路径>`、`--allow-dirty`、`--dry-run`、`--no-serve`。透传 exec-review：`--timeout`、`--runner`、`--executor-runner`、`--reviewer-runner`、`--executor-model`、`--reviewer-model`、`--executor-thinking`、`--reviewer-thinking`。
 
 优先级：**CLI > env > config.json > 内置**。详见 [references/config.md](references/config.md)。
 
@@ -36,14 +36,15 @@ node <技能根>/scripts/loop.mjs --workdir <目录> --timeout 600 --runner pi
 
 ## 输出
 
-- stdout：极简摘要 JSON（`reason/attempted/done/failed/runDir/reportFile/progressFile`）
+- stdout：极简摘要 JSON（`reason/attempted/done/failed/runDir/reportFile/progressFile/serveUrl`）
 - `<runDir>/report.md`：完成/失败表格 + 停止原因
-- `<runDir>/loop-progress.jsonl`：每任务一行审计
+- `<runDir>/loop-progress.jsonl`：loop 开始、队列、任务开始/结束、结束事件的审计流
 - 默认 runDir：`%TEMP%/afk-run/run-<时间戳>`（`--cache-dir` 可改）
 
 ## 无人值守要点
 
 - 停止开关：在 `--stop-file`（默认 workdir 下 `afk-stop`）放一个文件，下一轮循环即停
+- 运行中可打开 stdout 摘要里的 `serveUrl` 查看只读看板；默认开启，`--no-serve` 可关闭。每个 exec-review 子任务仍固定关闭自己的 serve。
 - 失败任务自动回滚，工作区保持干净基线；commitAll 排除停止文件本身
 - 中断重启：`in_progress` 工单会被 beads 的 ready 检测排除（不重复执行），保守跳过
 - 超时：exec-review 层 `--timeout` 为主；loop 层兜底 = timeout + `hardTimeoutExtra`（默认 120s）

@@ -36,6 +36,7 @@ const RUN_TASK_PATH = resolve(
   'scripts',
   'run-task.mjs',
 )
+const LOOP_SERVE_PATH = resolve(__dirname, 'loop-serve.mjs')
 const DEFAULT_STOP_FILE = 'afk-stop'
 
 // ---------- 状态机 ----------
@@ -122,7 +123,7 @@ function extractJson(text) {
  */
 export function createExecReview(workdir, execCfg = {}, onLog = () => {}) {
   return {
-    async run(taskFile) {
+    async run(taskFile, runOptions = {}) {
       const args = [
         RUN_TASK_PATH,
         '--workdir',
@@ -145,6 +146,7 @@ export function createExecReview(workdir, execCfg = {}, onLog = () => {}) {
       push('--reviewer-model', execCfg.reviewerModel)
       push('--executor-thinking', execCfg.executorThinking)
       push('--reviewer-thinking', execCfg.reviewerThinking)
+      push('--progress-file', runOptions.progressFile)
 
       const baseTimeout = Number(execCfg.timeout) || 0
       const extra = Number(execCfg.hardTimeoutExtra) || 120
@@ -196,7 +198,7 @@ export function createExecReview(workdir, execCfg = {}, onLog = () => {}) {
  * @param {object} deps.source  task source adapter（listReady/getDetail/markInProgress/markDone/markFailed/describeBlocked）
  * @param {object} deps.execReview  { run(taskFile) → outcome }
  * @param {object} deps.git     { head(), commitAll(task), resetHard(headRef) } workdir 已在闭包绑定
- * @param {object} [deps.hooks] { onTask(record), taskDir }
+ * @param {object} [deps.hooks] { onQueue(tasks), onTaskStart(task), onTask(record), taskDir, progressFile(task, attempt) }
  * @returns {Promise<{ reason: string, stats: object, tasks: object[] }>}
  */
 export async function runLoop(deps) {
@@ -228,6 +230,8 @@ export async function runLoop(deps) {
       return finish(blocked.length > 0 ? `stuck: ${blocked.length} 个工单未就绪` : 'all-done')
     }
 
+    if (hooks.onQueue) hooks.onQueue(ready)
+
     const task = ready[0]
     await source.markInProgress(task.id)
     const detail = await source.getDetail(task.id)
@@ -238,9 +242,19 @@ export async function runLoop(deps) {
     // 每任务尝试循环：attempt = 0 .. retry
     let result = null
     for (let attempt = 0; attempt <= config.retry; attempt++) {
+      const progressFile = hooks.progressFile ? hooks.progressFile(task, attempt + 1) : undefined
+      if (hooks.onTaskStart) {
+        hooks.onTaskStart({
+          id: task.id,
+          title: task.title,
+          priority: task.priority,
+          attempt: attempt + 1,
+          progressFile,
+        })
+      }
       let outcome
       try {
-        outcome = await execReview.run(taskFile)
+        outcome = await execReview.run(taskFile, { progressFile })
       } catch (err) {
         outcome = { status: 'executor_failed', summary: `exec-review 异常: ${err.message}` }
       }
@@ -301,6 +315,7 @@ function usage(code = 1) {
     [--stop-file <路径>] [--allow-dirty]
     [--git-name <名>] [--git-email <邮箱>]
     [--config <config.json>] [--cache-dir <目录>] [--dry-run]
+    [--no-serve] [--no-open] [--port <端口>]
     透传 exec-review: [--timeout <秒>] [--runner <codex|pi>]
     [--executor-runner <…>] [--reviewer-runner <…>]
     [--executor-model <…>] [--reviewer-model <…>]
@@ -337,6 +352,9 @@ function parseArgs(argv) {
     executorThinking: '',
     reviewerThinking: '',
     hardTimeoutExtra: 0,
+    serve: null,
+    open: null,
+    port: 0,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -417,6 +435,15 @@ function parseArgs(argv) {
       case '--hard-timeout-extra':
         out.hardTimeoutExtra = Math.max(0, Number(next()) || 0)
         break
+      case '--no-serve':
+        out.serve = false
+        break
+      case '--no-open':
+        out.open = false
+        break
+      case '--port':
+        out.port = Math.max(0, Number(next()) || 0)
+        break
       default:
         console.error(`未知参数: ${a}`)
         usage()
@@ -433,6 +460,11 @@ function loadConfig(path) {
     retry: 1,
     allowDirty: false,
     stopFile: '',
+    serve: {
+      enabled: true,
+      port: 0,
+      open: false,
+    },
     execReview: {
       timeout: 600,
       runner: '',
@@ -456,6 +488,7 @@ function loadConfig(path) {
     }
   }
   const cfg = { ...defaults, ...data }
+  cfg.serve = { ...defaults.serve, ...(data.serve || {}) }
   cfg.execReview = { ...defaults.execReview, ...(data.execReview || {}) }
   return { cfg, path: file }
 }
@@ -481,6 +514,42 @@ function uniqueDir(parent, prefix) {
     name = `${prefix}-${i}`
   }
   return name
+}
+
+function hashStr(s) {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+  return h
+}
+
+function openUrl(url) {
+  const { platform } = process
+  const [cmd, args] =
+    platform === 'win32'
+      ? ['cmd', ['/c', 'start', '', url]]
+      : platform === 'darwin'
+        ? ['open', [url]]
+        : ['xdg-open', [url]]
+  try {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true })
+    child.on('error', () => {})
+    child.unref()
+  } catch {
+    // URL 会包含在摘要中，浏览器打开失败时仍可手动访问。
+  }
+}
+
+function startLoopServe(runDir, port, open) {
+  const child = spawn(process.execPath, [LOOP_SERVE_PATH, runDir, String(port)], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  child.unref()
+  const url = `http://127.0.0.1:${port}/`
+  console.error(`\nafk-run 实时看板（可随时打开）: ${url}\n`)
+  if (open) setTimeout(() => openUrl(url), 600)
+  return url
 }
 
 function writeReport(runDir, result, startedAt, workdir) {
@@ -553,6 +622,9 @@ function main() {
     hardTimeoutExtra: args.hardTimeoutExtra || cfg.execReview.hardTimeoutExtra || 120,
   }
   const allowDirty = args.allowDirty || cfg.allowDirty || false
+  const serveEnabled = args.serve ?? cfg.serve.enabled
+  const servePort = args.port || cfg.serve.port || 8700 + (hashStr(workdir) % 1000)
+  const serveOpen = args.open ?? cfg.serve.open
 
   const cacheRoot = resolve(args.cacheDir || join(tmpdir(), 'afk-run'))
   const runDir = join(cacheRoot, uniqueDir(cacheRoot, `run-${localTimestamp()}`))
@@ -569,9 +641,16 @@ function main() {
     ...(args.repo ? { repo: args.repo } : {}),
   })
   const execReview = createExecReview(workdir, execCfg)
+  const loopProgressFile = join(runDir, 'loop-progress.jsonl')
+  const emitLoopEvent = (event, data = {}) =>
+    appendFileSync(loopProgressFile, JSON.stringify({ t: Date.now(), event, ...data }) + '\n', 'utf8')
+  const serveUrl = serveEnabled ? `http://127.0.0.1:${servePort}/` : ''
   const hooks = {
     taskDir: runDir,
-    onTask: (record) => appendFileSync(join(runDir, 'loop-progress.jsonl'), JSON.stringify(record) + '\n', 'utf8'),
+    progressFile: (task, attempt) => join(runDir, `task-${String(task.id).replace(/[^a-zA-Z0-9._-]/g, '_')}-${attempt}.progress.jsonl`),
+    onQueue: (tasks) => emitLoopEvent('queue_update', { tasks }),
+    onTaskStart: (task) => emitLoopEvent('task_start', task),
+    onTask: (record) => emitLoopEvent('task_end', record),
   }
   const config = {
     stopFile,
@@ -582,7 +661,7 @@ function main() {
 
   // 启动校验：强制 git + 干净工作区（dry-run 跳过实际执行，但保证可验证装配）
   if (args.dryRun) {
-    process.stdout.write(JSON.stringify({ dryRun: true, workdir, source: sourceName, stopFile, runDir, execCfg }, null, 2) + '\n')
+    process.stdout.write(JSON.stringify({ dryRun: true, workdir, source: sourceName, stopFile, runDir, execCfg, serveUrl }, null, 2) + '\n')
     return
   }
   gitModule.ensureGit(workdir, gitIdentity)
@@ -594,9 +673,21 @@ function main() {
   }
 
   const startedAt = new Date()
+  emitLoopEvent('loop_start', {
+    workdir,
+    runDir,
+    source: sourceName,
+    stopFile,
+    maxTasks: config.maxTasks,
+    maxFailures: config.maxFailures,
+    retry: config.retry,
+    serveUrl,
+  })
+  if (serveEnabled) startLoopServe(runDir, servePort, serveOpen)
   runLoop({ config, source, execReview, git, hooks })
     .then((result) => {
       const reportFile = writeReport(runDir, result, startedAt, workdir)
+      emitLoopEvent('loop_end', { reason: result.reason, reportFile })
       const summary = {
         reason: result.reason,
         attempted: result.stats.attempted,
@@ -604,7 +695,8 @@ function main() {
         failed: result.stats.failed,
         runDir,
         reportFile,
-        progressFile: join(runDir, 'loop-progress.jsonl'),
+        progressFile: loopProgressFile,
+        serveUrl,
       }
       process.stdout.write(JSON.stringify(summary, null, 2) + '\n')
     })

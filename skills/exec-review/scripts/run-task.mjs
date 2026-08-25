@@ -41,6 +41,7 @@ function usage(code = 1) {
     [--git-commit <true|false>]
     [--no-approve] [--dry-run]
     [--no-serve] [--port <端口>] [--return-level <0-3>] [--heartbeat-ms <ms>]
+    [--progress-file <路径>]
     [--timeout <秒>]
     [--codex-bin <路径>]  (兼容旧参数)
 
@@ -84,6 +85,7 @@ function parseArgs(argv) {
     port: 0,
     returnLevel: 0,
     heartbeatMs: 0,
+    progressFile: '',
     timeout: 0,
     dryRun: false,
   }
@@ -200,6 +202,9 @@ function parseArgs(argv) {
         break
       case '--heartbeat-ms':
         out.heartbeatMs = Math.max(1000, Number(next()) || 10000)
+        break
+      case '--progress-file':
+        out.progressFile = next()
         break
       case '--timeout':
         out.timeout = Math.max(0, Number(next()) || 0)
@@ -521,7 +526,10 @@ async function main() {
   )
 
   // 单条进度事件流 + 独立实时查看进程（单一事实来源，所有观测者订阅同一根流）
-  const progress = new ProgressWriter(runDir, { heartbeatMs: settings.heartbeatMs })
+  const progress = new ProgressWriter(runDir, {
+    heartbeatMs: settings.heartbeatMs,
+    progressFile: args.progressFile,
+  })
   progress.setStage('preparing')
   const derivedPort = settings.port || 8000 + (hashStr(workdir) % 4000)
   const serveUrl = settings.serve ? startServe(runDir, derivedPort, settings.openBrowser) : ''

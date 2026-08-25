@@ -13,8 +13,8 @@
  * 每条记录：{ t, level, event, ...data }
  */
 
-import { createWriteStream, existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { createWriteStream, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 
 /** event -> 最小披露深度（未列出默认取 data.level） */
 export const EVENT_LEVEL = {
@@ -30,12 +30,17 @@ export const EVENT_LEVEL = {
 export class ProgressWriter {
   /**
    * @param {string} runDir
-   * @param {{ heartbeatMs?: number }} [opts]
+   * @param {{ heartbeatMs?: number, progressFile?: string }} [opts]
    */
   constructor(runDir, opts = {}) {
     this.path = join(runDir, 'progress.jsonl')
     this.heartbeatMs = opts.heartbeatMs || 10000
     this.stream = createWriteStream(this.path, { flags: 'a' })
+    this.mirrorStream = null
+    if (opts.progressFile && resolve(opts.progressFile) !== resolve(this.path)) {
+      mkdirSync(dirname(opts.progressFile), { recursive: true })
+      this.mirrorStream = createWriteStream(opts.progressFile, { flags: 'a' })
+    }
     this.all = []
     this.stage = 'idle'
     this.stageSince = Date.now()
@@ -60,6 +65,7 @@ export class ProgressWriter {
     }
     this.all.push(rec)
     this.stream.write(JSON.stringify(rec) + '\n')
+    if (this.mirrorStream) this.mirrorStream.write(JSON.stringify(rec) + '\n')
     return rec
   }
 
@@ -86,10 +92,11 @@ export class ProgressWriter {
   }
 
   end() {
-    if (this.closed) return
+    if (this.closed) return Promise.resolve()
     this.stopHeartbeat()
     this.closed = true
-    this.stream.end()
+    const streams = [this.stream, this.mirrorStream].filter(Boolean)
+    return Promise.all(streams.map((stream) => new Promise((resolvePromise) => stream.end(resolvePromise))))
   }
 }
 

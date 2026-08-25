@@ -9,9 +9,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { decide, runLoop, writeTaskMd } from '../../skills/afk-run/scripts/loop.mjs'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const LOOP = join(__dirname, '..', '..', 'skills', 'afk-run', 'scripts', 'loop.mjs')
 
 // ---------- 状态机纯函数 ----------
 
@@ -278,4 +283,53 @@ test('runLoop: hooks.onTask 每任务写审计记录', async () => {
   assert.equal(records[0].id, 't1')
   assert.equal(records[0].kind, 'done')
   rmSync(dir, { recursive: true, force: true })
+})
+
+test('runLoop: 看板 hooks 接收就绪队列、任务开始和最终结果', async () => {
+  const t1 = { id: 't1', title: 'T1', priority: 1 }
+  const queues = []
+  const starts = []
+  const ends = []
+  const { source, execReview, git } = makeFakes({
+    source: { listReady: queue([[t1], []]) },
+    execReview: { run: async (_file, options) => ({ status: 'approved', summary: options.progressFile }) },
+  })
+  const dir = tmpDir()
+  await runLoop({
+    config: baseConfig,
+    source,
+    execReview,
+    git,
+    hooks: {
+      taskDir: dir,
+      progressFile: (task, attempt) => join(dir, `${task.id}-${attempt}.progress.jsonl`),
+      onQueue: (tasks) => queues.push(tasks),
+      onTaskStart: (task) => starts.push(task),
+      onTask: (record) => ends.push(record),
+    },
+  })
+  assert.equal(queues[0][0].id, 't1')
+  assert.deepEqual(starts[0], {
+    id: 't1',
+    title: 'T1',
+    priority: 1,
+    attempt: 1,
+    progressFile: join(dir, 't1-1.progress.jsonl'),
+  })
+  assert.equal(ends[0].kind, 'done')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('CLI: --no-serve 不输出 loop 看板 URL', () => {
+  const dir = tmpDir()
+  try {
+    const stdout = execFileSync(process.execPath, [LOOP, '--workdir', dir, '--dry-run', '--no-serve'], {
+      cwd: dir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    assert.equal(JSON.parse(stdout).serveUrl, '')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

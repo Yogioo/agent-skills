@@ -50,7 +50,7 @@ node …/run-task.mjs --workdir <目录> --id 可选标签 --title "…" --body 
 
 常用可选参数：`--config`、`--runner` / `--executor-runner` / `--reviewer-runner`、`--model` / `--thinking`（及角色级变体）、`--bin`、`--provider`（pi）、`--git-commit <true|false>`、`--cache-dir`、`--sandbox`、`--dry-run`、`--no-open`。`--codex-bin` 仍兼容。
 
-进度相关：`--no-serve` / `--port` / `--return-level` / `--heartbeat-ms`。
+进度相关：`--no-serve` / `--port` / `--return-level` / `--heartbeat-ms` / `--progress-file`（额外镜像一份进度流，不替换自身 `progress.jsonl`）。
 
 优先级：**CLI > 环境变量 > config.json > 内置**。`model` / `thinking` 留空则不传，使用各 CLI 默认。
 

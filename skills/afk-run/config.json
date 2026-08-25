@@ -5,6 +5,11 @@
   "retry": 1,
   "allowDirty": false,
   "stopFile": "",
+  "serve": {
+    "enabled": true,
+    "port": 0,
+    "open": false
+  },
   "execReview": {
     "timeout": 7200,
     "runner": "",
