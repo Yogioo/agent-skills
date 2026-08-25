@@ -9,7 +9,7 @@ description: AFK（无人值守）任务执行循环。从任务源（默认 bea
 
 ## 完成标准 / 前置
 
-- `node` 可用；`bd`（beads）已装且 workdir 能发现 `.beads` 库
+- `node` 可用；使用 `--source beads` 时还需安装 `bd`（beads）且 workdir 能发现 `.beads` 库
 - exec-review 技能在其兄弟目录（`../exec-review`）存在
 - 目标 workdir 为 git 仓库（非 git 会自动 `git init`）；启动时要求工作区干净
 
@@ -23,7 +23,7 @@ node <技能根>/scripts/loop.mjs --workdir <目录> --timeout 600 --runner pi
 `--workdir` 必传（由调用方/Agent 按当前任务目录传入，技能不配置固定目录）。
 ```
 
-常用参数：`--source beads`、`--max-tasks N`、`--max-failures N`、`--retry N`、`--stop-file <路径>`、`--allow-dirty`、`--dry-run`。透传 exec-review：`--timeout`、`--runner`、`--executor-runner`、`--reviewer-runner`、`--executor-model`、`--reviewer-model`、`--executor-thinking`、`--reviewer-thinking`。
+常用参数：`--source beads|gh`、`--repo owner/name`（gh 可选，默认从 workdir 的 git remote 推断）、`--max-tasks N`、`--max-failures N`、`--retry N`、`--stop-file <路径>`、`--allow-dirty`、`--dry-run`。透传 exec-review：`--timeout`、`--runner`、`--executor-runner`、`--reviewer-runner`、`--executor-model`、`--reviewer-model`、`--executor-thinking`、`--reviewer-thinking`。
 
 优先级：**CLI > env > config.json > 内置**。详见 [references/config.md](references/config.md)。
 

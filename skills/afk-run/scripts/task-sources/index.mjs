@@ -10,17 +10,21 @@
  */
 
 import { createBeadsSource } from './beads.mjs'
+import { createGhSource } from './gh.mjs'
 
-export const SOURCES = ['beads']
+export const SOURCES = ['beads', 'gh']
 
 export function createSource(name, opts = {}) {
   const key = String(name || 'beads').toLowerCase()
   switch (key) {
     case 'beads':
       return createBeadsSource(opts)
+    case 'gh':
+      return createGhSource(opts)
     default:
       throw new Error(`未知任务源: ${name}（支持: ${SOURCES.join(', ')}）`)
   }
 }
 
 export { createBeadsSource }
+export { createGhSource }

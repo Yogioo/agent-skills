@@ -296,7 +296,7 @@ export async function runLoop(deps) {
 
 function usage(code = 1) {
   const text = `用法:
-  node loop.mjs --workdir <目录> [--source beads]
+  node loop.mjs --workdir <目录> [--source beads|gh] [--repo owner/name]
     [--max-tasks <N>] [--max-failures <N>] [--retry <N>]
     [--stop-file <路径>] [--allow-dirty]
     [--git-name <名>] [--git-email <邮箱>]
@@ -317,6 +317,7 @@ function parseArgs(argv) {
   const out = {
     workdir: '',
     source: '',
+    repo: '',
     maxTasks: 0,
     maxFailures: 0,
     retry: 0,
@@ -355,6 +356,9 @@ function parseArgs(argv) {
         break
       case '--source':
         out.source = String(next()).toLowerCase()
+        break
+      case '--repo':
+        out.repo = next()
         break
       case '--max-tasks':
         out.maxTasks = Math.max(0, Number(next()) || 0)
@@ -560,7 +564,10 @@ function main() {
     commitAll: (task) => gitModule.commitAll(workdir, task, DEFAULT_STOP_FILE),
     resetHard: (headRef) => gitModule.resetHard(workdir, headRef, DEFAULT_STOP_FILE),
   }
-  const source = createSource(sourceName, { cwd: workdir })
+  const source = createSource(sourceName, {
+    cwd: workdir,
+    ...(args.repo ? { repo: args.repo } : {}),
+  })
   const execReview = createExecReview(workdir, execCfg)
   const hooks = {
     taskDir: runDir,

@@ -13,11 +13,12 @@ afk-run 通过 adapter 消费任务源。**怎么写工单才能被正确消费*
 - **重试失败任务**：去掉 `afk-failed` label 即可被重新拉取。
 - **注意**：beads 的 AI 集成（AGENTS.md/钩子）可能让执行端自己 close 工单——loop 仍按自身判定流转，以 exec-review 结果为准。
 
-## GitHub Issues（规划中，P3）
+## GitHub Issues（`--source gh`）
 
-- **优先级**：约定标签 `P0`~`P4`（映射 0-4；无标签默认 P2）。
-- **依赖**：issue body 里的 task list：`- [ ] #123` = 被 #123 阻塞（未完成），`- [x] #123` = 已完成。ready = body 中所有引用都已勾选/对应 issue 已 close。仅同仓库引用。
-- **状态流转**：in-progress 标签 / close + comment / afk-failed 标签 + comment。
+- **仓库**：`node .../loop.mjs --workdir <目录> --source gh --repo owner/name`；省略 `--repo` 时从 workdir 的 `remote.origin.url` 推断。GitHub Enterprise remote 使用 `HOST/OWNER/REPO` 形式传给 gh。
+- **优先级**：标签 `P0`~`P4` 映射为 0-4；无标签默认 P2。多个 P 标签取数值较小者；ready 按优先级升序、issue number 升序返回。
+- **依赖**：issue body 中每行写一个 task list 项，例如 `- [ ] #123` 表示被 #123 阻塞，`- [x] #123` 表示已完成。ready = 所有引用已勾选，或引用 issue 不在 open issue 集合中（已关闭/不存在视为满足）；只识别同仓库 `#N` 引用，`owner/repo#N` 不参与本期依赖判断。
+- **状态流转**：开始用 `gh issue edit <N> --add-label in-progress`；完成用 `gh issue close <N> --comment "afk: <status> — <摘要>"`；失败用 `gh issue comment <N> --body "afk failed: <原因>"` 再加 `afk-failed` 标签。`afk-failed` 和 `in-progress` issue 不会再次进入 ready。
 
 ## 通用语义
 
