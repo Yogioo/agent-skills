@@ -6,7 +6,8 @@
  *   markInProgress(id)   → 认领（防重入）
  *   markDone(id, result) → result: {status, summary, commit?}
  *   markFailed(id, note)
- *   describeBlocked()    → [{id, title}] 未就绪的未完成工单（stuck 报告用）
+ *   recoverStale?(thresholdSec, now = Date.now) → string[] 仅 beads 实现的启动期 stale 恢复
+ *   describeBlocked()    → { blocked: [{id, title}], inProgress: [{id, title}] }
  */
 
 import { createBeadsSource } from './beads.mjs'

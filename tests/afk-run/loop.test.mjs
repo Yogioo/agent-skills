@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { decide, runLoop, writeTaskMd } from '../../skills/afk-run/scripts/loop.mjs'
+import { decide, recoverAndRunLoop, runLoop, writeTaskMd } from '../../skills/afk-run/scripts/loop.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LOOP = join(__dirname, '..', '..', 'skills', 'afk-run', 'scripts', 'loop.mjs')
@@ -76,6 +76,111 @@ function tmpDir() {
 
 const baseConfig = { stopFile: '', maxTasks: 0, maxFailures: 0, retry: 0 }
 
+test('recoverAndRunLoop: 启动时只恢复一次，且先于第一次 listReady', async () => {
+  const events = []
+  const { source, execReview, git } = makeFakes({
+    source: {
+      recoverStale: async (thresholdSec, now) => {
+        events.push({ event: 'recover', thresholdSec, now: now() })
+      },
+      listReady: async () => {
+        events.push({ event: 'listReady' })
+        return []
+      },
+    },
+  })
+  const dir = tmpDir()
+  const r = await recoverAndRunLoop({
+    config: { ...baseConfig, staleThresholdSec: 900 },
+    source,
+    execReview,
+    git,
+    hooks: { taskDir: dir },
+    beforeRun: async () => events.push({ event: 'beforeRun' }),
+  }, () => 123456789)
+  assert.equal(r.reason, 'all-done')
+  assert.deepEqual(events, [
+    { event: 'recover', thresholdSec: 900, now: 123456789 },
+    { event: 'beforeRun' },
+    { event: 'listReady' },
+  ])
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('recoverAndRunLoop: stale recovery 错误启动期直接抛出，不拉取任务', async () => {
+  let listCalled = false
+  const { source, execReview, git } = makeFakes({
+    source: {
+      recoverStale: async () => {
+        throw new Error('bd 挂了')
+      },
+      listReady: async () => {
+        listCalled = true
+        return []
+      },
+    },
+  })
+  const dir = tmpDir()
+  await assert.rejects(
+    recoverAndRunLoop({
+      config: { ...baseConfig, staleThresholdSec: 1 },
+      source,
+      execReview,
+      git,
+      hooks: { taskDir: dir },
+    }),
+    /bd 挂了/,
+  )
+  assert.equal(listCalled, false)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('recoverAndRunLoop: staleThresholdSec=0 时不调用恢复', async () => {
+  let recoveryCalled = false
+  const { source, execReview, git } = makeFakes({
+    source: {
+      recoverStale: async () => {
+        recoveryCalled = true
+      },
+    },
+  })
+  const dir = tmpDir()
+  await recoverAndRunLoop({
+    config: { ...baseConfig, staleThresholdSec: 0 },
+    source,
+    execReview,
+    git,
+    hooks: { taskDir: dir },
+  })
+  assert.equal(recoveryCalled, false)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('recoverAndRunLoop: 恢复后的工单会在首轮 listReady 被执行', async () => {
+  const task = { id: 'stale-1', title: '已恢复', priority: 1 }
+  let recovered = false
+  let listCalls = 0
+  const { source, execReview, git, calls } = makeFakes({
+    source: {
+      recoverStale: async () => {
+        recovered = true
+      },
+      listReady: async () => (recovered && listCalls++ === 0 ? [task] : []),
+    },
+  })
+  const dir = tmpDir()
+  const r = await recoverAndRunLoop({
+    config: { ...baseConfig, staleThresholdSec: 1 },
+    source,
+    execReview,
+    git,
+    hooks: { taskDir: dir },
+  })
+  assert.deepEqual(r.stats, { attempted: 1, done: 1, failed: 0 })
+  assert.deepEqual(calls.inProgress, ['stale-1'])
+  rmSync(dir, { recursive: true, force: true })
+})
+
 test('runLoop: 全部完成 → all-done（不执行任何任务）', async () => {
   const { source, execReview, git, calls } = makeFakes()
   const dir = tmpDir()
@@ -94,7 +199,7 @@ test('runLoop: 全部完成 → all-done（不执行任何任务）', async () =
 
 test('runLoop: 就绪空但有未完成工单 → stuck', async () => {
   const { source, execReview, git } = makeFakes({
-    source: { describeBlocked: async () => [{ id: 'b1', title: '被阻塞' }] },
+    source: { describeBlocked: async () => ({ blocked: [{ id: 'b1', title: '被阻塞' }], inProgress: [] }) },
   })
   const dir = tmpDir()
   const r = await runLoop({ config: baseConfig, source, execReview, git, hooks: { taskDir: dir } })
@@ -285,6 +390,16 @@ test('runLoop: hooks.onTask 每任务写审计记录', async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
+test('runLoop: 仅有进行中工单时不报告为 stuck', async () => {
+  const { source, execReview, git } = makeFakes({
+    source: { describeBlocked: async () => ({ blocked: [], inProgress: [{ id: 'p1', title: '进行中' }] }) },
+  })
+  const dir = tmpDir()
+  const r = await runLoop({ config: baseConfig, source, execReview, git, hooks: { taskDir: dir } })
+  assert.equal(r.reason, 'in-progress: 1 个工单进行中')
+  rmSync(dir, { recursive: true, force: true })
+})
+
 test('runLoop: 看板 hooks 接收就绪队列、任务开始和最终结果', async () => {
   const t1 = { id: 't1', title: 'T1', priority: 1 }
   const queues = []
@@ -329,6 +444,41 @@ test('CLI: --no-serve 不输出 loop 看板 URL', () => {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     assert.equal(JSON.parse(stdout).serveUrl, '')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CLI: staleThresholdSec 可由 config 覆盖，缺省时按有效超时动态计算', () => {
+  const dir = tmpDir()
+  const configFile = join(dir, 'config.json')
+  try {
+    writeFileSync(configFile, JSON.stringify({
+      execReview: { timeout: 5, hardTimeoutExtra: 3 },
+      staleThresholdSec: 0,
+    }))
+    const disabled = JSON.parse(execFileSync(process.execPath, [
+      LOOP,
+      '--workdir',
+      dir,
+      '--dry-run',
+      '--no-serve',
+      '--config',
+      configFile,
+    ], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
+    assert.equal(disabled.staleThresholdSec, 0)
+
+    writeFileSync(configFile, JSON.stringify({ execReview: { timeout: 5, hardTimeoutExtra: 3 } }))
+    const defaulted = JSON.parse(execFileSync(process.execPath, [
+      LOOP,
+      '--workdir',
+      dir,
+      '--dry-run',
+      '--no-serve',
+      '--config',
+      configFile,
+    ], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
+    assert.equal(defaulted.staleThresholdSec, 16)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

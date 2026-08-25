@@ -14,6 +14,7 @@
 | `retry` | `1` | 每任务失败重试次数（最多执行 1+retry 次） |
 | `allowDirty` | `false` | 启动时工作区有未提交改动时放行（默认拒绝） |
 | `stopFile` | `''` | 停止文件路径；空 = 默认 `workdir/afk-stop` |
+| `staleThresholdSec` | `2 × (execReview.timeout + execReview.hardTimeoutExtra)` | 启动时回收 `updated_at` 超过此秒数的 beads `in_progress` 工单；`0` = 关闭自动恢复 |
 | `serve.enabled` | `true` | 是否启动 loop 级只读实时看板；CLI `--no-serve` 可关闭 |
 | `serve.port` | `0` | 看板端口；0 = 按 workdir 派生端口 |
 | `serve.open` | `false` | 启动后是否自动打开浏览器；CLI `--no-open` 可关闭 |
@@ -28,4 +29,5 @@
 - **no_change 算失败**：执行端回报"无改动"会走失败分支（重试→放弃），不会假装完成。
 - **失败任务打 `afk-failed` label**（beads）：listReady 不再拉取；人工去掉 label 可重试。
 - **超时语义**：主超时在 exec-review 层（AbortController 杀进程树）；loop 层兜底只防 exec-review 自身挂死。
+- **中断重启**：启动仅一次检查 stale；beads 使用 `updated_at`（而非首次 claim 后不刷新的 `started_at`），重置为 open 并写审计 comment。GitHub source 本期不回收。
 - **实时看板**：URL 会写入 stdout 摘要的 `serveUrl`；看板仅读取 append-only 事件流，不提供停止按钮。停止仍通过 `stopFile` 完成。

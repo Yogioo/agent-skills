@@ -32,7 +32,7 @@ node <技能根>/scripts/loop.mjs --workdir <目录> --timeout 600 --runner pi
 - **任务选择**：`bd ready`（无未完成前置阻塞的工单）→ `priority` 升序 + `id` 升序
 - **每任务**：markInProgress → 生成 task.md → 调 exec-review（`--git-commit false`，循环负责提交）→ 状态机
 - **状态机**：`approved/done` → 循环提交（`afk: <id> <title>`）+ markDone；`no_change`（按失败）`/blocked/executor_failed/timeout/review_timeout/empty` → 回滚（`reset --hard` 到任务前 HEAD）→ 重试（≤ retry 次）→ 放弃 + markFailed
-- **终止条件**：all-done / stuck（就绪空但有未完成工单）/ max-tasks / 连续失败熔断（max-failures）/ 停止文件存在
+- **终止条件**：all-done / stuck（存在依赖阻塞）/ in-progress（只有进行中工单）/ max-tasks / 连续失败熔断（max-failures）/ 停止文件存在
 
 ## 输出
 
@@ -46,5 +46,5 @@ node <技能根>/scripts/loop.mjs --workdir <目录> --timeout 600 --runner pi
 - 停止开关：在 `--stop-file`（默认 workdir 下 `afk-stop`）放一个文件，下一轮循环即停
 - 运行中可打开 stdout 摘要里的 `serveUrl` 查看只读看板；默认开启，`--no-serve` 可关闭。每个 exec-review 子任务仍固定关闭自己的 serve。
 - 失败任务自动回滚，工作区保持干净基线；commitAll 排除停止文件本身
-- 中断重启：`in_progress` 工单会被 beads 的 ready 检测排除（不重复执行），保守跳过
+- 中断重启：启动时一次性回收 `updated_at` 超过 `staleThresholdSec` 的 beads `in_progress` 工单，重置 open 并写审计 comment；默认阈值为 `2 × (timeout + hardTimeoutExtra)`，设为 `0` 可关闭
 - 超时：exec-review 层 `--timeout` 为主；loop 层兜底 = timeout + `hardTimeoutExtra`（默认 120s）

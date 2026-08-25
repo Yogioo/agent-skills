@@ -125,10 +125,10 @@ test('gh source lists ready issues, reuses detail, and writes lifecycle commands
         body: '- [x] #4',
         requirements: '',
       })
-       assert.deepEqual(await source.describeBlocked(), [
-         { id: '3', title: 'blocked' },
-         { id: '7', title: 'claimed' },
-       ])
+      assert.deepEqual(await source.describeBlocked(), {
+        blocked: [{ id: '3', title: 'blocked' }],
+        inProgress: [{ id: '7', title: 'claimed' }],
+      })
 
       await source.markInProgress('2')
       await source.markDone('2', { status: 'approved', summary: 'implemented' })

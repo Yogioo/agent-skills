@@ -3,7 +3,7 @@
  * AFK 循环：确定性轨道。
  *
  * 结构：
- *   runLoop(deps) —— 可注入主循环（唯一测试 seam；source/execReview/git 全 fake 可测）
+ *   recoverAndRunLoop(deps) —— 启动期 stale 恢复 + 可注入主循环
  *   decide(outcome) —— 状态机纯函数
  *   main() —— 参数解析 + 装配真实依赖（子进程 exec-review / beads adapter / git）
  *
@@ -221,13 +221,25 @@ export async function runLoop(deps) {
     }
 
     if (ready.length === 0) {
-      let blocked = []
+      let blockedState = { blocked: [], inProgress: [] }
       try {
-        blocked = await source.describeBlocked()
+        const described = await source.describeBlocked()
+        blockedState = Array.isArray(described)
+          ? { blocked: described, inProgress: [] }
+          : {
+              blocked: Array.isArray(described?.blocked) ? described.blocked : [],
+              inProgress: Array.isArray(described?.inProgress) ? described.inProgress : [],
+            }
       } catch {
-        blocked = []
+        blockedState = { blocked: [], inProgress: [] }
       }
-      return finish(blocked.length > 0 ? `stuck: ${blocked.length} 个工单未就绪` : 'all-done')
+      if (blockedState.blocked.length > 0) {
+        return finish(`stuck: ${blockedState.blocked.length} 个工单未就绪`)
+      }
+      if (blockedState.inProgress.length > 0) {
+        return finish(`in-progress: ${blockedState.inProgress.length} 个工单进行中`)
+      }
+      return finish('all-done')
     }
 
     if (hooks.onQueue) hooks.onQueue(ready)
@@ -516,6 +528,16 @@ function uniqueDir(parent, prefix) {
   return name
 }
 
+/** 在首次 listReady 前执行一次可选 stale 恢复；错误保留为启动失败。 */
+export async function recoverAndRunLoop(deps, now = Date.now) {
+  const thresholdSec = Number(deps.config?.staleThresholdSec)
+  if (Number.isFinite(thresholdSec) && thresholdSec > 0 && typeof deps.source.recoverStale === 'function') {
+    await deps.source.recoverStale(thresholdSec, now)
+  }
+  if (typeof deps.beforeRun === 'function') await deps.beforeRun()
+  return runLoop(deps)
+}
+
 function hashStr(s) {
   let h = 0
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
@@ -585,6 +607,9 @@ function writeReport(runDir, result, startedAt, workdir) {
       '',
     )
   }
+  if (result.reason.startsWith('in-progress')) {
+    lines.push('## 进行中', '', '没有可拉取的就绪工单；已有工单仍在进行中。', '')
+  }
   const reportFile = join(runDir, 'report.md')
   writeFileSync(reportFile, lines.join('\n'), 'utf8')
   return reportFile
@@ -621,6 +646,10 @@ function main() {
     reviewerThinking: args.reviewerThinking || cfg.execReview.reviewerThinking,
     hardTimeoutExtra: args.hardTimeoutExtra || cfg.execReview.hardTimeoutExtra || 120,
   }
+  const configuredStaleThreshold = Number(cfg.staleThresholdSec)
+  const staleThresholdSec = Number.isFinite(configuredStaleThreshold)
+    ? Math.max(0, configuredStaleThreshold)
+    : 2 * (Number(execCfg.timeout) + Number(execCfg.hardTimeoutExtra))
   const allowDirty = args.allowDirty || cfg.allowDirty || false
   const serveEnabled = args.serve ?? cfg.serve.enabled
   const servePort = args.port || cfg.serve.port || 8700 + (hashStr(workdir) % 1000)
@@ -657,11 +686,12 @@ function main() {
     maxTasks: args.maxTasks || cfg.maxTasks || 0,
     maxFailures: args.maxFailures || cfg.maxFailures || 0,
     retry: args.retry || cfg.retry || 0,
+    staleThresholdSec,
   }
 
   // 启动校验：强制 git + 干净工作区（dry-run 跳过实际执行，但保证可验证装配）
   if (args.dryRun) {
-    process.stdout.write(JSON.stringify({ dryRun: true, workdir, source: sourceName, stopFile, runDir, execCfg, serveUrl }, null, 2) + '\n')
+    process.stdout.write(JSON.stringify({ dryRun: true, workdir, source: sourceName, stopFile, staleThresholdSec, runDir, execCfg, serveUrl }, null, 2) + '\n')
     return
   }
   gitModule.ensureGit(workdir, gitIdentity)
@@ -683,8 +713,16 @@ function main() {
     retry: config.retry,
     serveUrl,
   })
-  if (serveEnabled) startLoopServe(runDir, servePort, serveOpen)
-  runLoop({ config, source, execReview, git, hooks })
+  recoverAndRunLoop({
+    config,
+    source,
+    execReview,
+    git,
+    hooks,
+    beforeRun: () => {
+      if (serveEnabled) startLoopServe(runDir, servePort, serveOpen)
+    },
+  })
     .then((result) => {
       const reportFile = writeReport(runDir, result, startedAt, workdir)
       emitLoopEvent('loop_end', { reason: result.reason, reportFile })

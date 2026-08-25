@@ -267,13 +267,15 @@ export function createGhSource(opts = {}) {
     describeBlocked() {
       const issues = getSnapshot()
       const readyIds = new Set(readyIssues(issues).map((issue) => issue.id))
-      return issues
-        .filter(
-          (issue) =>
-            !readyIds.has(issue.id) &&
-            !hasLabel(issue, 'afk-failed'),
-        )
-        .map((issue) => ({ id: issue.id, title: issue.title }))
+      const active = issues.filter((issue) => !hasLabel(issue, 'afk-failed'))
+      return {
+        blocked: active
+          .filter((issue) => !hasLabel(issue, 'in-progress') && !readyIds.has(issue.id))
+          .map((issue) => ({ id: issue.id, title: issue.title })),
+        inProgress: active
+          .filter((issue) => hasLabel(issue, 'in-progress'))
+          .map((issue) => ({ id: issue.id, title: issue.title })),
+      }
     },
   }
 }

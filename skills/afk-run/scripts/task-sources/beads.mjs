@@ -6,7 +6,8 @@
  *   —— 原生就绪检测（无 open blocker 的工单）；**不排除 afk-failed**，需自行过滤。
  * - `bd show --json`：**非法 JSON**（description 内换行未转义）→ 弃用。
  * - `bd list --id <id> --json`：合法 JSON，含 description/labels/priority/title —— getDetail 用这个。
- * - `bd update <id> --claim`：置 in_progress，且 in_progress 工单不再出现在 bd ready（中断重启天然保守跳过）。
+ * - `bd update <id> --claim`：置 in_progress，且 in_progress 工单不再出现在 bd ready。
+ * - stale 判定使用 `updated_at`，因为 `started_at` 只记录首次进入 in_progress 的时间。
  * - Windows 上 npm 全局 `bd` 是 .cmd wrapper，execFileSync 找不到 → 直接定位 @beads/bd/bin/bd.js 用 node 跑。
  *
  * 约定：priority 0=Critical / 4=Backlog；排序取数值升序 + id 升序（稳定）。
@@ -101,22 +102,46 @@ export function createBeadsSource(opts = {}) {
       runBd(cwd, ['comment', id, `afk failed: ${String(note).slice(0, 300)}`])
     },
 
+    recoverStale(thresholdSec, now = Date.now) {
+      const threshold = Number(thresholdSec)
+      if (!Number.isFinite(threshold) || threshold <= 0) return []
+      const nowMs = typeof now === 'function' ? now() : Number(now)
+      if (!Number.isFinite(nowMs)) throw new Error('stale 恢复时钟无效')
+
+      const stale = JSON.parse(runBd(cwd, ['list', '--json']))
+        .filter((r) => r && r.id && r.status === 'in_progress')
+        .map((r) => ({ ...r, updatedMs: Date.parse(r.updated_at) }))
+        .filter((r) => Number.isFinite(r.updatedMs) && nowMs - r.updatedMs > threshold * 1000)
+
+      for (const issue of stale) {
+        const ageMinutes = Math.floor((nowMs - issue.updatedMs) / 60000)
+        runBd(cwd, ['update', issue.id, '--status', 'open'])
+        runBd(cwd, [
+          'comment',
+          issue.id,
+          `afk stale 自动重置: 卡了 ${ageMinutes} 分钟，updated_at=${issue.updated_at}`,
+        ])
+      }
+      return stale.map((issue) => issue.id)
+    },
+
     /**
-     * stuck = open 全集 − ready 集合（排除 afk-failed，失败任务不算阻塞）。
+     * 把真实依赖阻塞与正在执行分开，避免把 in_progress 误报成 stuck。
      */
     describeBlocked() {
       const readyIds = new Set(this.listReady().map((t) => t.id))
       const rows = JSON.parse(runBd(cwd, ['list', '--json']))
-      return rows
-        .filter(
-          (r) =>
-            r &&
-            r.id &&
-            r.status !== 'closed' &&
-            !readyIds.has(r.id) &&
-            !(Array.isArray(r.labels) && r.labels.includes('afk-failed')),
-        )
-        .map((r) => ({ id: r.id, title: r.title || r.id }))
+      const active = rows.filter(
+        (r) => r && r.id && r.status !== 'closed' && !(Array.isArray(r.labels) && r.labels.includes('afk-failed')),
+      )
+      return {
+        blocked: active
+          .filter((r) => r.status !== 'in_progress' && !readyIds.has(r.id))
+          .map((r) => ({ id: r.id, title: r.title || r.id })),
+        inProgress: active
+          .filter((r) => r.status === 'in_progress')
+          .map((r) => ({ id: r.id, title: r.title || r.id })),
+      }
     },
   }
 }
