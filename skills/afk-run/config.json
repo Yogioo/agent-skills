@@ -6,7 +6,7 @@
   "allowDirty": false,
   "stopFile": "",
   "execReview": {
-    "timeout": 600,
+    "timeout": 7200,
     "runner": "",
     "executorRunner": "",
     "reviewerRunner": "",
