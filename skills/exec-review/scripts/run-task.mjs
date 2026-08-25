@@ -6,7 +6,7 @@
  * 用「前后内容快照」检测改动；git 仓库按 gitCommit 模式决定执行端提交行为。
  *
  * 用法：
- *   node run-task.mjs --workdir <目录> --task-file task.md [--runner codex|pi]
+ *   node run-task.mjs --workdir <目录> --task-file task.md [--runner codex|pi|agent]
  *   node run-task.mjs --workdir <目录> --stdin
  *   node run-task.mjs --workdir <目录> --title "…" --body "…" [--requirements "…"] [--id "…"]
  */
@@ -34,7 +34,7 @@ function usage(code = 1) {
   node run-task.mjs --workdir <目录> (--task-file <路径> | --stdin | --title <t> --body <b>)
     [--id <标签>] [--requirements <文本>] [--cache-dir <目录>]
     [--config <config.json>]
-    [--runner codex|pi] [--executor-runner …] [--reviewer-runner …]
+    [--runner codex|pi|agent] [--executor-runner …] [--reviewer-runner …]
     [--bin <路径>] [--model <id>] [--provider <name>] [--thinking <level>]
     [--executor-model …] [--reviewer-model …] [--executor-thinking …] [--reviewer-thinking …]
     [--sandbox workspace-write|danger-full-access|read-only]

@@ -142,10 +142,10 @@ export function resolveSettings(args, loaded) {
       cfgRole.bin,
     )
     if (!bin) {
-      bin =
-        runner === 'pi'
-          ? process.env.PI_BIN || 'pi'
-          : process.env.CODEX_BIN || 'codex'
+      if (runner === 'pi') bin = process.env.PI_BIN || 'pi'
+      else if (runner === 'agent') {
+        bin = process.env.AGENT_BIN || process.env.CURSOR_AGENT_BIN || 'agent'
+      } else bin = process.env.CODEX_BIN || 'codex'
     }
 
     return { runner, bin, model, provider, thinking }

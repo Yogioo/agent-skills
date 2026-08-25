@@ -1,6 +1,6 @@
 ---
 name: exec-review
-description: '对一段任务说明跑执行→审查（可插 runner，默认 Codex，可选 pi；exec/review 可分别配置）。审查端在同一工作区直接改进，无需执行端新开上下文回炉。git 仓库默认允许执行端提交，`gitCommit: false` 或非 git 场景由调用方提交。日志进缓存，标准输出只给摘要。用户给出任务文本或任务文件时加载。'
+description: '对一段任务说明跑执行→审查（可插 runner，默认 Codex，可选 pi / agent；exec/review 可分别配置）。审查端在同一工作区直接改进，无需执行端新开上下文回炉。git 仓库默认允许执行端提交，`gitCommit: false` 或非 git 场景由调用方提交。日志进缓存，标准输出只给摘要。用户给出任务文本或任务文件时加载。'
 ---
 
 # 执行审查（单次任务）
@@ -28,9 +28,12 @@ codex --version
 codex login status
 # runner=pi
 pi --version
+# runner=agent（Cursor CLI）
+agent --version
+agent status
 ```
 
-**完成标准：** `node` 可用，且所选 runner 的 CLI 已就绪（Codex 需已登录）；否则向用户报告具体阻塞。
+**完成标准：** `node` 可用，且所选 runner 的 CLI 已就绪（Codex / agent 需已登录）；否则向用户报告具体阻塞。
 
 ## 调用
 
@@ -39,6 +42,7 @@ pi --version
 ```powershell
 node <技能根>/scripts/run-task.mjs --workdir <目录> --task-file <task.md>
 node <技能根>/scripts/run-task.mjs --workdir <目录> --task-file <task.md> --runner pi
+node <技能根>/scripts/run-task.mjs --workdir <目录> --task-file <task.md> --runner agent
 ```
 
 任务文本格式见 [references/task-format.md](references/task-format.md)。也可用：
@@ -103,7 +107,7 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 - `scripts/workspace.mjs` — 内容快照改动检测
 - `scripts/progress.mjs` — 单条进度事件流（level + 心跳）
 - `scripts/serve.mjs` — 独立实时进度服务（SSE → HTML，两阶段视图）
-- `scripts/runners/` — `codex` / `pi` adapters
+- `scripts/runners/` — `codex` / `pi` / `agent` adapters
 - `prompts/executor.md`、`prompts/reviewer.md`（审查端直接改、不提交）
 - `schemas/outcome.schema.json`、`schemas/review.schema.json`
 - `references/config.md`、`references/runners.md`、`references/task-format.md`

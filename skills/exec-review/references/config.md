@@ -40,12 +40,12 @@
 
 | 字段 | 含义 |
 |------|------|
-| `runner` | 顶层默认 CLI：`codex` \| `pi`；角色未写时回落这里 |
+| `runner` | 顶层默认 CLI：`codex` \| `pi` \| `agent`；角色未写时回落这里 |
 | `executor.*` / `reviewer.*` | 执行端 / 审查端各自覆盖 |
-| `bin` | 可执行文件；空 = `codex` / `pi`（或对应环境变量） |
+| `bin` | 可执行文件；空 = `codex` / `pi` / `agent`（或对应环境变量） |
 | `model` | 模型 id；**空 = 不传，用 CLI 默认模型** |
 | `provider` | 仅 pi：`--provider`；空 = 不传 |
-| `thinking` | 思考等级；**空 = 不传**。pi → `--thinking`；codex → `-c model_reasoning_effort=…` |
+| `thinking` | 思考等级；**空 = 不传**。pi → `--thinking`；codex → `-c model_reasoning_effort=…`；agent → 折进 `--model …[effort=…]`（需同时有 model） |
 | `sandbox` / `approve` | 全局默认（仍可被 CLI 覆盖） |
 | `gitCommit` | git 仓库中是否允许执行端完成后提交；默认 `true`，`false` 或非 git 场景由调用方提交 |
 | `serve` | 是否启动独立实时进度服务（默认 `true`） |
@@ -75,6 +75,16 @@
 {
   "executor": { "runner": "codex" },
   "reviewer": { "runner": "pi", "provider": "deepseek", "thinking": "medium" }
+}
+```
+
+两端都用 Cursor `agent`：
+
+```json
+{
+  "runner": "agent",
+  "executor": { "runner": "agent", "model": "composer-2.5" },
+  "reviewer": { "runner": "agent", "model": "composer-2.5", "thinking": "high" }
 }
 ```
 
