@@ -47,7 +47,7 @@
 | `provider` | 仅 pi：`--provider`；空 = 不传 |
 | `thinking` | 思考等级；**空 = 不传**。pi → `--thinking`；codex → `-c model_reasoning_effort=…`；agent → 折进 `--model …[effort=…]`（需同时有 model） |
 | `sandbox` / `approve` | 全局默认（仍可被 CLI 覆盖） |
-| `gitCommit` | git 仓库中是否允许执行端完成后提交；默认 `true`，`false` 或非 git 场景由调用方提交 |
+| `gitCommit` | git 仓库中是否允许执行端/审查端自行 commit；默认 `true`，`false` 或非 git 场景由调用方提交 |
 | `serve` | 是否启动独立实时进度服务（默认 `true`） |
 | `port` | 进度服务端口；`0` = 由 workdir 自动派生（避免多工作区冲突） |
 | `returnLevel` | 摘要里附带进度投影的深度；`0` = 不附带（极简） |

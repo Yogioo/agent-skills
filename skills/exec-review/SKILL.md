@@ -8,7 +8,7 @@ description: '对一段任务说明跑执行→审查（可插 runner，默认 C
 对**一段任务说明**：**执行 → 审查** 一次运行即可。审查发现问题时由**审查端直接改进**，不把结论交回执行端新开上下文。
 
 - **执行**：改工作区文件，报告简单 JSON outcome
-- **审查**：对照任务说明与仓库规范，审查执行端改动涉及的文件并**直接改进**；若已干净则不改
+- **审查**：对照任务说明与仓库规范，审查执行端改动涉及的文件并**直接改进**
 
 **高度可复用：** 不假设目标目录是 git 仓库（改动检测用内容快照，跳过 `.git`/`node_modules`）。git 仓库默认允许执行端提交；`gitCommit: false` 或非 git 场景由调用方提交。让审查端直接改，是为了避免「审查端只报结论 → 执行端新开一次上下文处理」的低效往返。
 
@@ -83,11 +83,11 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 
 - **标准输出**：仅摘要 JSON（含 `status`、`changedFiles`、`reviewChangedFiles`、`summary`、`review`、`outcome`）
 - **`cacheDir`**：`task.md`、`settings.json`（本次实际生效配置）、执行与审查的提示词/输出/日志、`main.log`
-- git 仓库且 `gitCommit` 为 `true` 时，执行端可在完成后自行提交；`gitCommit: false` 或非 git 场景的改动由调用方提交
+- git 仓库且 `gitCommit` 为 `true` 时：执行端/审查端自行 commit；`gitCommit: false` 或非 git 场景由调用方提交。提交格式不在本技能范围。
 
 | `status` | 含义 / 下一步 |
 |----------|--------------|
-| `approved` | 执行已实现，审查端（可能）直接改进后通过 → 向用户汇报通过（提交行为按 `gitCommit` 模式决定） |
+| `approved` | 执行已实现，审查端（可能）直接改进后通过 |
 | `no_change` | 无需改代码（执行端回报 done 但工作区无改动） |
 | `blocked` / `empty` | 执行端做不完 / 无事可做 → 记录原因；`blocked` 考虑升级问人 |
 | `executor_failed` / `error` | 先看 `cacheDir`，查清再开下一次 |
@@ -103,11 +103,12 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 ## 目录
 
 - `config.json` — 默认 runner / 模型 / 思考等级（exec、review 可分开）+ gitCommit + serve / returnLevel / heartbeatMs
-- `scripts/run-task.mjs` — 入口（单次 执行→审查；按 `gitCommit` 注入 git 只读上下文与执行端提交规则）
+- `scripts/run-task.mjs` — 入口（单次 执行→审查；`gitCommit` 时注入通用 git 指引）
+- `scripts/commit-rules.mjs` — 仅 `gitCommit` 编排边界（何时 commit、BASE_HEAD、工作区干净）
 - `scripts/workspace.mjs` — 内容快照改动检测
 - `scripts/progress.mjs` — 单条进度事件流（level + 心跳）
 - `scripts/serve.mjs` — 独立实时进度服务（SSE → HTML，两阶段视图）
 - `scripts/runners/` — `codex` / `pi` / `agent` adapters
-- `prompts/executor.md`、`prompts/reviewer.md`（审查端直接改、不提交）
+- `prompts/executor.md`、`prompts/reviewer.md`（审查端直接改）
 - `schemas/outcome.schema.json`、`schemas/review.schema.json`
 - `references/config.md`、`references/runners.md`、`references/task-format.md`

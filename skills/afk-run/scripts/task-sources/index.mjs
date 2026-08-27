@@ -5,9 +5,10 @@
  *   getDetail(id)        → {id, title, body, requirements}
  *   markInProgress(id)   → 认领（防重入）
  *   markDone(id, result) → result: {status, summary, commit?}
+ *   closeEligibleParents?() → string[] 子单成功后收尾父容器（beads: bd epic close-eligible）
  *   markFailed(id, note)
  *   recoverStale?(thresholdSec, now = Date.now) → string[] 仅 beads 实现的启动期 stale 恢复
- *   describeBlocked()    → { blocked: [{id, title}], inProgress: [{id, title}] }
+ *   describeBlocked()    → { ready, blocked: [{id, title, blockedBy?}], inProgress: [{id, title}] }
  */
 
 import { createBeadsSource } from './beads.mjs'

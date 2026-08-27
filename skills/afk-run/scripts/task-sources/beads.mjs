@@ -55,13 +55,46 @@ export function createBeadsSource(opts = {}) {
       // bd ready 不排除 afk-failed 工单，需要自己过滤；labels 从 bd list 拿（ready 输出无 labels）
       const ready = JSON.parse(runBd(cwd, ['ready', '--json']))
       const open = JSON.parse(runBd(cwd, ['list', '--json']))
+      const openById = new Map(
+        open.filter((r) => r && r.id).map((r) => [r.id, r]),
+      )
       const failedIds = new Set(
         open
           .filter((r) => Array.isArray(r.labels) && r.labels.includes('afk-failed'))
           .map((r) => r.id),
       )
-      return ready
-        .filter((r) => r && r.id && !failedIds.has(r.id))
+      // 仍有 open 子 ticket 的 parent 只做容器，不应被 AFK 当作可执行工单。
+      const parentContainerIds = new Set(
+        open.filter((r) => r && r.parent).map((r) => r.parent),
+      )
+      const requireReadyForAgent = opts.requireReadyForAgent !== false
+      const excludeParentContainers = opts.excludeParentContainers !== false
+      const skipped = []
+      const picked = ready.filter((r) => {
+        if (!r || !r.id || failedIds.has(r.id)) return false
+        const row = openById.get(r.id)
+        const labels = Array.isArray(row?.labels) ? row.labels : []
+        if (requireReadyForAgent && !labels.includes('ready-for-agent')) {
+          skipped.push({ id: r.id, reason: 'missing ready-for-agent label' })
+          return false
+        }
+        if (excludeParentContainers && parentContainerIds.has(r.id)) {
+          skipped.push({ id: r.id, reason: 'parent container with open children' })
+          return false
+        }
+        return true
+      })
+      if (skipped.length) {
+        const preview = skipped
+          .slice(0, 5)
+          .map((item) => `${item.id} (${item.reason})`)
+          .join('; ')
+        console.error(
+          `[afk-run] beads: skipped ${skipped.length} ready issue(s) not eligible for AFK` +
+            (preview ? `: ${preview}` : ''),
+        )
+      }
+      return picked
         .map((r) => ({
           id: r.id,
           title: r.title || r.id,
@@ -97,6 +130,24 @@ export function createBeadsSource(opts = {}) {
       runBd(cwd, ['close', id, '--reason', reason])
     },
 
+    /**
+     * 子单全部 closed 后收尾父 epic（beads 原生 `bd epic close-eligible`）。
+     * @returns {string[]} 本次关闭的 epic id 列表
+     */
+    closeEligibleParents() {
+      try {
+        const raw = runBd(cwd, ['epic', 'close-eligible', '--json']).trim()
+        if (!raw) return []
+        const data = JSON.parse(raw)
+        return Array.isArray(data.closed) ? data.closed : []
+      } catch (err) {
+        console.error(
+          `[afk-run] beads: epic close-eligible failed: ${String(err.message || err)}`,
+        )
+        return []
+      }
+    },
+
     markFailed(id, note = '') {
       runBd(cwd, ['label', 'add', id, 'afk-failed'])
       runBd(cwd, ['comment', id, `afk failed: ${String(note).slice(0, 300)}`])
@@ -126,21 +177,63 @@ export function createBeadsSource(opts = {}) {
     },
 
     /**
-     * 把真实依赖阻塞与正在执行分开，避免把 in_progress 误报成 stuck。
+     * 工单管道快照：就绪 / 进行中 / 被依赖阻塞（含 blocker id）。
+     * 进行中列不含 parent 容器（与 listReady 一致），避免与正在执行的子 ticket 重复展示。
      */
     describeBlocked() {
-      const readyIds = new Set(this.listReady().map((t) => t.id))
+      const ready = this.listReady()
+      const readyIds = new Set(ready.map((t) => t.id))
       const rows = JSON.parse(runBd(cwd, ['list', '--json']))
       const active = rows.filter(
         (r) => r && r.id && r.status !== 'closed' && !(Array.isArray(r.labels) && r.labels.includes('afk-failed')),
       )
+      const parentContainerIds = new Set(
+        active.filter((r) => r && r.parent).map((r) => r.parent),
+      )
+      const statusById = new Map(active.map((r) => [r.id, r.status]))
+      const blockersOf = (row) => {
+        const deps = Array.isArray(row.dependencies) ? row.dependencies : []
+        return deps
+          .filter((d) => d && d.type === 'blocks' && d.depends_on_id)
+          .map((d) => d.depends_on_id)
+          .filter((id) => {
+            const st = statusById.get(id)
+            return st && st !== 'closed'
+          })
+      }
+      const isAfkEligible = (row) =>
+        Array.isArray(row.labels) && row.labels.includes('ready-for-agent')
       return {
+        ready,
         blocked: active
-          .filter((r) => r.status !== 'in_progress' && !readyIds.has(r.id))
-          .map((r) => ({ id: r.id, title: r.title || r.id })),
+          .filter(
+            (r) =>
+              r.status === 'open' &&
+              !readyIds.has(r.id) &&
+              isAfkEligible(r) &&
+              blockersOf(r).length > 0,
+          )
+          .map((r) => ({
+            id: r.id,
+            title: r.title || r.id,
+            priority: Number.isFinite(r.priority) ? r.priority : 2,
+            blockedBy: blockersOf(r),
+          }))
+          .sort(
+            (a, b) =>
+              (a.priority ?? 2) - (b.priority ?? 2) || a.id.localeCompare(b.id),
+          ),
         inProgress: active
-          .filter((r) => r.status === 'in_progress')
-          .map((r) => ({ id: r.id, title: r.title || r.id })),
+          .filter((r) => r.status === 'in_progress' && !parentContainerIds.has(r.id))
+          .map((r) => ({
+            id: r.id,
+            title: r.title || r.id,
+            priority: Number.isFinite(r.priority) ? r.priority : 2,
+          }))
+          .sort(
+            (a, b) =>
+              (a.priority ?? 2) - (b.priority ?? 2) || a.id.localeCompare(b.id),
+          ),
       }
     },
   }

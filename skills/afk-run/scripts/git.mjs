@@ -1,6 +1,7 @@
 /**
  * git 操作封装（AFK 循环专用）。
- * 职责：init 兜底、干净校验、HEAD 读取、统一提交、失败回滚。
+ * 职责：init 兜底、干净校验、HEAD 读取、失败回滚。
+ * 提交由 exec-review 端处理（gitCommit 开启时）；AFK 只要求任务间工作区干净。
  *
  * 边界：新 init 的仓库没有 HEAD——`head()` 返回 null，`resetHard()` 在无 HEAD
  * 时退化为 `git clean -fd`（删除所有 untracked 文件，即任务产生的文件）。
@@ -28,25 +29,25 @@ function isGitRepo(workdir) {
 }
 
 /**
- * 非 git 仓库则 git init，并补默认提交身份（git init 不自带身份，不配 commit 会失败）。
+ * 非 git 仓库则 git init。
+ *
+ * 提交身份默认沿用用户全局/系统 git 配置（不写 local user.*）。
+ * 仅当 `useBotIdentity: true` 时，才写入 local user.name / user.email（CLI > 参数 > 默认 AFK Bot）。
+ *
  * @param {string} workdir
- * @param {{ name?: string, email?: string }} [identity]
+ * @param {{ useBotIdentity?: boolean, name?: string, email?: string }} [identity]
  */
 export function ensureGit(workdir, identity = {}) {
   if (!isGitRepo(workdir)) {
     runGit(workdir, ['init'])
   }
-  // 只查/设 local 身份：全局身份存在时 commit 也能成功，但 AFK 要保证身份可追溯且不依赖用户全局配置
-  let name = ''
-  let email = ''
-  try {
-    name = runGit(workdir, ['config', '--local', 'user.name']).trim()
-    email = runGit(workdir, ['config', '--local', 'user.email']).trim()
-  } catch {
-    // 无 local 配置则设置
+  if (!identity.useBotIdentity) {
+    return isGitRepo(workdir)
   }
-  if (!name) runGit(workdir, ['config', '--local', 'user.name', identity.name || 'AFK Bot'])
-  if (!email) runGit(workdir, ['config', '--local', 'user.email', identity.email || 'afk@local'])
+  const name = identity.name || 'AFK Bot'
+  const email = identity.email || 'afk@local'
+  runGit(workdir, ['config', '--local', 'user.name', name])
+  runGit(workdir, ['config', '--local', 'user.email', email])
   return isGitRepo(workdir)
 }
 
@@ -65,23 +66,6 @@ export function head(workdir) {
   } catch {
     return null
   }
-}
-
-/**
- * 统一提交所有改动（AFK 循环作为调用方提交）。
- * @param {string} workdir
- * @param {{ id: string, title: string, status: string, summary: string }} task
- * @param {string} [excludePath] 提交时排除的路径（如停止文件），防止把哨兵文件提交进去
- */
-export function commitAll(workdir, task, excludePath = '') {
-  if (excludePath) {
-    runGit(workdir, ['add', '-A', '--', `:(exclude)${excludePath}`])
-  } else {
-    runGit(workdir, ['add', '-A'])
-  }
-  const title = `afk: ${task.id} ${task.title}`.slice(0, 200)
-  const body = `status: ${task.status}\nsummary: ${String(task.summary || '').slice(0, 500)}`
-  runGit(workdir, ['commit', '-m', title, '-m', body])
 }
 
 /**

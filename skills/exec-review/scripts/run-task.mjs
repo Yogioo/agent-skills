@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { createRunner } from './runners/index.mjs'
 import { loadConfigFile, resolveSettings } from './load-config.mjs'
+import { buildExecutorCommitRule, buildReviewerGitContext } from './commit-rules.mjs'
 import { ProgressWriter } from './progress.mjs'
 import { snapshot, diff } from './workspace.mjs'
 
@@ -589,18 +590,19 @@ async function main() {
   // 执行前快照与 git 上下文：快照检测改动，git 查询只读
   const before = snapshot(workdir)
   const gitContext = collectGitContext(workdir)
-  const commitRule =
-    gitContext.isGit && settings.gitCommit
-      ? '完成后自行 `git commit`，message 清晰描述本次实际修改；blocked / 无改动则不要提交。'
-      : '不要提交（提交由调用方负责）。'
+  const commitRule = buildExecutorCommitRule({
+    gitCommit: settings.gitCommit,
+    isGit: gitContext.isGit,
+  })
   const gitLog =
     gitContext.isGit && gitContext.recentLog
       ? `\n## 参考：最近变更（git log）\n\n\`\`\`\n${gitContext.recentLog}\n\`\`\`\n`
       : ''
-  const gitReviewContext =
-    gitContext.isGit && gitContext.baseHead
-      ? `\n## Git 参考\n\n执行端开始前的 BASE_HEAD：\`${gitContext.baseHead}\`。使用 \`git diff BASE_HEAD\`（将 BASE_HEAD 替换为上述 hash）查看执行端改动。\n`
-      : ''
+  const gitReviewContext = buildReviewerGitContext({
+    gitCommit: settings.gitCommit,
+    isGit: gitContext.isGit,
+    baseHead: gitContext.baseHead,
+  })
 
   // ---- 执行阶段：实现 ----
   const executorPrompt = renderTemplate(executorTpl, {
@@ -793,6 +795,12 @@ async function main() {
   lastReview = review
   progress.write('reviewer_end', { status: review.status, changed: reviewChanged.length })
 
+  let commitsSinceBase = null
+  if (gitContext.isGit && settings.gitCommit && gitContext.baseHead) {
+    const raw = gitOutput(workdir, ['rev-list', '--count', `${gitContext.baseHead}..HEAD`])
+    commitsSinceBase = raw ? Number(raw) : null
+  }
+
   const summary = {
     status: 'approved',
     id: task.id || undefined,
@@ -803,6 +811,7 @@ async function main() {
     reviewChangedFiles: reviewChanged,
     review,
     outcome,
+    commitsSinceBase,
   }
   finalize(summary, join(runDir, 'summary.json'))
 }

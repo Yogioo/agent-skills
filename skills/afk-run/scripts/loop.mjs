@@ -11,13 +11,14 @@
  * 每任务至多执行 1+retry 次、全局有上限。
  */
 
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import {
   appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -130,8 +131,6 @@ export function createExecReview(workdir, execCfg = {}, onLog = () => {}) {
         workdir,
         '--task-file',
         taskFile,
-        '--git-commit',
-        'false',
         '--no-serve',
         '--no-open',
       ]
@@ -150,15 +149,16 @@ export function createExecReview(workdir, execCfg = {}, onLog = () => {}) {
 
       const baseTimeout = Number(execCfg.timeout) || 0
       const extra = Number(execCfg.hardTimeoutExtra) || 120
-      const hardTimeoutMs = (baseTimeout + extra) * 1000
+      const spawnOpts = {
+        cwd: workdir,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+      // timeout=0 表示 exec-review 无时限；loop 也不应再用 hardTimeoutExtra 强杀子进程
+      if (baseTimeout > 0) spawnOpts.timeout = (baseTimeout + extra) * 1000
 
       const result = await new Promise((resolvePromise) => {
-        const child = spawn(process.execPath, args, {
-          cwd: workdir,
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: hardTimeoutMs,
-        })
+        const child = spawn(process.execPath, args, spawnOpts)
         let stdout = ''
         child.stdout.on('data', (d) => (stdout += d))
         child.stderr.on('data', (d) => onLog(String(d)))
@@ -192,12 +192,29 @@ export function createExecReview(workdir, execCfg = {}, onLog = () => {}) {
 
 // ---------- 主循环（可注入） ----------
 
+async function emitPipelineSnapshot(source, hooks) {
+  if (!hooks.onPipeline || typeof source.describeBlocked !== 'function') return
+  try {
+    const described = await source.describeBlocked()
+    const pipeline = Array.isArray(described)
+      ? { ready: [], blocked: described, inProgress: [] }
+      : {
+          ready: Array.isArray(described?.ready) ? described.ready : [],
+          blocked: Array.isArray(described?.blocked) ? described.blocked : [],
+          inProgress: Array.isArray(described?.inProgress) ? described.inProgress : [],
+        }
+    hooks.onPipeline(pipeline)
+  } catch {
+    // 看板快照失败不应中断 loop
+  }
+}
+
 /**
  * @param {object} deps
  * @param {object} deps.config  { stopFile, maxTasks, maxFailures, retry }
  * @param {object} deps.source  task source adapter（listReady/getDetail/markInProgress/markDone/markFailed/describeBlocked）
  * @param {object} deps.execReview  { run(taskFile) → outcome }
- * @param {object} deps.git     { head(), commitAll(task), resetHard(headRef) } workdir 已在闭包绑定
+ * @param {object} deps.git     { head(), resetHard(headRef), isClean() } workdir 已在闭包绑定
  * @param {object} [deps.hooks] { onQueue(tasks), onTaskStart(task), onTask(record), taskDir, progressFile(task, attempt) }
  * @returns {Promise<{ reason: string, stats: object, tasks: object[] }>}
  */
@@ -209,9 +226,13 @@ export async function runLoop(deps) {
 
   const finish = (reason) => ({ reason, stats, tasks })
 
+  await emitPipelineSnapshot(source, hooks)
+
   while (true) {
     if (config.stopFile && existsSync(config.stopFile)) return finish('stop-file')
     if (config.maxTasks > 0 && stats.attempted >= config.maxTasks) return finish('max-tasks')
+
+    await emitPipelineSnapshot(source, hooks)
 
     let ready
     try {
@@ -221,23 +242,25 @@ export async function runLoop(deps) {
     }
 
     if (ready.length === 0) {
-      let blockedState = { blocked: [], inProgress: [] }
+      let blockedState = { ready: [], blocked: [], inProgress: [] }
       try {
         const described = await source.describeBlocked()
         blockedState = Array.isArray(described)
-          ? { blocked: described, inProgress: [] }
+          ? { ready: [], blocked: described, inProgress: [] }
           : {
+              ready: Array.isArray(described?.ready) ? described.ready : [],
               blocked: Array.isArray(described?.blocked) ? described.blocked : [],
               inProgress: Array.isArray(described?.inProgress) ? described.inProgress : [],
             }
       } catch {
-        blockedState = { blocked: [], inProgress: [] }
+        blockedState = { ready: [], blocked: [], inProgress: [] }
+      }
+      // 仍有 in_progress 时继续等待（含 parent 容器），勿因 blocked 子 ticket 误判 stuck
+      if (blockedState.inProgress.length > 0) {
+        return finish(`in-progress: ${blockedState.inProgress.length} 个工单进行中`)
       }
       if (blockedState.blocked.length > 0) {
         return finish(`stuck: ${blockedState.blocked.length} 个工单未就绪`)
-      }
-      if (blockedState.inProgress.length > 0) {
-        return finish(`in-progress: ${blockedState.inProgress.length} 个工单进行中`)
       }
       return finish('all-done')
     }
@@ -253,8 +276,10 @@ export async function runLoop(deps) {
 
     // 每任务尝试循环：attempt = 0 .. retry
     let result = null
+    let lastProgressFile
     for (let attempt = 0; attempt <= config.retry; attempt++) {
       const progressFile = hooks.progressFile ? hooks.progressFile(task, attempt + 1) : undefined
+      lastProgressFile = progressFile
       if (hooks.onTaskStart) {
         hooks.onTaskStart({
           id: task.id,
@@ -282,17 +307,45 @@ export async function runLoop(deps) {
     }
 
     stats.attempted++
+    let closedParents = []
     if (result.kind === 'done') {
-      git.commitAll({
-        id: task.id,
-        title: task.title,
-        status: result.outcome.status,
-        summary: result.outcome.summary || '',
-      })
+      if (!git.isClean()) {
+        git.resetHard(startHead)
+        await source.markFailed(task.id, 'git: 任务通过后工作区仍有未提交改动')
+        consecutiveFailures++
+        stats.failed++
+        const record = {
+          id: task.id,
+          title: task.title,
+          priority: task.priority,
+          kind: 'failed',
+          status: result.outcome?.status,
+          reason: 'git: dirty after approved',
+          attempts: result.attempts,
+          summary: result.outcome?.summary,
+          progressFile: lastProgressFile,
+        }
+        tasks.push(record)
+        if (hooks.onTask) hooks.onTask(record)
+        await emitPipelineSnapshot(source, hooks)
+        if (config.maxFailures > 0 && consecutiveFailures >= config.maxFailures) {
+          return finish('circuit-broken')
+        }
+        continue
+      }
       await source.markDone(task.id, {
         status: result.outcome.status,
         summary: result.outcome.summary || '',
       })
+      closedParents =
+        typeof source.closeEligibleParents === 'function'
+          ? source.closeEligibleParents() || []
+          : []
+      if (closedParents.length) {
+        console.error(
+          `[afk-run] epic close-eligible: ${closedParents.join(', ')}`,
+        )
+      }
       consecutiveFailures = 0
       stats.done++
     } else {
@@ -309,9 +362,12 @@ export async function runLoop(deps) {
       reason: result.kind === 'failed' ? result.reason : undefined,
       attempts: result.attempts,
       summary: result.outcome?.summary,
+      progressFile: lastProgressFile,
+      ...(result.kind === 'done' && closedParents.length ? { closedParents } : {}),
     }
     tasks.push(record)
     if (hooks.onTask) hooks.onTask(record)
+    await emitPipelineSnapshot(source, hooks)
     if (config.maxFailures > 0 && consecutiveFailures >= config.maxFailures) {
       return finish('circuit-broken')
     }
@@ -325,6 +381,7 @@ function usage(code = 1) {
   node loop.mjs --workdir <目录> [--source beads|gh] [--repo owner/name]
     [--max-tasks <N>] [--max-failures <N>] [--retry <N>]
     [--stop-file <路径>] [--allow-dirty]
+    [--use-bot-identity] [--no-bot-identity]
     [--git-name <名>] [--git-email <邮箱>]
     [--config <config.json>] [--cache-dir <目录>] [--dry-run]
     [--no-serve] [--no-open] [--port <端口>]
@@ -350,6 +407,7 @@ function parseArgs(argv) {
     retry: 0,
     stopFile: '',
     allowDirty: false,
+    useBotIdentity: null,
     gitName: '',
     gitEmail: '',
     configPath: '',
@@ -404,6 +462,12 @@ function parseArgs(argv) {
         break
       case '--allow-dirty':
         out.allowDirty = true
+        break
+      case '--use-bot-identity':
+        out.useBotIdentity = true
+        break
+      case '--no-bot-identity':
+        out.useBotIdentity = false
         break
       case '--git-name':
         out.gitName = next()
@@ -477,6 +541,11 @@ function loadConfig(path) {
       port: 0,
       open: false,
     },
+    git: {
+      useBotIdentity: false,
+      name: 'AFK Bot',
+      email: 'afk@local',
+    },
     execReview: {
       timeout: 600,
       runner: '',
@@ -501,8 +570,21 @@ function loadConfig(path) {
   }
   const cfg = { ...defaults, ...data }
   cfg.serve = { ...defaults.serve, ...(data.serve || {}) }
+  cfg.git = { ...defaults.git, ...(data.git || {}) }
   cfg.execReview = { ...defaults.execReview, ...(data.execReview || {}) }
   return { cfg, path: file }
+}
+
+/** 合并 workdir 下的 `.afk-run.json`（execReview 等局部覆盖） */
+function loadWorkdirConfig(workdir) {
+  const file = join(workdir, '.afk-run.json')
+  if (!existsSync(file)) return {}
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'))
+  } catch (err) {
+    console.error(`无法解析 ${file}: ${err.message}`)
+    process.exit(2)
+  }
 }
 
 function localTimestamp(d = new Date()) {
@@ -561,15 +643,69 @@ function openUrl(url) {
   }
 }
 
-function startLoopServe(runDir, port, open) {
+function serveRegistryPath(cacheRoot, workdir) {
+  return join(cacheRoot, `serve-${hashStr(workdir)}.json`)
+}
+
+function killPid(pid) {
+  if (!pid || Number(pid) <= 0) return
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('taskkill', ['/PID', String(pid), '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      return
+    }
+    process.kill(Number(pid), 'SIGTERM')
+  } catch {
+    // 旧看板进程可能已退出；忽略。
+  }
+}
+
+/** 停止同一 workdir 上一次 loop 注册的看板进程，避免固定端口展示陈旧终态。 */
+function stopRegisteredServe(cacheRoot, workdir) {
+  const registryPath = serveRegistryPath(cacheRoot, workdir)
+  if (!existsSync(registryPath)) return
+  try {
+    const previous = JSON.parse(readFileSync(registryPath, 'utf8'))
+    if (previous?.pid) killPid(previous.pid)
+  } catch {
+    // 注册表损坏时继续启动新看板。
+  }
+  try {
+    unlinkSync(registryPath)
+  } catch {
+    // ignore
+  }
+}
+
+function startLoopServe(runDir, port, open, cacheRoot, workdir) {
+  stopRegisteredServe(cacheRoot, workdir)
   const child = spawn(process.execPath, [LOOP_SERVE_PATH, runDir, String(port)], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
   })
   child.unref()
+  try {
+    writeFileSync(
+      serveRegistryPath(cacheRoot, workdir),
+      JSON.stringify({
+        pid: child.pid,
+        port,
+        runDir,
+        startedAt: Date.now(),
+      }) + '\n',
+      'utf8',
+    )
+  } catch {
+    // 看板仍可用；只是下次可能需手动刷新端口。
+  }
+  const runLabel = runDir.split(/[/\\]/).pop() || runDir
   const url = `http://127.0.0.1:${port}/`
-  console.error(`\nafk-run 实时看板（可随时打开）: ${url}\n`)
+  console.error(`\nafk-run 实时看板（可随时打开）: ${url}`)
+  console.error(`afk-run 当前 run: ${runLabel}\n`)
   if (open) setTimeout(() => openUrl(url), 600)
   return url
 }
@@ -618,6 +754,8 @@ function writeReport(runDir, result, startedAt, workdir) {
 function main() {
   const args = parseArgs(process.argv.slice(2))
   const { cfg } = loadConfig(args.configPath)
+  const workdirCfg = args.workdir ? loadWorkdirConfig(resolve(args.workdir)) : {}
+  if (workdirCfg.execReview) cfg.execReview = { ...cfg.execReview, ...workdirCfg.execReview }
 
   if (!args.workdir) {
     console.error('workdir 必传：--workdir <目录>（由调用方/Agent 传入，不支持配置默认）')
@@ -631,9 +769,14 @@ function main() {
 
   const sourceName = args.source || cfg.source || 'beads'
   const stopFile = resolve(args.stopFile || cfg.stopFile || join(workdir, DEFAULT_STOP_FILE))
+  const useBotIdentity =
+    args.useBotIdentity ??
+    cfg.git.useBotIdentity ??
+    false
   const gitIdentity = {
-    name: args.gitName,
-    email: args.gitEmail,
+    useBotIdentity,
+    name: args.gitName || cfg.git.name || 'AFK Bot',
+    email: args.gitEmail || cfg.git.email || 'afk@local',
   }
   const execCfg = {
     timeout: args.timeout || cfg.execReview.timeout || 0,
@@ -649,7 +792,9 @@ function main() {
   const configuredStaleThreshold = Number(cfg.staleThresholdSec)
   const staleThresholdSec = Number.isFinite(configuredStaleThreshold)
     ? Math.max(0, configuredStaleThreshold)
-    : 2 * (Number(execCfg.timeout) + Number(execCfg.hardTimeoutExtra))
+    : Number(execCfg.timeout) > 0
+      ? 2 * (Number(execCfg.timeout) + Number(execCfg.hardTimeoutExtra))
+      : 0
   const allowDirty = args.allowDirty || cfg.allowDirty || false
   const serveEnabled = args.serve ?? cfg.serve.enabled
   const servePort = args.port || cfg.serve.port || 8700 + (hashStr(workdir) % 1000)
@@ -662,7 +807,7 @@ function main() {
   // 装配真实依赖（workdir 闭包绑定）
   const git = {
     head: () => gitModule.head(workdir),
-    commitAll: (task) => gitModule.commitAll(workdir, task, DEFAULT_STOP_FILE),
+    isClean: () => gitModule.isClean(workdir),
     resetHard: (headRef) => gitModule.resetHard(workdir, headRef, DEFAULT_STOP_FILE),
   }
   const source = createSource(sourceName, {
@@ -678,6 +823,7 @@ function main() {
     taskDir: runDir,
     progressFile: (task, attempt) => join(runDir, `task-${String(task.id).replace(/[^a-zA-Z0-9._-]/g, '_')}-${attempt}.progress.jsonl`),
     onQueue: (tasks) => emitLoopEvent('queue_update', { tasks }),
+    onPipeline: (pipeline) => emitLoopEvent('pipeline_snapshot', pipeline),
     onTaskStart: (task) => emitLoopEvent('task_start', task),
     onTask: (record) => emitLoopEvent('task_end', record),
   }
@@ -720,7 +866,7 @@ function main() {
     git,
     hooks,
     beforeRun: () => {
-      if (serveEnabled) startLoopServe(runDir, servePort, serveOpen)
+      if (serveEnabled) startLoopServe(runDir, servePort, serveOpen, cacheRoot, workdir)
     },
   })
     .then((result) => {

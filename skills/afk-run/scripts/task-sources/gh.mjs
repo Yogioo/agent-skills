@@ -259,6 +259,11 @@ export function createGhSource(opts = {}) {
       run(issueArgs(repo, ['issue', 'close', String(id), '--comment', comment]))
     },
 
+    /** GitHub source 无 beads 式 parent epic；保留 seam 供 loop 统一调用。 */
+    closeEligibleParents() {
+      return []
+    },
+
     markFailed(id, note = '') {
       run(issueArgs(repo, ['issue', 'comment', String(id), '--body', `afk failed: ${String(note).slice(0, 300)}`]))
       run(issueArgs(repo, ['issue', 'edit', String(id), '--add-label', 'afk-failed']))
@@ -266,15 +271,30 @@ export function createGhSource(opts = {}) {
 
     describeBlocked() {
       const issues = getSnapshot()
-      const readyIds = new Set(readyIssues(issues).map((issue) => issue.id))
+      const ready = readyIssues(issues).map((issue) => ({
+        id: issue.id,
+        title: issue.title,
+        priority: issue.priority ?? 2,
+      }))
+      const readyIds = new Set(ready.map((issue) => issue.id))
       const active = issues.filter((issue) => !hasLabel(issue, 'afk-failed'))
       return {
+        ready,
         blocked: active
           .filter((issue) => !hasLabel(issue, 'in-progress') && !readyIds.has(issue.id))
-          .map((issue) => ({ id: issue.id, title: issue.title })),
+          .map((issue) => ({
+            id: issue.id,
+            title: issue.title,
+            priority: issue.priority ?? 2,
+            blockedBy: [],
+          })),
         inProgress: active
           .filter((issue) => hasLabel(issue, 'in-progress'))
-          .map((issue) => ({ id: issue.id, title: issue.title })),
+          .map((issue) => ({
+            id: issue.id,
+            title: issue.title,
+            priority: issue.priority ?? 2,
+          })),
       }
     },
   }

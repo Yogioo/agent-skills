@@ -8,10 +8,13 @@
  */
 
 import { createServer } from 'node:http'
-import { existsSync, readFileSync, watch } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync, realpathSync, watch } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadEvents } from '../../exec-review/scripts/progress.mjs'
+import { createProgressWatcher } from '../../exec-review/scripts/progress-http.mjs'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const STAGE_NAMES = {
   preparing: '准备中',
@@ -33,12 +36,21 @@ export function projectLoopState(loopEvents = [], progressEvents = []) {
   let currentId = ''
   let currentStartedAt = 0
   let lastLoopEventAt = 0
+  let pipeline = { ready: [], blocked: [], inProgress: [] }
 
   for (const event of loopEvents) {
     if (!event || !event.event) continue
     if (event.t) lastLoopEventAt = event.t
     if (event.event === 'loop_start') {
       config = { ...config, ...event }
+      continue
+    }
+    if (event.event === 'pipeline_snapshot') {
+      pipeline = {
+        ready: Array.isArray(event.ready) ? event.ready : [],
+        blocked: Array.isArray(event.blocked) ? event.blocked : [],
+        inProgress: Array.isArray(event.inProgress) ? event.inProgress : [],
+      }
       continue
     }
     if (event.event === 'queue_update') {
@@ -83,10 +95,42 @@ export function projectLoopState(loopEvents = [], progressEvents = []) {
   }
 
   const list = [...tasks.values()]
-  const ready = list.filter((task) => task.state === 'ready')
-  const active = list.filter((task) => task.state === 'in_progress')
-  const done = list.filter((task) => task.state === 'done')
-  const failed = list.filter((task) => task.state === 'failed')
+  const mergeById = (base = [], overlay = [], state) => {
+    const merged = new Map()
+    for (const item of base) {
+      if (!item || !item.id) continue
+      merged.set(item.id, { ...item, state })
+    }
+    for (const item of overlay) {
+      if (!item || !item.id) continue
+      merged.set(item.id, { ...merged.get(item.id), ...item, state })
+    }
+    return [...merged.values()].sort(
+      (a, b) =>
+        (a.priority ?? 2) - (b.priority ?? 2) || String(a.id).localeCompare(String(b.id)),
+    )
+  }
+  /** 子 ticket 进行中时，隐藏 beads 里仍 claim 着的 parent 容器（如 2j9 vs 2j9.1） */
+  const dropParentContainers = (tasks) => {
+    const ids = new Set((tasks || []).map((task) => task.id))
+    return (tasks || []).filter((task) => {
+      for (const id of ids) {
+        if (id !== task.id && String(id).startsWith(`${task.id}.`)) return false
+      }
+      return true
+    })
+  }
+  const ready = mergeById(pipeline.ready, list.filter((task) => task.state === 'ready'), 'ready').map(withDetailUrl)
+  const active = dropParentContainers(
+    mergeById(
+      pipeline.inProgress,
+      list.filter((task) => task.state === 'in_progress'),
+      'in_progress',
+    ),
+  ).map(withDetailUrl)
+  const blocked = (pipeline.blocked || []).map((task) => ({ ...task, state: 'blocked' }))
+  const done = list.filter((task) => task.state === 'done').map(withDetailUrl)
+  const failed = list.filter((task) => task.state === 'failed').map(withDetailUrl)
   const currentTask = active.find((task) => task.id === currentId) || active.at(-1) || null
 
   let stage = 'preparing'
@@ -113,14 +157,14 @@ export function projectLoopState(loopEvents = [], progressEvents = []) {
   }
 
   const current = currentTask
-    ? {
+    ? withDetailUrl({
         ...currentTask,
         stage,
         stageLabel: STAGE_NAMES[stage] || stage,
         stageSince,
         heartbeats,
         lastEventAt,
-      }
+      })
     : null
 
   return {
@@ -128,6 +172,7 @@ export function projectLoopState(loopEvents = [], progressEvents = []) {
     config,
     ready,
     active,
+    blocked,
     done,
     failed,
     current,
@@ -138,6 +183,32 @@ export function projectLoopState(loopEvents = [], progressEvents = []) {
     startedAt: config.t || 0,
     lastEventAt: lastLoopEventAt,
   }
+}
+
+export function taskDetailPath(taskId) {
+  return `/task/${encodeURIComponent(String(taskId || ''))}`
+}
+
+function withDetailUrl(task) {
+  if (!task || !task.id || !task.progressFile) return task
+  return { ...task, detailUrl: taskDetailPath(task.id) }
+}
+
+export function findTaskRecord(state, taskId) {
+  if (!state || !taskId) return null
+  const buckets = [
+    state.ready,
+    state.active,
+    state.done,
+    state.failed,
+    state.current ? [state.current] : [],
+  ]
+  for (const bucket of buckets) {
+    for (const task of bucket || []) {
+      if (task && task.id === taskId && task.progressFile) return task
+    }
+  }
+  return null
 }
 
 const HTML = `
@@ -160,7 +231,7 @@ const HTML = `
   .summary span b { color:var(--text); font-family:var(--mono); font-weight:600; }
   section { margin-top:20px; }
   h2 { color:var(--dim); font-size:12px; letter-spacing:.08em; text-transform:uppercase; margin-bottom:10px; }
-  .queues { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+  .queues { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
   .queue { min-height:138px; border:1px solid var(--line); background:var(--panel); padding:13px; border-radius:6px; }
   .queue h3 { color:var(--muted); font-size:12px; font-weight:600; margin-bottom:10px; }
   .count { font-family:var(--mono); color:var(--dim); float:right; }
@@ -169,7 +240,12 @@ const HTML = `
   .taskid { color:var(--blue); font:12px var(--mono); }
   .tasktitle { overflow-wrap:anywhere; margin-top:2px; }
   .taskmeta { color:var(--muted); font-size:12px; margin-top:3px; overflow-wrap:anywhere; }
+  .tasklink { display:block; color:inherit; text-decoration:none; border-radius:4px; padding:1px 0; }
+  .tasklink:hover { background:#1a2230; }
+  .tasklink .taskid { text-decoration:underline; text-underline-offset:2px; }
+  .taskhint { color:var(--dim); font-size:11px; margin-top:2px; }
   .failed .taskid { color:var(--red); } .finished .taskid { color:var(--green); }
+  .blockedcol .taskid { color:var(--amber); }
   .empty { color:var(--dim); font-size:13px; }
   .current { border:1px solid var(--line); background:var(--panel); padding:18px; border-radius:6px; display:grid; grid-template-columns:minmax(220px,1fr) 210px; gap:24px; }
   .stage { display:flex; align-items:center; gap:9px; font-size:19px; font-weight:650; }
@@ -183,7 +259,7 @@ const HTML = `
   .stat b { color:var(--text); font:600 13px var(--mono); }
   .footer { border-top:1px solid var(--line); color:var(--muted); margin-top:22px; padding-top:14px; font-size:12px; overflow-wrap:anywhere; }
   .footer a { color:var(--blue); }
-  @media (max-width:900px) { .queues { grid-template-columns:repeat(2,minmax(0,1fr)); } .current { grid-template-columns:1fr; } }
+  @media (max-width:1100px) { .queues { grid-template-columns:repeat(2,minmax(0,1fr)); } .current { grid-template-columns:1fr; } }
   @media (max-width:560px) { .queues { grid-template-columns:1fr; } body { padding-top:18px; } }
 </style>
 </head>
@@ -205,6 +281,7 @@ const HTML = `
     <div class="queues">
       <div class="queue"><h3>就绪 <span class="count" id="readycount">0</span></h3><div id="ready"></div></div>
       <div class="queue"><h3>进行中 <span class="count" id="activecount">0</span></h3><div id="active"></div></div>
+      <div class="queue blockedcol"><h3>阻塞 <span class="count" id="blockedcount">0</span></h3><div id="blocked"></div></div>
       <div class="queue finished"><h3>完成 <span class="count" id="finishedcount">0</span></h3><div id="finished"></div></div>
       <div class="queue failed"><h3>失败 <span class="count" id="failedcount">0</span></h3><div id="failed"></div></div>
     </div>
@@ -239,18 +316,40 @@ const HTML = `
   function esc(value) { return String(value || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function ts(value) { if (!value) return '-'; const d = new Date(value); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0'); }
   function dur(value) { const seconds = Math.max(0, Math.round(value / 1000)); if (seconds < 60) return seconds+'s'; const minutes = Math.floor(seconds / 60); return minutes+'m '+(seconds % 60)+'s'; }
-  function task(task) { return '<div class="task"><div class="taskid">'+esc(task.id)+'</div><div class="tasktitle">'+esc(task.title || task.id)+'</div><div class="taskmeta">P'+esc(task.priority == null ? '-' : task.priority)+' · 第 '+esc(task.attempts || task.attempt || 1)+' 次'+(task.reason ? '<br>'+esc(task.reason) : '')+'</div></div>'; }
-  function queue(id, count, tasks) { $(id+'count').textContent = tasks.length; $(id).innerHTML = tasks.length ? tasks.map(task).join('') : '<div class="empty">-</div>'; }
+  function taskBody(task, extraMeta) {
+    return '<div class="taskid">'+esc(task.id)+'</div><div class="tasktitle">'+esc(task.title || task.id)+'</div><div class="taskmeta">P'+esc(task.priority == null ? '-' : task.priority)+' · 第 '+esc(task.attempts || task.attempt || 1)+' 次'+(extraMeta || '')+(task.reason ? '<br>'+esc(task.reason) : '')+'</div>'+(task.detailUrl ? '<div class="taskhint">点击查看 exec-review 详情</div>' : '');
+  }
+  function task(task) {
+    const inner = taskBody(task);
+    if (task.detailUrl) return '<a class="tasklink" href="'+esc(task.detailUrl)+'" target="_blank" rel="noopener">'+inner+'</a>';
+    return '<div class="task">'+inner+'</div>';
+  }
+  function blockedTask(task) {
+    const blockers = Array.isArray(task.blockedBy) && task.blockedBy.length
+      ? '等待 '+task.blockedBy.map((id) => esc(id)).join(', ')
+      : '等待依赖';
+    return '<div class="task">'+taskBody(task, ' · '+blockers)+'</div>';
+  }
+  // 注意：只接收 (id, tasks)。曾误写成 (id, count, tasks) 却只传两参，导致 render 抛错、徽章一直停在「连接中」。
+  function queue(id, tasks, renderTask) {
+    const list = Array.isArray(tasks) ? tasks : [];
+    const renderOne = renderTask || task;
+    const countEl = $(id + 'count');
+    const listEl = $(id);
+    if (countEl) countEl.textContent = list.length;
+    if (listEl) listEl.innerHTML = list.length ? list.map(renderOne).join('') : '<div class="empty">-</div>';
+  }
   function render() {
     if (!state) return;
     const cfg = state.config || {};
-    $('meta').textContent = cfg.workdir || state.runDir || '等待运行...';
+    $('meta').textContent = (cfg.workdir || state.runDir || '等待运行...') +
+      (state.runDir ? ' · run ' + String(state.runDir).split(/[/\\\\]/).pop() : '');
     $('source').textContent = cfg.source || '-';
     $('started').textContent = ts(state.startedAt);
     $('stopfile').textContent = state.stopFile || '-';
     $('stopsummary').textContent = state.stopFile || '-';
     $('rundir').textContent = state.runDir || '-';
-    queue('ready', state.ready || []); queue('active', state.active || []); queue('finished', state.done || []); queue('failed', state.failed || []);
+    queue('ready', state.ready || []); queue('active', state.active || []); queue('blocked', state.blocked || [], blockedTask); queue('finished', state.done || []); queue('failed', state.failed || []);
     const current = state.current;
     const last = current ? current.lastEventAt : state.lastEventAt;
     const age = last ? Date.now() - last : 0;
@@ -264,7 +363,8 @@ const HTML = `
     if (!current) { $('stage').textContent = state.reason ? '本轮已结束' : '等待任务...'; $('taskname').textContent = '-'; $('stagehint').textContent = '-'; $('bar').style.width = '0%'; $('heartbeat').textContent = '0'; $('stagedur').textContent = '-'; $('attempt').textContent = '-'; }
     else {
       $('stage').textContent = current.stageLabel || current.stage || '准备中';
-      $('taskname').textContent = (current.id || '-')+' · '+(current.title || current.id || '');
+      const detail = current.detailUrl ? '<a href="'+esc(current.detailUrl)+'" target="_blank" rel="noopener">'+esc(current.id || '-')+'</a>' : esc(current.id || '-');
+      $('taskname').innerHTML = detail+' · '+esc(current.title || current.id || '')+(current.detailUrl ? ' · <a href="'+esc(current.detailUrl)+'" target="_blank" rel="noopener">打开详情</a>' : '');
       $('stagehint').textContent = current.stage === 'reviewing' ? '执行已完成，正在审查' : current.stage === 'executing' ? '执行端正在工作' : '正在准备执行';
       $('bar').style.width = current.stage === 'reviewing' ? '65%' : current.stage === 'settled' ? '100%' : current.stage === 'executing' ? '30%' : '8%';
       $('heartbeat').textContent = current.heartbeats || 0;
@@ -274,9 +374,9 @@ const HTML = `
     $('report').innerHTML = state.reportFile ? '<a href="/report">'+esc(state.reportFile)+'</a>' : '运行结束后可查看 report.md。';
   }
   const stream = new EventSource('/events');
-  stream.onmessage = (message) => { try { const payload = JSON.parse(message.data); if (payload.type === 'state') { state = payload.state; render(); } } catch (_) {} };
+  stream.onmessage = (message) => { try { const payload = JSON.parse(message.data); if (payload.type === 'state') { state = payload.state; render(); } } catch (err) { console.error('afk-run render failed', err); } };
   stream.onerror = () => { const badge = $('status'); if (!state) { badge.textContent = '连接中断'; badge.className = 'badge stale'; } };
-  setInterval(render, 1000);
+  setInterval(() => { try { render(); } catch (err) { console.error('afk-run render tick failed', err); } }, 1000);
 })();
 </script>
 </body>
@@ -288,12 +388,30 @@ function clientState(state) {
   return rest
 }
 
+function parseTaskRoute(url) {
+  const pathname = (url || '/').split('?')[0]
+  const match = pathname.match(/^\/task\/([^/]+)(\/events)?\/?$/)
+  if (!match) return null
+  return {
+    taskId: decodeURIComponent(match[1]),
+    events: Boolean(match[2]),
+  }
+}
+
 function main() {
   const runDir = resolve(process.argv[2] || process.cwd())
   const port = Number(process.argv[3]) || 8700
   const loopProgressFile = `${runDir}/loop-progress.jsonl`
   const clients = new Set()
   let previous = ''
+  const progressWatchers = new Map()
+
+  function getProgressWatcher(progressFile) {
+    if (!progressWatchers.has(progressFile)) {
+      progressWatchers.set(progressFile, createProgressWatcher(progressFile))
+    }
+    return progressWatchers.get(progressFile)
+  }
 
   function readState() {
     const loopEvents = loadEvents(loopProgressFile)
@@ -319,6 +437,24 @@ function main() {
   setInterval(() => broadcast(), 1000)
 
   const server = createServer((request, response) => {
+    const route = parseTaskRoute(request.url)
+    if (route) {
+      const state = readState()
+      const task = findTaskRecord(state, route.taskId)
+      if (!task?.progressFile) {
+        response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+        response.end('task progress not found')
+        return
+      }
+      const basePath = taskDetailPath(route.taskId)
+      const handled = getProgressWatcher(task.progressFile).handleRequest(
+        (request.url || '/').split('?')[0],
+        request,
+        response,
+        { basePath, backLink: '/' },
+      )
+      if (handled) return
+    }
     if (request.url === '/') {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       response.end(HTML)
@@ -347,7 +483,15 @@ function main() {
     response.end('not found')
   })
   server.listen(port, '127.0.0.1', () => console.error(`afk-run 实时看板: http://127.0.0.1:${port}/`))
-  process.on('SIGINT', () => server.close(() => process.exit(0)))
+  process.on('SIGINT', () => {
+    for (const watcher of progressWatchers.values()) watcher.close()
+    server.close(() => process.exit(0))
+  })
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main()
+if (
+  process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
+  main()
+}

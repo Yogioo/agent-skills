@@ -5,13 +5,18 @@
   "retry": 1,
   "allowDirty": false,
   "stopFile": "",
+  "git": {
+    "useBotIdentity": false,
+    "name": "AFK Bot",
+    "email": "afk@local"
+  },
   "serve": {
     "enabled": true,
     "port": 0,
     "open": false
   },
   "execReview": {
-    "timeout": 7200,
+    "timeout": 0,
     "runner": "",
     "executorRunner": "",
     "reviewerRunner": "",
