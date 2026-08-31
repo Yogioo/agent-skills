@@ -1,5 +1,5 @@
 {
-  "source": "beads",
+  "source": "gh",
   "maxTasks": 0,
   "maxFailures": 3,
   "retry": 1,

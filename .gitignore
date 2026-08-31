@@ -1,11 +1,12 @@
-# 运行时缓存 / 进度产物（不进版本库）
+# Local scratch notes (not published; use GitHub Issues)
+.scratch/
 cache/
 run-*/
 *.jsonl
 .tmp/
 
-# Beads / Dolt files (added by bd init)
+# Beads / Dolt local store (this repo uses GitHub Issues; do not commit bd init)
+.beads/
 .dolt/
 *.db
 .beads-credential-key
-.beads/proxieddb/
