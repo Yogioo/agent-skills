@@ -229,6 +229,7 @@ export async function runLoop(deps) {
   await emitPipelineSnapshot(source, hooks)
 
   while (true) {
+    if (typeof deps.isActive === 'function' && !deps.isActive()) return finish('superseded')
     if (config.stopFile && existsSync(config.stopFile)) return finish('stop-file')
     if (config.maxTasks > 0 && stats.attempted >= config.maxTasks) return finish('max-tasks')
 
@@ -647,20 +648,127 @@ function serveRegistryPath(cacheRoot, workdir) {
   return join(cacheRoot, `serve-${hashStr(workdir)}.json`)
 }
 
-function killPid(pid) {
-  if (!pid || Number(pid) <= 0) return
+/** 同一 workdir 只允许一个 loop 进程；注册表与 serve 分开存放。 */
+export function loopRegistryPath(cacheRoot, workdir) {
+  return join(cacheRoot, `loop-${hashStr(workdir)}.json`)
+}
+
+function readLoopRegistry(registryPath) {
+  if (!existsSync(registryPath)) return null
+  try {
+    return JSON.parse(readFileSync(registryPath, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function sleepMs(ms) {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    // 等待旧 loop 进程树退出，避免与新 loop 争用 git 工作区。
+  }
+}
+
+function killPid(pid, { tree = false } = {}) {
+  if (!pid || Number(pid) <= 0 || Number(pid) === process.pid) return
   try {
     if (process.platform === 'win32') {
-      execFileSync('taskkill', ['/PID', String(pid), '/F'], {
+      const args = ['/PID', String(pid), '/F']
+      if (tree) args.push('/T')
+      execFileSync('taskkill', args, {
         stdio: 'ignore',
         windowsHide: true,
       })
       return
     }
+    if (tree) {
+      try {
+        execFileSync('pkill', ['-P', String(pid)], { stdio: 'ignore' })
+      } catch {
+        // 无子进程或 pkill 不可用。
+      }
+    }
     process.kill(Number(pid), 'SIGTERM')
   } catch {
-    // 旧看板进程可能已退出；忽略。
+    // 旧进程可能已退出；忽略。
   }
+}
+
+/**
+ * 停止同一 workdir 上一次注册的 loop 及其看板。
+ * @returns {{ killed: boolean, previousPid: number|null }}
+ */
+export function stopRegisteredLoop(cacheRoot, workdir) {
+  const registryPath = loopRegistryPath(cacheRoot, workdir)
+  const previous = readLoopRegistry(registryPath)
+  if (!previous?.pid || previous.pid === process.pid) {
+    try {
+      unlinkSync(registryPath)
+    } catch {
+      // ignore
+    }
+    return { killed: false, previousPid: null }
+  }
+  const previousPid = previous.pid
+  killPid(previousPid, { tree: true })
+  stopRegisteredServe(cacheRoot, workdir)
+  try {
+    unlinkSync(registryPath)
+  } catch {
+    // ignore
+  }
+  return { killed: true, previousPid }
+}
+
+/** 当前进程是否仍是 workdir 的注册 loop 实例。 */
+export function isActiveLoopInstance(cacheRoot, workdir, pid = process.pid) {
+  const current = readLoopRegistry(loopRegistryPath(cacheRoot, workdir))
+  return current?.pid === pid
+}
+
+/** 仅当注册 pid 匹配时移除 loop 注册表。 */
+export function releaseLoopInstance(cacheRoot, workdir, pid = process.pid) {
+  const registryPath = loopRegistryPath(cacheRoot, workdir)
+  const current = readLoopRegistry(registryPath)
+  if (current?.pid !== pid) return false
+  try {
+    unlinkSync(registryPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 声明 workdir 单实例：kill 旧 loop → 注册当前 pid → 安装退出清理。
+ * @returns {{ killed: boolean, previousPid: number|null }}
+ */
+export function claimLoopInstance(cacheRoot, workdir, runDir) {
+  mkdirSync(cacheRoot, { recursive: true })
+  const stopped = stopRegisteredLoop(cacheRoot, workdir)
+  if (stopped.killed) {
+    sleepMs(300)
+    console.error(`[afk-run] 已终止 workdir 上一 loop (pid=${stopped.previousPid})`)
+  }
+  writeFileSync(
+    loopRegistryPath(cacheRoot, workdir),
+    JSON.stringify({
+      pid: process.pid,
+      workdir,
+      runDir,
+      startedAt: Date.now(),
+    }) + '\n',
+    'utf8',
+  )
+  const release = () => releaseLoopInstance(cacheRoot, workdir, process.pid)
+  process.on('exit', release)
+  const onSignal = (code) => {
+    release()
+    process.exit(code)
+  }
+  process.once('SIGINT', () => onSignal(130))
+  process.once('SIGTERM', () => onSignal(143))
+  return stopped
 }
 
 /** 停止同一 workdir 上一次 loop 注册的看板进程，避免固定端口展示陈旧终态。 */
@@ -840,8 +948,14 @@ function main() {
     process.stdout.write(JSON.stringify({ dryRun: true, workdir, source: sourceName, stopFile, staleThresholdSec, runDir, execCfg, serveUrl }, null, 2) + '\n')
     return
   }
+  const loopClaim = claimLoopInstance(cacheRoot, workdir, runDir)
   gitModule.ensureGit(workdir, gitIdentity)
+  if (loopClaim.killed && !gitModule.isClean(workdir)) {
+    console.error('[afk-run] 上一 loop 中断后工作区未净，重置到 HEAD')
+    gitModule.resetHard(workdir, gitModule.head(workdir), DEFAULT_STOP_FILE)
+  }
   if (!gitModule.isClean(workdir) && !allowDirty) {
+    releaseLoopInstance(cacheRoot, workdir, process.pid)
     console.error(
       `工作区有未提交改动（${workdir}）。失败回滚会重置这些改动；请先提交/stash，或 --allow-dirty 显式放行。`,
     )
@@ -865,6 +979,7 @@ function main() {
     execReview,
     git,
     hooks,
+    isActive: () => isActiveLoopInstance(cacheRoot, workdir),
     beforeRun: () => {
       if (serveEnabled) startLoopServe(runDir, servePort, serveOpen, cacheRoot, workdir)
     },
@@ -872,6 +987,7 @@ function main() {
     .then((result) => {
       const reportFile = writeReport(runDir, result, startedAt, workdir)
       emitLoopEvent('loop_end', { reason: result.reason, reportFile })
+      releaseLoopInstance(cacheRoot, workdir, process.pid)
       const summary = {
         reason: result.reason,
         attempted: result.stats.attempted,
@@ -885,6 +1001,7 @@ function main() {
       process.stdout.write(JSON.stringify(summary, null, 2) + '\n')
     })
     .catch((err) => {
+      releaseLoopInstance(cacheRoot, workdir, process.pid)
       console.error(`loop 异常: ${err.stack || err}`)
       process.exit(1)
     })

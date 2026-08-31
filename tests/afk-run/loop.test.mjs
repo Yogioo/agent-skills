@@ -8,12 +8,21 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { decide, recoverAndRunLoop, runLoop, writeTaskMd } from '../../skills/afk-run/scripts/loop.mjs'
+import {
+  claimLoopInstance,
+  decide,
+  isActiveLoopInstance,
+  loopRegistryPath,
+  recoverAndRunLoop,
+  releaseLoopInstance,
+  runLoop,
+  writeTaskMd,
+} from '../../skills/afk-run/scripts/loop.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LOOP = join(__dirname, '..', '..', 'skills', 'afk-run', 'scripts', 'loop.mjs')
@@ -63,6 +72,7 @@ function makeFakes(overrides = {}) {
   }
   const git = {
     head: () => 'base-head',
+    isClean: () => true,
     commitAll: (task) => calls.commits.push(task),
     resetHard: () => calls.resets++,
     ...overrides.git,
@@ -390,6 +400,48 @@ test('runLoop: hooks.onTask 每任务写审计记录', async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
+test('runLoop: isActive 返回 false → superseded 终止', async () => {
+  const t1 = { id: 't1', title: 'T1', priority: 1 }
+  const { source, execReview, git } = makeFakes({
+    source: { listReady: queue([[t1]]) },
+  })
+  const dir = tmpDir()
+  const r = await runLoop({
+    config: baseConfig,
+    source,
+    execReview,
+    git,
+    hooks: { taskDir: dir },
+    isActive: () => false,
+  })
+  assert.equal(r.reason, 'superseded')
+  assert.equal(r.stats.attempted, 0)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('loop instance: claim / release / isActive', () => {
+  const cacheRoot = tmpDir()
+  const workdir = join(cacheRoot, 'project')
+  mkdirSync(workdir, { recursive: true })
+  const runDir = join(cacheRoot, 'run-1')
+  mkdirSync(runDir, { recursive: true })
+
+  claimLoopInstance(cacheRoot, workdir, runDir)
+  assert.equal(isActiveLoopInstance(cacheRoot, workdir), true)
+
+  writeFileSync(
+    loopRegistryPath(cacheRoot, workdir),
+    JSON.stringify({ pid: 999999, workdir, runDir, startedAt: Date.now() }) + '\n',
+    'utf8',
+  )
+  assert.equal(isActiveLoopInstance(cacheRoot, workdir), false)
+
+  assert.equal(releaseLoopInstance(cacheRoot, workdir, 999999), true)
+  assert.equal(isActiveLoopInstance(cacheRoot, workdir), false)
+
+  rmSync(cacheRoot, { recursive: true, force: true })
+})
+
 test('runLoop: 仅有进行中工单时不报告为 stuck', async () => {
   const { source, execReview, git } = makeFakes({
     source: { describeBlocked: async () => ({ blocked: [], inProgress: [{ id: 'p1', title: '进行中' }] }) },
@@ -438,7 +490,7 @@ test('runLoop: 看板 hooks 接收就绪队列、任务开始和最终结果', a
 test('CLI: --no-serve 不输出 loop 看板 URL', () => {
   const dir = tmpDir()
   try {
-    const stdout = execFileSync(process.execPath, [LOOP, '--workdir', dir, '--dry-run', '--no-serve'], {
+    const stdout = execFileSync(process.execPath, [LOOP, '--workdir', dir, '--dry-run', '--no-serve', '--source', 'beads'], {
       cwd: dir,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
