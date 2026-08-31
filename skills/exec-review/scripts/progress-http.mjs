@@ -120,6 +120,11 @@ export function renderProgressHtml(opts = {}) {
   .context-console .role-exec { color:var(--blue); font-weight:600; }
   .context-console .role-review { color:var(--purple); font-weight:600; }
   .context-console .ctx-sep { color:var(--dim); margin:8px 0; font-size:12px; }
+  .ctx-ts { color:var(--dim); font-size:10px; font-family:var(--mono); flex:none; }
+  .ctx-head { display:flex; align-items:baseline; gap:6px; flex-wrap:wrap; margin-bottom:6px; }
+  .ctx-badge { font-size:10px; font-weight:600; padding:1px 7px; border-radius:4px; }
+  .ctx-badge.run { color:var(--blue); background:color-mix(in srgb,var(--blue) 18%,transparent); }
+  .ctx-badge.done { color:var(--green); background:color-mix(in srgb,var(--green) 14%,transparent); }
   .ctx-cards { display:flex; flex-direction:column; gap:8px; }
   .ctx-card { border:1px solid var(--border); border-radius:8px; background:#0a0d12; overflow:hidden; }
   .ctx-card summary { cursor:pointer; padding:8px 12px; font-size:12px; color:var(--muted); list-style:none; }
@@ -204,8 +209,8 @@ ${clientContextUiSource()}
   const PAYLOAD_LIMIT = ${PAYLOAD_TRUNCATE};
   const $ = (id) => document.getElementById(id);
   const events = [];
-  const toolCards = {}; let ctxDirty = false;
-  const assistantCards = []; const outcomeCards = []; const contextLines = [];
+  const ctxNodes = []; let ctxSeq = 0; let ctxDirty = false;
+  const toolCards = {};
   const streamingAssistant = {};
   const MAX_PHASES = 2;
   const meta = { phases: {}, settled: false, status: '', lastT: Date.now(), started: Date.now(), heartbeats: 0, stageStart: Date.now() };
@@ -219,7 +224,39 @@ ${clientContextUiSource()}
     settle_approved:'var(--green)', settle_other:'var(--red)'
   };
 
-  function ts(t){ if (t == null || t === '') return ''; const d=new Date(t); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0'); }
+  function ts(t){ if (t == null || t === '') return ''; const d=new Date(t); const ms=String(d.getMilliseconds()).padStart(3,'0'); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0')+'.'+ms; }
+  function eventTime(wrapper, ev){ if (ev && typeof ev.t === 'number' && ev.t > 0) return ev.t; if (typeof wrapper === 'number' && wrapper > 0) return wrapper; return Date.now(); }
+  function roleTag(role){ const cls=role==='reviewer'?'role-review':'role-exec'; const lbl=role==='reviewer'?'审查':'执行'; return '<span class="'+cls+'">['+lbl+']</span>'; }
+  function tsBadge(t){ return '<span class="ctx-ts">'+esc(ts(t))+'</span>'; }
+  function rawPayloadType(node){ const p=node.ev && node.ev.payload; return (p && typeof p === 'object' && p.type) ? String(p.type) : ''; }
+  function formatRawSummary(node){
+    const p=node.ev && node.ev.payload;
+    if (!p || typeof p !== 'object') return JSON.stringify(node.ev && node.ev.payload != null ? node.ev.payload : node.ev, null, 2);
+    const type=String(p.type || '');
+    if (type === 'thread.started') return 'thread.started'+(p.thread_id ? ' · '+p.thread_id : '');
+    if (type === 'turn.started') return 'turn.started';
+    if (type === 'turn.completed'){
+      const u=p.usage;
+      if (u && typeof u === 'object') return 'turn.completed · in '+u.input_tokens+' · out '+u.output_tokens+(u.reasoning_output_tokens ? ' · reason '+u.reasoning_output_tokens : '');
+      return 'turn.completed';
+    }
+    return JSON.stringify(p, null, 2);
+  }
+  function isTurnInProgress(node, sorted, idx){
+    if (rawPayloadType(node) !== 'turn.started') return false;
+    for (let j=idx+1;j<sorted.length;j++){
+      const n=sorted[j];
+      if (n.role !== node.role || n.kind !== 'raw') continue;
+      const ty=rawPayloadType(n);
+      if (ty === 'turn.completed') return false;
+      if (ty === 'turn.started') break;
+    }
+    return true;
+  }
+  function formatAssistantBody(text){
+    const s=String(text || '');
+    try { return esc(JSON.stringify(JSON.parse(s), null, 2)); } catch { return esc(s); }
+  }
   function dur(ms){ if(ms==null) return '—'; const s=Math.round(ms/1000); if(s<60) return s+'s'; const m=Math.floor(s/60); if(m<60) return m+'m '+ (s%60)+'s'; const h=Math.floor(m/60); return h+'h '+ (m%60)+'m'; }
 
   function stageNow(){
@@ -236,7 +273,7 @@ ${clientContextUiSource()}
     events.push(e); meta.lastT = e.t;
     if (e.event==='heartbeat'){ meta.heartbeats++; return; }
     if (e.event==='executor_start'||e.event==='reviewer_start'){ meta.stageStart=e.t; }
-    if (e.event==='context_start'){ contextLines.push({role:e.role, line:'── '+(e.role==='reviewer'?'审查端':'执行端')+' 上下文 ──', t:e.t, sep:true}); ctxDirty=true; }
+    if (e.event==='context_start'){ ctxNodes.push({ kind:'sep', role:e.role, t:e.t || Date.now(), seq:ctxSeq++ }); ctxDirty=true; }
     if (e.event==='run_start'){ meta.title=e.title; meta.workdir=e.workdir; meta.runner=e.runner; meta.id=e.id; meta.runDir=e.runDir; }
     if (e.event==='executor_end'){ meta.phases.executor={status:e.status, changed:e.changed}; }
     if (e.event==='reviewer_end'){ meta.phases.reviewer={status:e.status, changed:e.changed}; }
@@ -320,77 +357,102 @@ ${clientContextUiSource()}
 
   function esc(s){ return String(s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-  function fmtBody(ev){
-    if (ev.kind === 'assistant' || ev.kind === 'outcome') return ev.text || '';
-    return JSON.stringify(ev.payload || ev, null, 2);
-  }
-
   function handleAgentEvent(e){
     const role = e.role || 'executor';
     const ev = e.event || {};
+    const t = eventTime(e.t, ev);
     if (ev.kind === 'tool') {
       const id = ev.callId || ('tool-'+Object.keys(toolCards).length);
-      if (!toolCards[id]) toolCards[id] = { role, start: null, done: null };
-      if (ev.phase === 'start') toolCards[id].start = ev;
-      else toolCards[id].done = ev;
+      if (toolCards[id] == null) {
+        toolCards[id] = ctxNodes.length;
+        ctxNodes.push({ kind:'tool', role, t, callId:id, start:null, done:null, seq:ctxSeq++ });
+      }
+      const node = ctxNodes[toolCards[id]];
+      if (ev.phase === 'start') { node.start = ev; node.t = t; }
+      else node.done = ev;
       ctxDirty = true;
       return;
     }
     if (ev.kind === 'assistant_partial') {
       const delta = ev.text || '';
-      if (!streamingAssistant[role]) {
-        streamingAssistant[role] = { text: delta, idx: assistantCards.length };
-        assistantCards.push({ role, ev: { text: delta }, streaming: true });
+      if (streamingAssistant[role] == null) {
+        streamingAssistant[role] = { idx: ctxNodes.length };
+        ctxNodes.push({ kind:'assistant', role, t, text:delta, streaming:true, seq:ctxSeq++ });
       } else {
-        streamingAssistant[role].text += delta;
-        assistantCards[streamingAssistant[role].idx].ev.text = streamingAssistant[role].text;
+        ctxNodes[streamingAssistant[role].idx].text += delta;
       }
       ctxDirty = true;
       return;
     }
     if (ev.kind === 'assistant') {
-      if (streamingAssistant[role]) {
-        const idx = streamingAssistant[role].idx;
-        assistantCards[idx].ev.text = ev.text || streamingAssistant[role].text;
-        assistantCards[idx].streaming = false;
+      if (streamingAssistant[role] != null) {
+        const node = ctxNodes[streamingAssistant[role].idx];
+        node.text = ev.text || node.text || '';
+        node.streaming = false;
         delete streamingAssistant[role];
       } else {
-        assistantCards.push({ role, ev });
+        ctxNodes.push({ kind:'assistant', role, t, text:ev.text || '', streaming:false, seq:ctxSeq++ });
       }
       ctxDirty = true;
       return;
     }
-    if (ev.kind === 'outcome') { outcomeCards.push({ role, ev }); ctxDirty = true; return; }
-    contextLines.push({ role, line: fmtBody(ev), t: e.t }); ctxDirty = true;
+    if (ev.kind === 'outcome') {
+      ctxNodes.push({ kind:'outcome', role, t, text:ev.text || '', seq:ctxSeq++ });
+      ctxDirty = true;
+      return;
+    }
+    ctxNodes.push({ kind:'raw', role, t, ev, seq:ctxSeq++ });
+    ctxDirty = true;
   }
 
   function renderContext(){
     const box = $('contextCards');
     const panel = box.parentElement;
     const wasAtBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 48;
+    const sorted = [...ctxNodes].sort((a,b)=>(a.t-b.t)||(a.seq-b.seq));
     const html = [];
-    for (const id of Object.keys(toolCards)) {
-      const card = toolCards[id];
-      const ev = card.done || card.start || {};
-      const toolKind = mapToolName(ev.toolName || 'tool');
-      const label = '['+(card.role==='reviewer'?'审查':'执行')+'] '+fmtToolSummary(ev);
-      const body = formatToolBody(card.start, card.done, ev.toolName || 'tool', 'tool-'+id, esc);
-      html.push('<details class="ctx-card tool ctx-tool-'+esc(toolKind)+'"><summary>'+esc(label)+'</summary><div class="body">'+body+'</div></details>');
-    }
-    for (const item of assistantCards) {
-      const streamCls = item.streaming ? ' streaming' : '';
-      const text = item.ev.text || '';
-      const body = text.length > PAYLOAD_LIMIT
-        ? renderTruncBlock(text, 'asst-'+assistantCards.indexOf(item), esc, PAYLOAD_LIMIT)
-        : esc(text);
-      html.push('<div class="ctx-card assistant'+streamCls+'"><div class="body"><span class="'+(item.role==='reviewer'?'role-review':'role-exec')+'">['+(item.role==='reviewer'?'审查':'执行')+']</span> '+body+'</div></div>');
-    }
-    for (const item of outcomeCards) {
-      html.push('<div class="ctx-card outcome"><div class="body"><span class="'+(item.role==='reviewer'?'role-review':'role-exec')+'">['+(item.role==='reviewer'?'审查':'执行')+'] outcome</span>'+String.fromCharCode(10)+esc(item.ev.text||'')+'</div></div>');
-    }
-    for (const l of contextLines) {
-      if (l.sep) html.push('<div class="ctx-sep">'+esc(l.line)+'</div>');
-      else html.push('<div class="ctx-card raw"><div class="body"><span class="'+(l.role==='reviewer'?'role-review':'role-exec')+'">['+(l.role==='reviewer'?'审查':'执行')+']</span> '+esc(l.line)+'</div></div>');
+    for (let i=0;i<sorted.length;i++){
+      const node = sorted[i];
+      if (node.kind === 'sep') {
+        html.push('<div class="ctx-sep">'+tsBadge(node.t)+' ── '+(node.role==='reviewer'?'审查端':'执行端')+' 上下文 ──</div>');
+        continue;
+      }
+      if (node.kind === 'tool') {
+        const ev = node.done || node.start || {};
+        const toolKind = mapToolName(ev.toolName || 'tool');
+        const running = node.start && !node.done;
+        const badge = running ? '<span class="ctx-badge run">进行中</span>' : (node.done ? '<span class="ctx-badge done">完成</span>' : '');
+        const label = fmtToolSummary(ev);
+        const body = formatToolBody(node.start, node.done, ev.toolName || 'tool', 'tool-'+node.callId, esc);
+        html.push('<details class="ctx-card tool ctx-tool-'+esc(toolKind)+'"'+(running?' open':'')+'><summary><span class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+' '+esc(label)+badge+'</span></summary><div class="body">'+body+'</div></details>');
+        continue;
+      }
+      if (node.kind === 'assistant') {
+        const streamCls = node.streaming ? ' streaming' : '';
+        const text = node.text || '';
+        const body = text.length > PAYLOAD_LIMIT
+          ? renderTruncBlock(text, 'asst-'+node.seq, esc, PAYLOAD_LIMIT)
+          : formatAssistantBody(text);
+        html.push('<div class="ctx-card assistant'+streamCls+'"><div class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+(node.streaming?'<span class="ctx-badge run">输出中</span>':'')+'</div><div class="body">'+body+'</div></div>');
+        continue;
+      }
+      if (node.kind === 'outcome') {
+        html.push('<div class="ctx-card outcome"><div class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+'<span class="ctx-badge done">outcome</span></div><div class="body">'+formatAssistantBody(node.text)+'</div></div>');
+        continue;
+      }
+      if (node.kind === 'raw-line') {
+        html.push('<div class="ctx-card raw"><div class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+'</div><div class="body">'+esc(node.line || '')+'</div></div>');
+        continue;
+      }
+      if (node.kind === 'raw') {
+        const inProg = isTurnInProgress(node, sorted, i);
+        const badge = inProg ? '<span class="ctx-badge run">进行中</span>' : (rawPayloadType(node) === 'turn.completed' ? '<span class="ctx-badge done">完成</span>' : '');
+        const summary = formatRawSummary(node);
+        const body = summary.length > PAYLOAD_LIMIT
+          ? renderTruncBlock(summary, 'raw-'+node.seq, esc, PAYLOAD_LIMIT)
+          : esc(summary);
+        html.push('<div class="ctx-card raw"><div class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+badge+'</div><div class="body">'+body+'</div></div>');
+      }
     }
     box.innerHTML = html.join('');
     if (wasAtBottom) panel.scrollTop = panel.scrollHeight;
@@ -398,7 +460,7 @@ ${clientContextUiSource()}
   setInterval(()=>{ if(ctxDirty){ renderContext(); ctxDirty=false; } }, 150);
 
   const es = new EventSource(EVENTS_URL);
-  es.onmessage = (m)=>{ try{ const e=JSON.parse(m.data); if(e.type==='agent_event'){ handleAgentEvent(e); return; } if(e.type==='context'){ contextLines.push({role:e.role,line:e.line||'',t:typeof e.t==='number'?e.t:null}); ctxDirty=true; return; } handleEvent(e); render(); }catch(err){} };
+  es.onmessage = (m)=>{ try{ const e=JSON.parse(m.data); if(e.type==='agent_event'){ handleAgentEvent(e); return; } if(e.type==='context'){ ctxNodes.push({ kind:'raw-line', role:e.role, line:e.line||'', t:typeof e.t==='number'?e.t:Date.now(), seq:ctxSeq++ }); ctxDirty=true; return; } handleEvent(e); render(); }catch(err){} };
   es.onerror = ()=>{ const le=$('lastEvent'); if(le) le.textContent='连接中断'; };
 
   setInterval(()=>{ if(!meta.settled){ render(); } }, 1000);
@@ -470,8 +532,13 @@ export function createProgressWatcher(progressFile) {
     }
   }
 
+  function agentEventTime(event) {
+    if (event && typeof event.t === 'number' && event.t > 0) return event.t
+    return Date.now()
+  }
+
   function emitAgentEvent(role, event) {
-    const payload = `data: ${JSON.stringify({ type: 'agent_event', role, event, t: Date.now() })}\n\n`
+    const payload = `data: ${JSON.stringify({ type: 'agent_event', role, event, t: agentEventTime(event) })}\n\n`
     for (const res of clients) {
       try {
         res.write(payload)
@@ -507,7 +574,7 @@ export function createProgressWatcher(progressFile) {
           try {
             const event = JSON.parse(line)
             res.write(
-              `data: ${JSON.stringify({ type: 'agent_event', role, event, t: Date.now() })}\n\n`,
+              `data: ${JSON.stringify({ type: 'agent_event', role, event, t: agentEventTime(event) })}\n\n`,
             )
           } catch {
             /* ignore */
@@ -531,7 +598,7 @@ export function createProgressWatcher(progressFile) {
         const text = readFileSync(file, 'utf8')
         for (const line of text.split('\n')) {
           if (line.trim().length) {
-            res.write(`data: ${JSON.stringify({ type: 'context', role, line })}\n\n`)
+            res.write(`data: ${JSON.stringify({ type: 'context', role, line, t: Date.now() })}\n\n`)
           }
         }
         const st = statSync(file)

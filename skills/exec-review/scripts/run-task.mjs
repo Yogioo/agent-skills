@@ -27,6 +27,12 @@ import { buildExecutorCommitRule, buildReviewerGitContext } from './commit-rules
 import { ProgressWriter } from './progress.mjs'
 import { snapshot, diff } from './workspace.mjs'
 import { extractJsonFromEventsFile, extractJsonFromText } from './normalize-agent.mjs'
+import {
+  cleanupPreviousSession,
+  releaseSessionMain,
+  updateSessionServePid,
+  writeSessionLock,
+} from './workdir-session.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = resolve(__dirname, '..')
@@ -325,7 +331,7 @@ function startServe(runDir, port, open = true) {
     // 稍等 serve 完成监听再打开，避免浏览器打到 404
     setTimeout(() => openUrl(url), 600)
   }
-  return url
+  return { url, pid: child.pid ?? null }
 }
 
 function readStdin() {
@@ -530,7 +536,32 @@ async function main() {
   })
   progress.setStage('preparing')
   const derivedPort = settings.port || 8000 + (hashStr(workdir) % 4000)
-  const serveUrl = settings.serve ? startServe(runDir, derivedPort, settings.openBrowser) : ''
+  let serveUrl = ''
+  if (settings.serve) {
+    const cleanup = cleanupPreviousSession({
+      cacheRoot,
+      workdir,
+      port: derivedPort,
+    })
+    if (cleanup.killedMain || cleanup.killedServe || cleanup.killedPort > 0) {
+      const msg = `cleanup previous session: main=${cleanup.killedMain} serve=${cleanup.killedServe} port=${cleanup.killedPort}`
+      logMain(mainLogPath, msg)
+      console.error(`exec-review: 已回收同一 workdir 的上一轮进程 (${msg})`)
+    }
+    writeSessionLock({
+      cacheRoot,
+      workdir,
+      mainPid: process.pid,
+      port: derivedPort,
+      runDir,
+      taskId: task.id || '',
+    })
+    const serve = startServe(runDir, derivedPort, settings.openBrowser)
+    serveUrl = serve.url
+    if (serve.pid) {
+      updateSessionServePid({ cacheRoot, workdir, servePid: serve.pid })
+    }
+  }
   const returnLevel = settings.returnLevel
   const runCtx = { serveUrl, progressFile: progress.path, returnLevel }
 
@@ -552,6 +583,7 @@ async function main() {
     progress.write('settle', settleData, 0)
     emitSummary(summary, summaryPath, { ...runCtx, events: progress.all })
     progress.end()
+    releaseSessionMain({ cacheRoot, workdir, mainPid: process.pid })
     logMain(mainLogPath, `end ${summary.status}`)
   }
 

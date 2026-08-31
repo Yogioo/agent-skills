@@ -105,6 +105,7 @@
 loop 运行时会启动一个**独立进程**（`scripts/serve.mjs`），把单条进度事件流 `progress.jsonl` 经 SSE 推给浏览器，渲染成**实时进度页**（进度条、阶段（执行/审查）、阶段时间线、存活心跳、实时日志）。
 
 - 启动时在 stderr 打印 URL（也可从摘要 JSON 的 `serveUrl` 取）
+- **同一 workdir 再次启动时**，会先回收上一轮残留的 run-task / serve 进程树并释放端口（锁文件：`%TEMP%/exec-review/locks/<hash>.json`）
 - `--no-serve`：不启动；`--port <端口>`：指定端口（默认按 workdir 派生）
 - `--heartbeat-ms <ms>`：心跳间隔
 

@@ -72,6 +72,7 @@ Shell 等待时间设长（常见数分钟到十余分钟）。同一工作区�
 loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度页：进度条、当前阶段（执行 / 审查）、阶段时间线、存活心跳、实时日志。URL 在 stderr 打印，也在摘要 `serveUrl` 字段里。**默认启动后会自动调用系统 `open` 打开默认浏览器**（`--no-open` 关掉；`EXEC_REVIEW_OPEN_BROWSER=0` 或 config `openBrowser:false` 亦可）。
 
 - **推荐后台运行**：`nohup node …/run-task.mjs … &`（PowerShell 用 `Start-Process`），并**把 `serveUrl`/URL 交给用户打开网页查看**。前台直接跑虽然也能看，但日志输出容易被忽略，且一旦命令行进程被中止，serve 会随之消亡、网页就没了。
+- **同一 workdir 串行**：新 run 启动时会读取 `%TEMP%/exec-review/locks/<hash>.json`，自动 `taskkill` 上一轮残留的 **run-task + serve** 进程树，并释放占用的进度端口（避免网页仍显示旧工单）。
 - `--no-serve` 关掉服务；`--port` 指定端口（默认按 workdir 派生）；`--no-open` 只关自动打开（URL 仍打印）。
 - 事件流落在 `<runDir>/progress.jsonl`（单条 append-only，带 `level`）。
 

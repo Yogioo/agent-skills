@@ -36,6 +36,14 @@ const server = createServer((req, res) => {
   res.end('not found')
 })
 
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`exec-review serve: 端口 ${port} 已被占用（请结束旧 serve 或换 --port）`)
+    process.exit(1)
+  }
+  throw err
+})
+
 server.listen(port, '127.0.0.1', () => {
   const url = `http://127.0.0.1:${port}/`
   console.error(`exec-review 实时进度: ${url}`)
