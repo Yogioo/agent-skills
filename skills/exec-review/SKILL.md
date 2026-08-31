@@ -108,7 +108,7 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 - `scripts/workspace.mjs` — 内容快照改动检测
 - `scripts/progress.mjs` — 单条进度事件流（level + 心跳）
 - `scripts/progress-http.mjs` — 进度页 HTML + SSE（里程碑 + agent 结构化事件）
-- `scripts/normalize-agent.mjs` — agent stream-json → NormalizedEvent
+- `scripts/normalize-event.mjs` — 三 runner JSONL → NormalizedEvent（统一入口）
 - `scripts/serve.mjs` — 独立实时进度服务（SSE → HTML，两阶段视图）
 - `scripts/runners/` — `codex` / `pi` / `agent` adapters
 - `prompts/executor.md`、`prompts/reviewer.md`（审查端直接改）

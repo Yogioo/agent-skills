@@ -8,8 +8,8 @@
 
 | runner | 二进制默认 | 说明 |
 |--------|------------|------|
-| `codex`（默认） | `codex` / `$CODEX_BIN` | `codex exec`；支持 `--output-schema` 与 `-s` sandbox；`thinking` → `-c model_reasoning_effort=…` |
-| `pi` | `pi` / `$PI_BIN` | `pi -p --no-session`；用 `@promptFile` 喂入；`thinking` → `--thinking` |
+| `codex`（默认） | `codex` / `$CODEX_BIN` | `codex exec --json`；`-o` / `--output-schema` 写最终消息；stdout JSONL → normalized events；`thinking` → `-c model_reasoning_effort=…` |
+| `pi` | `pi` / `$PI_BIN` | `pi -p --no-session --mode json`；用 `@promptFile` 喂入；stdout JSONL → normalized events；`thinking` → `--thinking` |
 | `agent` | `agent` / `$AGENT_BIN` / `$CURSOR_AGENT_BIN` | Cursor CLI `agent -p --output-format stream-json`；用 prompt 文件指针喂入；`thinking` → 折进 `--model …[effort=…]` |
 
 执行端与审查端可以不同 runner（`executor.runner` / `reviewer.runner`，或 `--executor-runner` / `--reviewer-runner`）。
@@ -29,12 +29,21 @@
   - pi：在 `read-only` 或 `role=reviewer` 时 `--exclude-tools write,edit`
   - agent：`read-only` → `--mode ask`；`danger-full-access` → `--sandbox disabled`；其余 → `--sandbox enabled`
 - `--dry-run`：不真正调用 CLI，只验证脚本与缓存布局
+- `--structured-context <true|false>` / `--no-structured-context`：进度页是否 tail normalized events（默认 true；false 时回退 legacy log 行 tail）
 - `--codex-bin`：兼容旧参数（当作 bin 覆盖）
+
+## codex 注意
+
+- 启用 `--json`：stdout 为 JSONL 事件流，经 adapter 写入 `*.events.jsonl`（normalized）；raw stdout 仍 tee 到 `*.log`
+- 最终 outcome 仍由 `-o` / `--output-schema` 写入 `*.out.md`（与 Phase 1 前行为一致）；`run-task` 优先从 events 提取，失败时降级 `extractJson` + out 文件
+- 进度页 context 面板与 agent runner 共用同一 normalized 卡片 UI
 
 ## pi 注意
 
 - 默认带 `--approve`（可用 `--no-approve` / config `approve: false` 关闭）
-- 无 `--output-schema`；靠 prompts 要求 JSON + 脚本 `extractJson`
+- 使用 `--mode json`（非 `text`）：stdout JSONL → normalized events；最终 assistant 文本写入 `*.out.md`
+- 无 `--output-schema`；靠 prompts 要求 JSON + `extractJsonFromEventsFile` / `extractJson` 降级
+- 进度页 context 面板与 agent/codex 共用同一 normalized 卡片 UI
 
 ## agent 注意
 
@@ -52,7 +61,7 @@
 ```js
 {
   name: '…',
-  runTurn({ role, workdir, prompt, promptFile, outFile, logFile, schemaFile, sandbox, model, provider, thinking, dryRun })
+  runTurn({ role, workdir, prompt, promptFile, outFile, logFile, eventsFile, schemaFile, sandbox, model, provider, thinking, dryRun })
 }
 ```
 

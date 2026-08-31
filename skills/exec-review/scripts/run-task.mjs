@@ -53,6 +53,13 @@ function usage(code = 1) {
 }
 
 function parseArgs(argv) {
+  const asBool = (v, def) => {
+    if (v == null) return def
+    const s = String(v).toLowerCase()
+    if (s === '0' || s === 'false' || s === 'no' || s === 'off') return false
+    if (s === '1' || s === 'true' || s === 'yes' || s === 'on') return true
+    return def
+  }
   const out = {
     workdir: null,
     taskFile: null,
@@ -90,6 +97,7 @@ function parseArgs(argv) {
     progressFile: '',
     timeout: 0,
     dryRun: false,
+    structuredContext: null,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -213,6 +221,12 @@ function parseArgs(argv) {
         break
       case '--dry-run':
         out.dryRun = true
+        break
+      case '--structured-context':
+        out.structuredContext = asBool(next(), true)
+        break
+      case '--no-structured-context':
+        out.structuredContext = false
         break
       default:
         console.error(`未知参数: ${a}`)
@@ -597,7 +611,11 @@ async function main() {
   logMain(mainLogPath, 'execute: 执行端开始')
   progress.setStage('executing')
   progress.write('executor_start', {})
-  progress.write('context_start', { role: 'executor', file: executorLog, eventsFile: executorEvents }, 2)
+  progress.write('context_start', {
+    role: 'executor',
+    file: executorLog,
+    ...(settings.structuredContext ? { eventsFile: executorEvents } : {}),
+  }, 2)
   const execCtrl = new AbortController()
   const execTimer =
     settings.timeout > 0 ? setTimeout(() => execCtrl.abort(), settings.timeout * 1000) : null
@@ -722,7 +740,11 @@ async function main() {
   logMain(mainLogPath, `review: 审查端开始（改动文件 ${changedFiles.length} 个）`)
   progress.setStage('reviewing')
   progress.write('reviewer_start', {})
-  progress.write('context_start', { role: 'reviewer', file: reviewerLog, eventsFile: reviewerEvents }, 2)
+  progress.write('context_start', {
+    role: 'reviewer',
+    file: reviewerLog,
+    ...(settings.structuredContext ? { eventsFile: reviewerEvents } : {}),
+  }, 2)
   const reviewCtrl = new AbortController()
   const reviewTimer =
     settings.timeout > 0 ? setTimeout(() => reviewCtrl.abort(), settings.timeout * 1000) : null

@@ -234,11 +234,17 @@ export function resolveSettings(args, loaded) {
     asBool(process.env.EXEC_REVIEW_GIT_COMMIT, asBool(cfg.gitCommit, true)),
   )
 
+  const structuredContext = asBool(
+    args.structuredContext,
+    asBool(process.env.EXEC_REVIEW_STRUCTURED_CONTEXT, asBool(cfg.structuredContext, true)),
+  )
+
   return {
     configPath: loaded?.path || DEFAULT_CONFIG_PATH,
     sandbox,
     approve,
     gitCommit,
+    structuredContext,
     serve,
     port,
     returnLevel,

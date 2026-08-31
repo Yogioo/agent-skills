@@ -1,17 +1,20 @@
 import { execFile, spawn } from 'node:child_process'
 import { createWriteStream, writeFileSync, appendFileSync } from 'node:fs'
 import { resolveBin } from './resolve-bin.mjs'
-import { normalizeAgentEvent } from '../normalize-agent.mjs'
+import { normalizeEvent, extractOutTextFromRaw } from '../normalize-event.mjs'
 
 /**
- * @typedef {object} AgentTurnRequest
+ * @typedef {object} StreamTurnRequest
  * @property {string} bin
  * @property {string} [knownName]
+ * @property {'agent' | 'codex' | 'pi'} runner
  * @property {string} workdir
  * @property {string[]} args
+ * @property {string} [stdinText]
  * @property {string} outFile
  * @property {string} logFile
  * @property {string} eventsFile
+ * @property {boolean} [writeOutFile] when false, CLI writes outFile (codex -o)
  * @property {boolean} [dryRun]
  * @property {string} [dryRunBody]
  * @property {AbortSignal} [signal]
@@ -42,12 +45,13 @@ function killTree(child) {
 }
 
 /**
- * Parse stream-json NDJSON from stdout chunks.
+ * Parse NDJSON from stdout chunks.
  * @param {string} chunkText
  * @param {string} remainder
+ * @param {'agent' | 'codex' | 'pi'} runner
  * @returns {{ remainder: string, rawEvents: object[], resultText: string }}
  */
-export function parseStreamJsonChunk(chunkText, remainder = '') {
+export function parseStreamJsonChunk(chunkText, remainder = '', runner = 'agent') {
   const combined = remainder + chunkText
   const lines = combined.split('\n')
   const nextRemainder = lines.pop() || ''
@@ -59,9 +63,8 @@ export function parseStreamJsonChunk(chunkText, remainder = '') {
     try {
       const raw = JSON.parse(trimmed)
       rawEvents.push(raw)
-      if (raw?.type === 'result' && typeof raw.result === 'string') {
-        resultText = raw.result
-      }
+      const out = extractOutTextFromRaw(raw, runner)
+      if (out) resultText = out
     } catch {
       /* ignore partial / non-json lines */
     }
@@ -70,18 +73,21 @@ export function parseStreamJsonChunk(chunkText, remainder = '') {
 }
 
 /**
- * Spawn agent turn with stream-json parsing and normalized events file.
- * @param {AgentTurnRequest} req
+ * Spawn a turn with JSONL stdout parsing and normalized events file.
+ * @param {StreamTurnRequest} req
  */
-export function spawnAgentStreamTurn(req) {
+export function spawnStreamTurn(req) {
   const {
     bin,
     knownName,
+    runner,
     workdir,
     args,
+    stdinText,
     outFile,
     logFile,
     eventsFile,
+    writeOutFile = true,
     dryRun = false,
     dryRunBody = '{"status":"blocked","note":"dry-run"}\n',
     signal,
@@ -94,12 +100,19 @@ export function spawnAgentStreamTurn(req) {
   if (dryRun) {
     writeFileSync(outFile, dryRunBody, 'utf8')
     writeFileSync(logFile, `[dry-run] ${cmdline}`, 'utf8')
-    const outcome = normalizeAgentEvent({
-      type: 'result',
-      subtype: 'success',
-      result: dryRunBody.trim(),
-    })
-    writeFileSync(eventsFile, JSON.stringify(outcome) + '\n', 'utf8')
+    const dryRaw =
+      runner === 'agent'
+        ? { type: 'result', subtype: 'success', result: dryRunBody.trim() }
+        : runner === 'pi'
+          ? {
+              type: 'message_end',
+              message: { role: 'assistant', content: [{ type: 'text', text: dryRunBody.trim() }] },
+            }
+          : {
+              type: 'item.completed',
+              item: { id: 'dry', type: 'agent_message', text: dryRunBody.trim() },
+            }
+    writeFileSync(eventsFile, JSON.stringify(normalizeEvent(dryRaw, runner)) + '\n', 'utf8')
     return Promise.resolve({ code: 0, dryRun: true })
   }
 
@@ -132,15 +145,19 @@ export function spawnAgentStreamTurn(req) {
       else signal.addEventListener('abort', onAbort, { once: true })
     }
 
-    const handleChunk = (d) => {
-      logStream.write(d)
-      const parsed = parseStreamJsonChunk(d.toString('utf8'), ndjsonRemainder)
-      ndjsonRemainder = parsed.remainder
-      if (parsed.resultText) finalResultText = parsed.resultText
-      for (const raw of parsed.rawEvents) {
-        const normalized = normalizeAgentEvent(raw)
+    const ingestRawEvents = (rawEvents, resultText) => {
+      if (resultText) finalResultText = resultText
+      for (const raw of rawEvents) {
+        const normalized = normalizeEvent(raw, runner)
         appendFileSync(eventsFile, JSON.stringify(normalized) + '\n', 'utf8')
       }
+    }
+
+    const handleChunk = (d) => {
+      logStream.write(d)
+      const parsed = parseStreamJsonChunk(d.toString('utf8'), ndjsonRemainder, runner)
+      ndjsonRemainder = parsed.remainder
+      ingestRawEvents(parsed.rawEvents, parsed.resultText)
     }
 
     child.stdout.on('data', handleChunk)
@@ -156,18 +173,24 @@ export function spawnAgentStreamTurn(req) {
       settled = true
       signal?.removeEventListener('abort', onAbort)
       if (ndjsonRemainder.trim()) {
-        const parsed = parseStreamJsonChunk('\n', ndjsonRemainder)
-        if (parsed.resultText) finalResultText = parsed.resultText
-        for (const raw of parsed.rawEvents) {
-          const normalized = normalizeAgentEvent(raw)
-          appendFileSync(eventsFile, JSON.stringify(normalized) + '\n', 'utf8')
-        }
+        const parsed = parseStreamJsonChunk('\n', ndjsonRemainder, runner)
+        ingestRawEvents(parsed.rawEvents, parsed.resultText)
       }
-      writeFileSync(outFile, finalResultText, 'utf8')
+      if (writeOutFile) {
+        writeFileSync(outFile, finalResultText, 'utf8')
+      }
       logStream.end()
       resolvePromise({ code: code ?? 1 })
     })
 
+    if (stdinText != null) {
+      child.stdin.write(stdinText)
+    }
     child.stdin.end()
   })
+}
+
+/** @param {StreamTurnRequest} req */
+export function spawnAgentStreamTurn(req) {
+  return spawnStreamTurn({ ...req, runner: 'agent', writeOutFile: true })
 }

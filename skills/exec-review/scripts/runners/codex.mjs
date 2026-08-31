@@ -1,4 +1,4 @@
-import { spawnTurn } from './spawn-turn.mjs'
+import { spawnStreamTurn } from './spawn-agent-turn.mjs'
 
 /**
  * @param {{ bin?: string, model?: string, thinking?: string, sandbox?: string }} opts
@@ -18,6 +18,7 @@ export function createCodexRunner(opts = {}) {
      * @param {string} turn.prompt
      * @param {string} turn.outFile
      * @param {string} turn.logFile
+     * @param {string} [turn.eventsFile]
      * @param {string} [turn.schemaFile]
      * @param {string} [turn.sandbox]
      * @param {string} [turn.model]
@@ -38,6 +39,7 @@ export function createCodexRunner(opts = {}) {
         sandbox,
         '-o',
         turn.outFile,
+        '--json',
         '--color',
         'never',
       ]
@@ -46,18 +48,19 @@ export function createCodexRunner(opts = {}) {
       if (thinking) args.push('-c', `model_reasoning_effort=${thinking}`)
       args.push('-')
 
-      return spawnTurn({
+      return spawnStreamTurn({
         bin,
         knownName: 'codex',
+        runner: 'codex',
         workdir: turn.workdir,
         args,
         stdinText: turn.prompt,
         outFile: turn.outFile,
         logFile: turn.logFile,
+        eventsFile: turn.eventsFile,
+        writeOutFile: false,
         dryRun: turn.dryRun,
         signal: turn.signal,
-        // Codex writes the final message to `-o`; stdout is event noise.
-        stdoutIsOutput: false,
       })
     },
   }
