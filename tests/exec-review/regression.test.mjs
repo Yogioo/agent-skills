@@ -246,11 +246,13 @@ test('提示词模板使用动态提交规则和 git 上下文占位符', () => 
   assert.match(rv, /{{GIT_REVIEW_CONTEXT}}/, '审查端应有 git 上下文占位符')
 })
 
-test('审查端提示词要求直接修改且支持 git diff 上下文', () => {
+test('审查端提示词要求直接修改、seal 与 git diff 上下文', () => {
   const md = read(REVIEW_PROMPT)
   assert.match(md, /直接/, '审查端应被要求直接修改')
   assert.match(md, /clean\|refined/, '审查端输出应为 clean|refined')
   assert.match(md, /{{GIT_REVIEW_CONTEXT}}/, '审查端应有条件 git diff 上下文')
+  assert.match(md, /# Seal/, '审查端应有 seal 步骤')
+  assert.match(md, /amend/, '审查端应 amend 执行端 commit')
   assert.ok(!md.includes('REVISE'), '审查端不应再输出 REVISE 交回执行端')
 })
 
@@ -342,10 +344,14 @@ test('dry-run 在 git 仓库默认注入 log、提交规则和 BASE_HEAD', async
 
     assert.match(executor, /参考：最近变更（git log）/)
     assert.match(executor, /third context commit/)
-    assert.match(executor, /有应保留改动则完成后 commit/)
-    assert.match(executor, /blocked \/ 无应保留改动则不提交/)
+    assert.match(executor, /执行端 \*\*commit\*\*/)
+    assert.match(executor, /本任务仅一个 commit/)
+    assert.match(executor, /`no_change` \/ `blocked` \/ `empty`：不提交/)
     assert.match(reviewer, new RegExp(`BASE_HEAD：.*${repo.head}`))
     assert.match(reviewer, /git diff/)
+    assert.match(reviewer, /审查端 \*\*amend\*\*/)
+    assert.match(reviewer, /git commit --amend --no-edit/)
+    assert.match(reviewer, /不另起新 commit/)
   } finally {
     rmSync(repo.dir, { recursive: true, force: true })
     rmSync(cache, { recursive: true, force: true })
@@ -360,7 +366,7 @@ test('dry-run 的 gitCommit=false 保留禁止提交但仍注入 git 上下文',
     const executor = read(join(summary.cacheDir, 'executor.prompt.md'))
     const reviewer = read(join(summary.cacheDir, 'reviewer.prompt.md'))
 
-    assert.doesNotMatch(executor, /有应保留改动则完成后 commit/)
+    assert.doesNotMatch(executor, /本任务仅一个 commit/)
     assert.match(executor, /不要提交（提交由调用方负责）/)
     assert.match(executor, /参考：最近变更（git log）/)
     assert.match(reviewer, new RegExp(`BASE_HEAD：.*${repo.head}`))
