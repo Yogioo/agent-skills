@@ -26,7 +26,7 @@ import { loadConfigFile, resolveSettings } from './load-config.mjs'
 import { buildExecutorCommitRule, buildReviewerGitContext } from './commit-rules.mjs'
 import { ProgressWriter } from './progress.mjs'
 import { snapshot, diff } from './workspace.mjs'
-import { extractJsonFromEventsFile } from './normalize-agent.mjs'
+import { extractJsonFromEventsFile, extractJsonFromText } from './normalize-agent.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = resolve(__dirname, '..')
@@ -405,32 +405,6 @@ function collectGitContext(workdir) {
   }
 }
 
-function extractJson(text) {
-  const raw = String(text || '').trim()
-  if (!raw) return null
-  const tryParse = (s) => {
-    try {
-      return JSON.parse(s)
-    } catch {
-      return null
-    }
-  }
-  let v = tryParse(raw)
-  if (v) return v
-  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  if (fence) {
-    v = tryParse(fence[1].trim())
-    if (v) return v
-  }
-  const start = raw.indexOf('{')
-  const end = raw.lastIndexOf('}')
-  if (start >= 0 && end > start) {
-    v = tryParse(raw.slice(start, end + 1))
-    if (v) return v
-  }
-  return null
-}
-
 function emitSummary(summary, summaryPath, runCtx = {}) {
   const merged = { ...summary }
   // 渐进式披露：默认只回指针；仅在 returnLevel>0 时追加过滤后的进度投影
@@ -648,7 +622,7 @@ async function main() {
   const execText = existsSync(executorOut) ? readFileSync(executorOut, 'utf8') : ''
   let outcome =
     (existsSync(executorEvents) ? extractJsonFromEventsFile(executorEvents) : null) ||
-    extractJson(execText)
+    extractJsonFromText(execText)
   if (!outcome || typeof outcome !== 'object') outcome = null
   const afterExec = snapshot(workdir)
   const execDiff = diff(before, afterExec)
@@ -773,7 +747,7 @@ async function main() {
   const reviewText = existsSync(reviewerOut) ? readFileSync(reviewerOut, 'utf8') : ''
   let review =
     (existsSync(reviewerEvents) ? extractJsonFromEventsFile(reviewerEvents) : null) ||
-    extractJson(reviewText)
+    extractJsonFromText(reviewText)
   if (!review || !review.status) {
     review = { status: 'clean', note: reviewText.trim() || '审查输出缺失或无法解析' }
   }
