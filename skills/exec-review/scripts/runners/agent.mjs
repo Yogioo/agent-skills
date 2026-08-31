@@ -80,6 +80,7 @@ export function buildAgentArgs(turn, defaults = {}) {
   if (mapped.mode) args.push('--mode', mapped.mode)
   if (mapped.sandbox) args.push('--sandbox', mapped.sandbox)
   if (model) args.push('--model', model)
+  if (defaults.streamPartialOutput) args.push('--stream-partial-output')
 
   args.push(buildAgentPromptArg(turn))
   return args
@@ -93,6 +94,7 @@ export function buildAgentArgs(turn, defaults = {}) {
  *   thinking?: string,
  *   sandbox?: string,
  *   approve?: boolean,
+ *   streamPartialOutput?: boolean,
  * }} opts
  */
 export function createAgentRunner(opts = {}) {
@@ -102,6 +104,7 @@ export function createAgentRunner(opts = {}) {
   const defaultThinking = opts.thinking || ''
   const defaultSandbox = opts.sandbox || 'workspace-write'
   const approve = opts.approve !== false
+  const streamPartialOutput = opts.streamPartialOutput === true
 
   return {
     name: 'agent',
@@ -128,6 +131,7 @@ export function createAgentRunner(opts = {}) {
         thinking: defaultThinking,
         sandbox: defaultSandbox,
         approve,
+        streamPartialOutput,
       })
 
       return spawnAgentStreamTurn({

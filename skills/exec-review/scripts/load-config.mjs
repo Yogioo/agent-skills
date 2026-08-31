@@ -239,12 +239,18 @@ export function resolveSettings(args, loaded) {
     asBool(process.env.EXEC_REVIEW_STRUCTURED_CONTEXT, asBool(cfg.structuredContext, true)),
   )
 
+  const streamPartialOutput = asBool(
+    args.streamPartialOutput,
+    asBool(process.env.EXEC_REVIEW_STREAM_PARTIAL_OUTPUT, asBool(cfg.streamPartialOutput, false)),
+  )
+
   return {
     configPath: loaded?.path || DEFAULT_CONFIG_PATH,
     sandbox,
     approve,
     gitCommit,
     structuredContext,
+    streamPartialOutput,
     serve,
     port,
     returnLevel,

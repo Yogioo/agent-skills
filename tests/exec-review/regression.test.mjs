@@ -62,9 +62,14 @@ test('上下文注册与 sentCount 解耦、新连接回放（防 serve 集成�
   assert.match(src, /writeContextReplay\(res\)/, 'connect 处理器应回放 log context')
 })
 
-test('progress HTML 含结构化 context 卡片容器', () => {
+test('progress HTML 含结构化 context 卡片容器与 polish 控件', () => {
   const { html } = rendered()
   assert.match(html, /id="contextCards"/, '应有 contextCards 容器')
+  assert.match(html, /ctx-trunc/, '应含可展开截断控件')
+  assert.match(html, /ctx-shell-cmd/, '应含 shell 命令样式')
+  assert.match(html, /ctx-edit-head/, '应含 edit/write 标题样式')
+  assert.match(html, /fmtToolSummary/, '应注入 context-ui 格式化函数')
+  assert.match(html, /assistant_partial/, '应处理 partial assistant 事件')
 })
 
 // ---------- 3：serve 端到端冒烟（真实回归网） ----------

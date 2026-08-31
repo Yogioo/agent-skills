@@ -47,7 +47,7 @@ test('normalizeAgentEvent 映射 assistant / tool / outcome / raw', () => {
   assert.equal(toolStart.kind, 'tool')
   assert.equal(toolStart.phase, 'start')
   assert.equal(toolStart.callId, 'c1')
-  assert.equal(toolStart.toolName, 'readToolCall')
+  assert.equal(toolStart.toolName, 'read')
 
   const toolDone = normalizeAgentEvent({
     type: 'tool_call',
@@ -67,6 +67,14 @@ test('normalizeAgentEvent 映射 assistant / tool / outcome / raw', () => {
 
   const raw = normalizeAgentEvent({ type: 'system', subtype: 'init' })
   assert.equal(raw.kind, 'raw')
+
+  const partial = normalizeAgentEvent({
+    type: 'assistant',
+    subtype: 'partial',
+    message: { content: [{ type: 'text', text: 'Hel' }] },
+  })
+  assert.equal(partial.kind, 'assistant_partial')
+  assert.equal(partial.text, 'Hel')
 })
 
 test('agent fixture → normalized golden', () => {

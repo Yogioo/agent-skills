@@ -115,6 +115,74 @@ test('loop-serve 队列更新会移除不再就绪的任务，同时保留历史
   assert.equal(state.lastEventAt, 4)
 })
 
+test('loop-serve /task/<id> 复用 exec-review structured context 页', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afk-task-detail-'))
+  const progressFile = join(dir, 'task-b-1.progress.jsonl')
+  const port = 20100 + Math.floor(Math.random() * 1000)
+  const events = [
+    { t: 1, event: 'loop_start', source: 'beads', runDir: dir, stopFile: join(dir, 'afk-stop') },
+    {
+      t: 2,
+      event: 'task_start',
+      id: 'b',
+      title: 'Detail task',
+      priority: 1,
+      attempt: 1,
+      progressFile,
+    },
+  ]
+  writeFileSync(join(dir, 'loop-progress.jsonl'), events.map((event) => JSON.stringify(event)).join('\n') + '\n')
+  writeFileSync(
+    progressFile,
+    [
+      JSON.stringify({ t: 3, event: 'run_start', title: 'Detail task', id: 'b' }),
+      JSON.stringify({
+        t: 4,
+        event: 'context_start',
+        role: 'executor',
+        eventsFile: join(dir, 'executor.events.jsonl'),
+      }),
+    ].join('\n') + '\n',
+  )
+  writeFileSync(
+    join(dir, 'executor.events.jsonl'),
+    JSON.stringify({
+      kind: 'tool',
+      phase: 'done',
+      callId: 's1',
+      toolName: 'shell',
+      args: { command: 'echo hi' },
+      result: { exit_code: 0, output: 'hi\n' },
+    }) + '\n',
+  )
+
+  const child = spawn(process.execPath, [SERVE, dir, String(port)], { stdio: ['ignore', 'ignore', 'ignore'] })
+  try {
+    await waitFor(async () => {
+      return new Promise((resolve) => {
+        http.get({ host: '127.0.0.1', port, path: '/task/b' }, (res) => {
+          let data = ''
+          res.on('data', (chunk) => (data += chunk))
+          res.on('end', () => resolve(res.statusCode === 200 && data.includes('contextCards')))
+        }).on('error', () => resolve(false))
+      })
+    })
+    const html = await new Promise((resolve, reject) => {
+      http.get({ host: '127.0.0.1', port, path: '/task/b' }, (res) => {
+        let data = ''
+        res.on('data', (chunk) => (data += chunk))
+        res.on('end', () => resolve(data))
+      }).on('error', reject)
+    })
+    assert.match(html, /contextCards/, '详情页应有 structured context 容器')
+    assert.match(html, /ctx-shell-cmd/, '详情页应复用 shell 卡片样式')
+    assert.match(html, /返回 AFK 总览/, '详情页应有返回链接')
+  } finally {
+    child.kill()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('loop-serve 通过 SSE 推送当前任务的聚合阶段', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'afk-serve-'))
   const progressFile = join(dir, 'task-a-1.progress.jsonl')

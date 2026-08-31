@@ -5,6 +5,7 @@
 
 import { watch, existsSync, statSync, openSync, readSync, closeSync, readFileSync } from 'node:fs'
 import { loadEvents } from './progress.mjs'
+import { clientContextUiSource, PAYLOAD_TRUNCATE } from './context-ui.mjs'
 
 function escAttr(value) {
   return String(value || '')
@@ -130,7 +131,19 @@ export function renderProgressHtml(opts = {}) {
   .ctx-card.outcome summary { color:var(--green); }
   .ctx-card.raw summary { color:var(--dim); }
   .ctx-card .body { padding:0 12px 10px; font-family:var(--mono); font-size:11px; line-height:1.6; color:#9db0c8; white-space:pre-wrap; word-break:break-word; }
+  .ctx-mono { margin:0; padding:8px 10px; background:#07090e; border:1px solid var(--border); border-radius:6px; white-space:pre-wrap; word-break:break-word; font-family:var(--mono); font-size:11px; line-height:1.55; color:#9db0c8; }
+  .ctx-trunc { margin-top:6px; }
+  .ctx-trunc summary { cursor:pointer; color:var(--blue); font-size:11px; padding:4px 0; list-style:none; }
+  .ctx-trunc summary::-webkit-details-marker { display:none; }
+  .ctx-trunc-full { margin-top:6px; max-height:420px; overflow:auto; }
+  .ctx-trunc-preview { max-height:180px; overflow:hidden; }
+  .ctx-shell-cmd { color:var(--amber); font-weight:600; }
+  .ctx-shell-exit { color:var(--muted); }
+  .ctx-edit-head { color:var(--green); font-weight:600; }
+  .ctx-card.tool.shell summary { color:var(--amber); }
+  .ctx-card.tool.edit summary, .ctx-card.tool.write summary { color:var(--green); }
   .ctx-card.assistant .body, .ctx-card.outcome .body { display:block; padding:8px 12px 10px; }
+  .ctx-card.assistant.streaming .body { opacity:.92; border-left:2px solid var(--blue); padding-left:10px; }
   .ctx-card.assistant, .ctx-card.outcome { border-color:color-mix(in srgb,var(--blue) 30%,var(--border)); }
   .ctx-card.outcome { border-color:color-mix(in srgb,var(--green) 30%,var(--border)); }
 
@@ -185,12 +198,15 @@ export function renderProgressHtml(opts = {}) {
 
 <script>
 (function () {
+${clientContextUiSource()}
   const EVENTS_URL = ${JSON.stringify(eventsPath)};
   const PROGRESS_FILE = ${JSON.stringify(progressFile)};
+  const PAYLOAD_LIMIT = ${PAYLOAD_TRUNCATE};
   const $ = (id) => document.getElementById(id);
   const events = [];
   const toolCards = {}; let ctxDirty = false;
   const assistantCards = []; const outcomeCards = []; const contextLines = [];
+  const streamingAssistant = {};
   const MAX_PHASES = 2;
   const meta = { phases: {}, settled: false, status: '', lastT: Date.now(), started: Date.now(), heartbeats: 0, stageStart: Date.now() };
 
@@ -304,21 +320,8 @@ export function renderProgressHtml(opts = {}) {
 
   function esc(s){ return String(s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-  function fmtTool(ev){
-    const name = ev.toolName || 'tool';
-    if (ev.phase === 'start') return name + ' · start';
-    if (ev.phase === 'done') return name + ' · done';
-    return name;
-  }
-
   function fmtBody(ev){
     if (ev.kind === 'assistant' || ev.kind === 'outcome') return ev.text || '';
-    if (ev.kind === 'tool') {
-      const parts = [];
-      if (ev.args != null) parts.push('args: '+JSON.stringify(ev.args, null, 2));
-      if (ev.result != null) parts.push('result: '+JSON.stringify(ev.result, null, 2));
-      return parts.join(String.fromCharCode(10)+String.fromCharCode(10)) || '(no details)';
-    }
     return JSON.stringify(ev.payload || ev, null, 2);
   }
 
@@ -333,7 +336,30 @@ export function renderProgressHtml(opts = {}) {
       ctxDirty = true;
       return;
     }
-    if (ev.kind === 'assistant') { assistantCards.push({ role, ev }); ctxDirty = true; return; }
+    if (ev.kind === 'assistant_partial') {
+      const delta = ev.text || '';
+      if (!streamingAssistant[role]) {
+        streamingAssistant[role] = { text: delta, idx: assistantCards.length };
+        assistantCards.push({ role, ev: { text: delta }, streaming: true });
+      } else {
+        streamingAssistant[role].text += delta;
+        assistantCards[streamingAssistant[role].idx].ev.text = streamingAssistant[role].text;
+      }
+      ctxDirty = true;
+      return;
+    }
+    if (ev.kind === 'assistant') {
+      if (streamingAssistant[role]) {
+        const idx = streamingAssistant[role].idx;
+        assistantCards[idx].ev.text = ev.text || streamingAssistant[role].text;
+        assistantCards[idx].streaming = false;
+        delete streamingAssistant[role];
+      } else {
+        assistantCards.push({ role, ev });
+      }
+      ctxDirty = true;
+      return;
+    }
     if (ev.kind === 'outcome') { outcomeCards.push({ role, ev }); ctxDirty = true; return; }
     contextLines.push({ role, line: fmtBody(ev), t: e.t }); ctxDirty = true;
   }
@@ -346,11 +372,18 @@ export function renderProgressHtml(opts = {}) {
     for (const id of Object.keys(toolCards)) {
       const card = toolCards[id];
       const ev = card.done || card.start || {};
-      const label = '['+(card.role==='reviewer'?'审查':'执行')+'] '+fmtTool(ev);
-      html.push('<details class="ctx-card tool"><summary>'+esc(label)+'</summary><div class="body">'+esc(fmtBody(card.start||ev))+(card.done? (String.fromCharCode(10)+String.fromCharCode(10)+esc(fmtBody(card.done))) : '')+'</div></details>');
+      const toolKind = mapToolName(ev.toolName || 'tool');
+      const label = '['+(card.role==='reviewer'?'审查':'执行')+'] '+fmtToolSummary(ev);
+      const body = formatToolBody(card.start, card.done, ev.toolName || 'tool', 'tool-'+id, esc);
+      html.push('<details class="ctx-card tool ctx-tool-'+esc(toolKind)+'"><summary>'+esc(label)+'</summary><div class="body">'+body+'</div></details>');
     }
     for (const item of assistantCards) {
-      html.push('<div class="ctx-card assistant"><div class="body"><span class="'+(item.role==='reviewer'?'role-review':'role-exec')+'">['+(item.role==='reviewer'?'审查':'执行')+']</span> '+esc(item.ev.text||'')+'</div></div>');
+      const streamCls = item.streaming ? ' streaming' : '';
+      const text = item.ev.text || '';
+      const body = text.length > PAYLOAD_LIMIT
+        ? renderTruncBlock(text, 'asst-'+assistantCards.indexOf(item), esc, PAYLOAD_LIMIT)
+        : esc(text);
+      html.push('<div class="ctx-card assistant'+streamCls+'"><div class="body"><span class="'+(item.role==='reviewer'?'role-review':'role-exec')+'">['+(item.role==='reviewer'?'审查':'执行')+']</span> '+body+'</div></div>');
     }
     for (const item of outcomeCards) {
       html.push('<div class="ctx-card outcome"><div class="body"><span class="'+(item.role==='reviewer'?'role-review':'role-exec')+'">['+(item.role==='reviewer'?'审查':'执行')+'] outcome</span>'+String.fromCharCode(10)+esc(item.ev.text||'')+'</div></div>');

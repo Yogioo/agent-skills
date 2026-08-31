@@ -62,6 +62,14 @@ test('buildAgentPromptArg 优先文件指针', () => {
   assert.equal(buildAgentPromptArg({ prompt: 'inline only' }), 'inline only')
 })
 
+test('buildAgentArgs streamPartialOutput adds flag', () => {
+  const args = buildAgentArgs(
+    { workdir: '/tmp', prompt: 'hi', sandbox: 'workspace-write' },
+    { approve: true, streamPartialOutput: true },
+  )
+  assert.ok(args.includes('--stream-partial-output'))
+})
+
 test('buildAgentArgs 默认带 -p/--trust/--force 与 stream-json', () => {
   const args = buildAgentArgs(
     {

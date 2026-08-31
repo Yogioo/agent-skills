@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
  * Unified normalized event model for all exec-review runners.
  *
  * @typedef {object} NormalizedEvent
- * @property {string} kind - 'tool' | 'assistant' | 'outcome' | 'raw'
+ * @property {string} kind - 'tool' | 'assistant' | 'assistant_partial' | 'outcome' | 'raw'
  * @property {number} t
  * @property {string} [callId]
  * @property {string} [phase] - 'start' | 'done' for tool events
@@ -63,6 +63,16 @@ export function detectSource(raw) {
 }
 
 /**
+ * Map Cursor agent tool_call keys (e.g. readToolCall) to short names (read).
+ * @param {string} raw
+ */
+export function mapAgentToolName(raw) {
+  const name = String(raw || 'unknown')
+  if (name.endsWith('ToolCall')) return name.slice(0, -'ToolCall'.length)
+  return name
+}
+
+/**
  * @param {unknown} raw
  * @returns {NormalizedEvent}
  */
@@ -77,6 +87,10 @@ export function normalizeAgentEvent(raw) {
 
   if (type === 'assistant') {
     const text = extractMessageContentText(ev.message)
+    const subtype = String(ev.subtype || '')
+    if (subtype === 'partial' || ev.partial === true) {
+      return { kind: 'assistant_partial', t, text, payload: raw }
+    }
     return { kind: 'assistant', t, text, payload: raw }
   }
 
@@ -84,7 +98,8 @@ export function normalizeAgentEvent(raw) {
     const subtype = String(ev.subtype || '')
     const callId = String(ev.call_id || ev.callId || '')
     const toolCall = ev.tool_call && typeof ev.tool_call === 'object' ? ev.tool_call : {}
-    const toolName = Object.keys(toolCall)[0] || 'unknown'
+    const rawName = Object.keys(toolCall)[0] || 'unknown'
+    const toolName = mapAgentToolName(rawName)
     const toolBody =
       toolCall[toolName] && typeof toolCall[toolName] === 'object' ? toolCall[toolName] : {}
     const phase = subtype === 'completed' ? 'done' : 'start'

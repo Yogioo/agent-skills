@@ -30,6 +30,7 @@
   - agent：`read-only` → `--mode ask`；`danger-full-access` → `--sandbox disabled`；其余 → `--sandbox enabled`
 - `--dry-run`：不真正调用 CLI，只验证脚本与缓存布局
 - `--structured-context <true|false>` / `--no-structured-context`：进度页是否 tail normalized events（默认 true；false 时回退 legacy log 行 tail）
+- `--stream-partial-output` / `--no-stream-partial-output`：agent runner 是否启用字符级 partial 流（默认 false）
 - `--codex-bin`：兼容旧参数（当作 bin 覆盖）
 
 ## codex 注意
@@ -52,7 +53,11 @@
 - 无 `--output-schema`；靠 prompts 要求 JSON；`run-task` 优先从 events 提取 outcome/review，失败时降级 `extractJson`
 - 进度页 context 面板：tool 卡片（start/done 按 call id 合并，默认折叠）、assistant 文本、outcome
 - 长 prompt 通过「打开 prompt 文件」短指令喂入，避免 Windows 命令行长度限制
-- Windows 下优先解析 `%LOCALAPPDATA%\cursor-agent\versions\<最新>\index.js`，避免 `.cmd`/PowerShell 包装器 + 管道 stdio 出问题
+- Windows 下优先解析 `%LOCALAPPDATA%\cursor-agent\versions\<最新>\{node.exe,index.js}`
+- 可选 `--stream-partial-output`（config `streamPartialOutput` 或 `EXEC_REVIEW_STREAM_PARTIAL_OUTPUT`）：CLI 逐 delta 输出 assistant 文本，进度页合并为单卡片（不刷屏）
+- **已知限制**：
+  - **thinking 不可见**：各 CLI 的思考/推理块不会进入 normalized events 或进度页（agent 需 `--show-thinking` 且仅 json 格式，exec-review 未接入）
+  - **tool schema 不稳定**：Cursor `stream-json` 的 `tool_call` 键名（如 `readToolCall`）与字段随 CLI 版本变化；normalize 层做 best-effort 映射，UI 对未知工具回退 JSON dump
 
 ## 扩展新 runner
 

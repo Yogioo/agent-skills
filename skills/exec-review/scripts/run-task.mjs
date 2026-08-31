@@ -98,6 +98,7 @@ function parseArgs(argv) {
     timeout: 0,
     dryRun: false,
     structuredContext: null,
+    streamPartialOutput: null,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -228,6 +229,12 @@ function parseArgs(argv) {
       case '--no-structured-context':
         out.structuredContext = false
         break
+      case '--stream-partial-output':
+        out.streamPartialOutput = true
+        break
+      case '--no-stream-partial-output':
+        out.streamPartialOutput = false
+        break
       default:
         console.error(`未知参数: ${a}`)
         usage()
@@ -244,6 +251,7 @@ function createRoleRunner(roleSettings, shared) {
     thinking: roleSettings.thinking,
     sandbox: shared.sandbox,
     approve: shared.approve,
+    streamPartialOutput: shared.streamPartialOutput,
   })
 }
 
