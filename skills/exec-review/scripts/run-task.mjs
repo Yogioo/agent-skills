@@ -26,6 +26,7 @@ import { loadConfigFile, resolveSettings } from './load-config.mjs'
 import { buildExecutorCommitRule, buildReviewerGitContext } from './commit-rules.mjs'
 import { ProgressWriter } from './progress.mjs'
 import { snapshot, diff } from './workspace.mjs'
+import { extractJsonFromEventsFile } from './normalize-agent.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = resolve(__dirname, '..')
@@ -616,12 +617,13 @@ async function main() {
   const executorPromptPath = join(runDir, 'executor.prompt.md')
   const executorOut = join(runDir, 'executor.out.md')
   const executorLog = join(runDir, 'executor.log')
+  const executorEvents = join(runDir, 'executor.events.jsonl')
   writeFileSync(executorPromptPath, executorPrompt, 'utf8')
 
   logMain(mainLogPath, 'execute: 执行端开始')
   progress.setStage('executing')
   progress.write('executor_start', {})
-  progress.write('context_start', { role: 'executor', file: executorLog }, 2)
+  progress.write('context_start', { role: 'executor', file: executorLog, eventsFile: executorEvents }, 2)
   const execCtrl = new AbortController()
   const execTimer =
     settings.timeout > 0 ? setTimeout(() => execCtrl.abort(), settings.timeout * 1000) : null
@@ -632,6 +634,7 @@ async function main() {
     promptFile: executorPromptPath,
     outFile: executorOut,
     logFile: executorLog,
+    eventsFile: executorEvents,
     schemaFile: outcomeSchema,
     sandbox: settings.sandbox,
     model: settings.executor.model,
@@ -643,7 +646,9 @@ async function main() {
   if (execTimer) clearTimeout(execTimer)
 
   const execText = existsSync(executorOut) ? readFileSync(executorOut, 'utf8') : ''
-  let outcome = extractJson(execText)
+  let outcome =
+    (existsSync(executorEvents) ? extractJsonFromEventsFile(executorEvents) : null) ||
+    extractJson(execText)
   if (!outcome || typeof outcome !== 'object') outcome = null
   const afterExec = snapshot(workdir)
   const execDiff = diff(before, afterExec)
@@ -737,12 +742,13 @@ async function main() {
   const reviewerPromptPath = join(runDir, 'reviewer.prompt.md')
   const reviewerOut = join(runDir, 'reviewer.out.md')
   const reviewerLog = join(runDir, 'reviewer.log')
+  const reviewerEvents = join(runDir, 'reviewer.events.jsonl')
   writeFileSync(reviewerPromptPath, reviewerPrompt, 'utf8')
 
   logMain(mainLogPath, `review: 审查端开始（改动文件 ${changedFiles.length} 个）`)
   progress.setStage('reviewing')
   progress.write('reviewer_start', {})
-  progress.write('context_start', { role: 'reviewer', file: reviewerLog }, 2)
+  progress.write('context_start', { role: 'reviewer', file: reviewerLog, eventsFile: reviewerEvents }, 2)
   const reviewCtrl = new AbortController()
   const reviewTimer =
     settings.timeout > 0 ? setTimeout(() => reviewCtrl.abort(), settings.timeout * 1000) : null
@@ -753,6 +759,7 @@ async function main() {
     promptFile: reviewerPromptPath,
     outFile: reviewerOut,
     logFile: reviewerLog,
+    eventsFile: reviewerEvents,
     schemaFile: reviewSchema,
     sandbox: settings.sandbox === 'read-only' ? 'read-only' : settings.sandbox,
     model: settings.reviewer.model,
@@ -764,7 +771,9 @@ async function main() {
   if (reviewTimer) clearTimeout(reviewTimer)
 
   const reviewText = existsSync(reviewerOut) ? readFileSync(reviewerOut, 'utf8') : ''
-  let review = extractJson(reviewText)
+  let review =
+    (existsSync(reviewerEvents) ? extractJsonFromEventsFile(reviewerEvents) : null) ||
+    extractJson(reviewText)
   if (!review || !review.status) {
     review = { status: 'clean', note: reviewText.trim() || '审查输出缺失或无法解析' }
   }

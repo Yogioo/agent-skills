@@ -118,7 +118,21 @@ export function renderProgressHtml(opts = {}) {
   .console pre { font-family:var(--mono); font-size:12px; line-height:1.7; color:#9db0c8; white-space:pre-wrap; word-break:break-word; }
   .context-console .role-exec { color:var(--blue); font-weight:600; }
   .context-console .role-review { color:var(--purple); font-weight:600; }
-  .context-console .ctx-sep { color:var(--dim); }
+  .context-console .ctx-sep { color:var(--dim); margin:8px 0; font-size:12px; }
+  .ctx-cards { display:flex; flex-direction:column; gap:8px; }
+  .ctx-card { border:1px solid var(--border); border-radius:8px; background:#0a0d12; overflow:hidden; }
+  .ctx-card summary { cursor:pointer; padding:8px 12px; font-size:12px; color:var(--muted); list-style:none; }
+  .ctx-card summary::-webkit-details-marker { display:none; }
+  .ctx-card summary::before { content:'▸ '; color:var(--dim); }
+  .ctx-card[open] summary::before { content:'▾ '; }
+  .ctx-card.tool summary { color:var(--amber); }
+  .ctx-card.assistant summary { color:var(--blue); }
+  .ctx-card.outcome summary { color:var(--green); }
+  .ctx-card.raw summary { color:var(--dim); }
+  .ctx-card .body { padding:0 12px 10px; font-family:var(--mono); font-size:11px; line-height:1.6; color:#9db0c8; white-space:pre-wrap; word-break:break-word; }
+  .ctx-card.assistant .body, .ctx-card.outcome .body { display:block; padding:8px 12px 10px; }
+  .ctx-card.assistant, .ctx-card.outcome { border-color:color-mix(in srgb,var(--blue) 30%,var(--border)); }
+  .ctx-card.outcome { border-color:color-mix(in srgb,var(--green) 30%,var(--border)); }
 
   footer { margin-top:18px; color:var(--dim); font-size:12px; font-family:var(--mono); word-break:break-all; }
   .empty { color:var(--dim); font-size:13px; }
@@ -162,8 +176,8 @@ export function renderProgressHtml(opts = {}) {
       <div class="log-console console"><pre id="log"></pre></div>
     </div>
     <div class="col">
-      <h2>Agent 上下文 · 实时滚动</h2>
-      <div class="context-console console"><pre id="context"></pre></div>
+      <h2>Agent 上下文 · 结构化事件</h2>
+      <div class="context-console console"><div class="ctx-cards" id="contextCards"></div></div>
     </div>
   </section>
 
@@ -175,7 +189,8 @@ export function renderProgressHtml(opts = {}) {
   const PROGRESS_FILE = ${JSON.stringify(progressFile)};
   const $ = (id) => document.getElementById(id);
   const events = [];
-  const contextLines = []; let ctxDirty = false;
+  const toolCards = {}; let ctxDirty = false;
+  const assistantCards = []; const outcomeCards = []; const contextLines = [];
   const MAX_PHASES = 2;
   const meta = { phases: {}, settled: false, status: '', lastT: Date.now(), started: Date.now(), heartbeats: 0, stageStart: Date.now() };
 
@@ -289,21 +304,68 @@ export function renderProgressHtml(opts = {}) {
 
   function esc(s){ return String(s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+  function fmtTool(ev){
+    const name = ev.toolName || 'tool';
+    if (ev.phase === 'start') return name + ' · start';
+    if (ev.phase === 'done') return name + ' · done';
+    return name;
+  }
+
+  function fmtBody(ev){
+    if (ev.kind === 'assistant' || ev.kind === 'outcome') return ev.text || '';
+    if (ev.kind === 'tool') {
+      const parts = [];
+      if (ev.args != null) parts.push('args: '+JSON.stringify(ev.args, null, 2));
+      if (ev.result != null) parts.push('result: '+JSON.stringify(ev.result, null, 2));
+      return parts.join(String.fromCharCode(10)+String.fromCharCode(10)) || '(no details)';
+    }
+    return JSON.stringify(ev.payload || ev, null, 2);
+  }
+
+  function handleAgentEvent(e){
+    const role = e.role || 'executor';
+    const ev = e.event || {};
+    if (ev.kind === 'tool') {
+      const id = ev.callId || ('tool-'+Object.keys(toolCards).length);
+      if (!toolCards[id]) toolCards[id] = { role, start: null, done: null };
+      if (ev.phase === 'start') toolCards[id].start = ev;
+      else toolCards[id].done = ev;
+      ctxDirty = true;
+      return;
+    }
+    if (ev.kind === 'assistant') { assistantCards.push({ role, ev }); ctxDirty = true; return; }
+    if (ev.kind === 'outcome') { outcomeCards.push({ role, ev }); ctxDirty = true; return; }
+    contextLines.push({ role, line: fmtBody(ev), t: e.t }); ctxDirty = true;
+  }
+
   function renderContext(){
-    const pre=$('context');
-    const box=pre.parentElement;
-    const wasAtBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
-    pre.innerHTML = contextLines.map(l=>{
-      if(l.sep) return '<span class="ctx-sep">'+esc(l.line)+'</span>';
-      const stamp = l.t ? '<span class="stamp">'+ts(l.t)+'</span> ' : '';
-      return stamp+'<span class="'+(l.role==='reviewer'?'role-review':'role-exec')+'">['+(l.role==='reviewer'?'审查':'执行')+']</span> '+esc(l.line);
-    }).join(String.fromCharCode(10));
-    if (wasAtBottom) box.scrollTop = box.scrollHeight;
+    const box = $('contextCards');
+    const panel = box.parentElement;
+    const wasAtBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 48;
+    const html = [];
+    for (const id of Object.keys(toolCards)) {
+      const card = toolCards[id];
+      const ev = card.done || card.start || {};
+      const label = '['+(card.role==='reviewer'?'审查':'执行')+'] '+fmtTool(ev);
+      html.push('<details class="ctx-card tool"><summary>'+esc(label)+'</summary><div class="body">'+esc(fmtBody(card.start||ev))+(card.done? (String.fromCharCode(10)+String.fromCharCode(10)+esc(fmtBody(card.done))) : '')+'</div></details>');
+    }
+    for (const item of assistantCards) {
+      html.push('<div class="ctx-card assistant"><div class="body"><span class="'+(item.role==='reviewer'?'role-review':'role-exec')+'">['+(item.role==='reviewer'?'审查':'执行')+']</span> '+esc(item.ev.text||'')+'</div></div>');
+    }
+    for (const item of outcomeCards) {
+      html.push('<div class="ctx-card outcome"><div class="body"><span class="'+(item.role==='reviewer'?'role-review':'role-exec')+'">['+(item.role==='reviewer'?'审查':'执行')+'] outcome</span>'+String.fromCharCode(10)+esc(item.ev.text||'')+'</div></div>');
+    }
+    for (const l of contextLines) {
+      if (l.sep) html.push('<div class="ctx-sep">'+esc(l.line)+'</div>');
+      else html.push('<div class="ctx-card raw"><div class="body"><span class="'+(l.role==='reviewer'?'role-review':'role-exec')+'">['+(l.role==='reviewer'?'审查':'执行')+']</span> '+esc(l.line)+'</div></div>');
+    }
+    box.innerHTML = html.join('');
+    if (wasAtBottom) panel.scrollTop = panel.scrollHeight;
   }
   setInterval(()=>{ if(ctxDirty){ renderContext(); ctxDirty=false; } }, 150);
 
   const es = new EventSource(EVENTS_URL);
-  es.onmessage = (m)=>{ try{ const e=JSON.parse(m.data); if(e.type==='context'){ contextLines.push({role:e.role,line:e.line||'',t:typeof e.t==='number'?e.t:null}); ctxDirty=true; return; } handleEvent(e); render(); }catch(err){} };
+  es.onmessage = (m)=>{ try{ const e=JSON.parse(m.data); if(e.type==='agent_event'){ handleAgentEvent(e); return; } if(e.type==='context'){ contextLines.push({role:e.role,line:e.line||'',t:typeof e.t==='number'?e.t:null}); ctxDirty=true; return; } handleEvent(e); render(); }catch(err){} };
   es.onerror = ()=>{ const le=$('lastEvent'); if(le) le.textContent='连接中断'; };
 
   setInterval(()=>{ if(!meta.settled){ render(); } }, 1000);
@@ -324,14 +386,25 @@ export function createProgressWatcher(progressFile) {
   const contextPos = {}
   const contextRemain = {}
   const registeredFiles = new Set()
+  const contextEventsFiles = {}
+  const contextEventsPos = {}
+  const contextEventsRemain = {}
+  const registeredEventsFiles = new Set()
 
   function registerContextFiles(evs) {
     for (const e of evs) {
-      if (e.event === 'context_start' && e.role && e.file && !registeredFiles.has(e.file)) {
+      if (e.event !== 'context_start' || !e.role) continue
+      if (e.file && !registeredFiles.has(e.file)) {
         registeredFiles.add(e.file)
         contextFiles[e.role] = e.file
         contextPos[e.file] = 0
         contextRemain[e.file] = ''
+      }
+      if (e.eventsFile && !registeredEventsFiles.has(e.eventsFile)) {
+        registeredEventsFiles.add(e.eventsFile)
+        contextEventsFiles[e.role] = e.eventsFile
+        contextEventsPos[e.eventsFile] = 0
+        contextEventsRemain[e.eventsFile] = ''
       }
     }
   }
@@ -364,35 +437,75 @@ export function createProgressWatcher(progressFile) {
     }
   }
 
+  function emitAgentEvent(role, event) {
+    const payload = `data: ${JSON.stringify({ type: 'agent_event', role, event, t: Date.now() })}\n\n`
+    for (const res of clients) {
+      try {
+        res.write(payload)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  function parseEventsChunk(role, file, text) {
+    const combined = (contextEventsRemain[file] || '') + text
+    const lines = combined.split('\n')
+    contextEventsRemain[file] = lines.pop() || ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const event = JSON.parse(line)
+        emitAgentEvent(role, event)
+      } catch {
+        /* ignore bad lines */
+      }
+    }
+  }
+
+  function writeEventsReplay(res) {
+    for (const role of Object.keys(contextEventsFiles)) {
+      const file = contextEventsFiles[role]
+      if (!file) continue
+      try {
+        const text = readFileSync(file, 'utf8')
+        for (const line of text.split('\n')) {
+          if (!line.trim()) continue
+          try {
+            const event = JSON.parse(line)
+            res.write(
+              `data: ${JSON.stringify({ type: 'agent_event', role, event, t: Date.now() })}\n\n`,
+            )
+          } catch {
+            /* ignore */
+          }
+        }
+        const st = statSync(file)
+        contextEventsPos[file] = st.size
+        contextEventsRemain[file] = ''
+      } catch {
+        /* events file not ready */
+      }
+    }
+  }
+
   function writeContextReplay(res) {
     for (const role of Object.keys(contextFiles)) {
       const file = contextFiles[role]
       if (!file) continue
+      if (contextEventsFiles[role]) continue
       try {
-        const st = statSync(file)
-        const pos = contextPos[file] || 0
-        if (st.size > pos) {
-          const fd = openSync(file, 'r')
-          const buf = Buffer.alloc(st.size - pos)
-          readSync(fd, buf, 0, buf.length, pos)
-          closeSync(fd)
-          const combined = (contextRemain[file] || '') + buf.toString('utf8')
-          const parts = combined.split('\n')
-          contextRemain[file] = parts.pop() || ''
-          for (const line of parts) {
-            if (line.trim().length) emitContext(role, line)
-          }
-        }
         const text = readFileSync(file, 'utf8')
         for (const line of text.split('\n')) {
           if (line.trim().length) {
             res.write(`data: ${JSON.stringify({ type: 'context', role, line })}\n\n`)
           }
         }
+        const st = statSync(file)
         contextPos[file] = st.size
         contextRemain[file] = ''
       } catch {
-        /* 日志尚未创建或不可读 */
+        /* log not ready */
       }
     }
   }
@@ -400,6 +513,7 @@ export function createProgressWatcher(progressFile) {
   function tailContext() {
     for (const role of Object.keys(contextFiles)) {
       const file = contextFiles[role]
+      if (contextEventsFiles[role]) continue
       let text = ''
       try {
         const st = statSync(file)
@@ -428,13 +542,42 @@ export function createProgressWatcher(progressFile) {
     }
   }
 
+  function tailEvents() {
+    for (const role of Object.keys(contextEventsFiles)) {
+      const file = contextEventsFiles[role]
+      let text = ''
+      try {
+        const st = statSync(file)
+        const pos = contextEventsPos[file] || 0
+        if (st.size < pos) {
+          contextEventsPos[file] = 0
+          contextEventsRemain[file] = ''
+          continue
+        }
+        if (st.size === pos) continue
+        const fd = openSync(file, 'r')
+        const buf = Buffer.alloc(st.size - pos)
+        readSync(fd, buf, 0, buf.length, pos)
+        closeSync(fd)
+        contextEventsPos[file] = st.size
+        text = buf.toString('utf8')
+      } catch {
+        continue
+      }
+      parseEventsChunk(role, file, text)
+    }
+  }
+
   try {
     if (existsSync(progressFile)) watch(progressFile, () => broadcast())
   } catch {
     /* 平台不支持则靠轮询 */
   }
   const pollTimer = setInterval(broadcast, 1500)
-  const tailTimer = setInterval(tailContext, 400)
+  const tailTimer = setInterval(() => {
+    tailEvents()
+    tailContext()
+  }, 400)
 
   /**
    * @param {string} pathname
@@ -472,6 +615,7 @@ export function createProgressWatcher(progressFile) {
       registerContextFiles(evs)
       sentCount = evs.length
       if (evs.length) res.write(evs.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(''))
+      writeEventsReplay(res)
       writeContextReplay(res)
       clients.add(res)
       const keep = setInterval(() => {

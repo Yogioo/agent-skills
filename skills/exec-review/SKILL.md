@@ -82,7 +82,7 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 ## 读结果
 
 - **标准输出**：仅摘要 JSON（含 `status`、`changedFiles`、`reviewChangedFiles`、`summary`、`review`、`outcome`）
-- **`cacheDir`**：`task.md`、`settings.json`（本次实际生效配置）、执行与审查的提示词/输出/日志、`main.log`
+- **`cacheDir`**：`task.md`、`settings.json`（本次实际生效配置）、执行与审查的提示词/输出/日志、`*.events.jsonl`（agent runner 结构化事件）、`main.log`
 - git 仓库且 `gitCommit` 为 `true` 时：执行端/审查端自行 commit；`gitCommit: false` 或非 git 场景由调用方提交。提交格式不在本技能范围。
 
 | `status` | 含义 / 下一步 |
@@ -107,6 +107,8 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 - `scripts/commit-rules.mjs` — 仅 `gitCommit` 编排边界（何时 commit、BASE_HEAD、工作区干净）
 - `scripts/workspace.mjs` — 内容快照改动检测
 - `scripts/progress.mjs` — 单条进度事件流（level + 心跳）
+- `scripts/progress-http.mjs` — 进度页 HTML + SSE（里程碑 + agent 结构化事件）
+- `scripts/normalize-agent.mjs` — agent stream-json → NormalizedEvent
 - `scripts/serve.mjs` — 独立实时进度服务（SSE → HTML，两阶段视图）
 - `scripts/runners/` — `codex` / `pi` / `agent` adapters
 - `prompts/executor.md`、`prompts/reviewer.md`（审查端直接改）

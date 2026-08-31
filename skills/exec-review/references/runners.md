@@ -10,7 +10,7 @@
 |--------|------------|------|
 | `codex`（默认） | `codex` / `$CODEX_BIN` | `codex exec`；支持 `--output-schema` 与 `-s` sandbox；`thinking` → `-c model_reasoning_effort=…` |
 | `pi` | `pi` / `$PI_BIN` | `pi -p --no-session`；用 `@promptFile` 喂入；`thinking` → `--thinking` |
-| `agent` | `agent` / `$AGENT_BIN` / `$CURSOR_AGENT_BIN` | Cursor CLI `agent -p`；用 prompt 文件指针喂入；`thinking` → 折进 `--model …[effort=…]` |
+| `agent` | `agent` / `$AGENT_BIN` / `$CURSOR_AGENT_BIN` | Cursor CLI `agent -p --output-format stream-json`；用 prompt 文件指针喂入；`thinking` → 折进 `--model …[effort=…]` |
 
 执行端与审查端可以不同 runner（`executor.runner` / `reviewer.runner`，或 `--executor-runner` / `--reviewer-runner`）。
 
@@ -39,7 +39,9 @@
 ## agent 注意
 
 - 非交互：始终 `--trust`；`approve` 为 true（默认）时加 `--force` 与 `--approve-mcps`
-- 无 `--output-schema`；靠 prompts 要求 JSON + 脚本 `extractJson`
+- 使用 `--output-format stream-json`；raw stdout 仍 tee 到 `*.log`，同时 append-only 写入 `*.events.jsonl`（normalized，供进度页 UI）
+- 无 `--output-schema`；靠 prompts 要求 JSON；`run-task` 优先从 events 提取 outcome/review，失败时降级 `extractJson`
+- 进度页 context 面板：tool 卡片（start/done 按 call id 合并，默认折叠）、assistant 文本、outcome
 - 长 prompt 通过「打开 prompt 文件」短指令喂入，避免 Windows 命令行长度限制
 - Windows 下优先解析 `%LOCALAPPDATA%\cursor-agent\versions\<最新>\index.js`，避免 `.cmd`/PowerShell 包装器 + 管道 stdio 出问题
 

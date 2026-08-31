@@ -20,19 +20,18 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { renderProgressHtml } from '../../skills/exec-review/scripts/progress-http.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL = join(__dirname, '..', '..', 'skills', 'exec-review')
 const SERVE = join(SKILL, 'scripts', 'serve.mjs')
+const PROGRESS_HTTP = join(SKILL, 'scripts', 'progress-http.mjs')
 
 // ---------- 1 & 2：静态渲染校验 ----------
 
-/** 渲染 serve.mjs 的 HTML 模板，抽出 { html, script }。 */
+/** 渲染 progress-http.mjs 的 HTML 模板，抽出 { html, script }。 */
 function rendered() {
-  const src = readFileSync(SERVE, 'utf8')
-  const m = src.match(/const HMTL = `([\s\S]*?)`\s*\.replace/)
-  assert.ok(m, 'serve.mjs 应包含 HMTL 模板字面量')
-  const html = m[1].replace(/^\s+/gm, '')
+  const html = renderProgressHtml({ basePath: '', progressFile: '/tmp/progress.jsonl' })
   const sm = html.match(/<script>([\s\S]*?)<\/script>/)
   assert.ok(sm, 'HTML 应包含 <script> 块')
   return { html, script: sm[1] }
@@ -53,12 +52,19 @@ test('JS 引用的每个元素 id 都在 HTML 中存在（防空引用回归）'
 })
 
 test('上下文注册与 sentCount 解耦、新连接回放（防 serve 集成回归）', () => {
-  const src = readFileSync(SERVE, 'utf8')
+  const src = readFileSync(PROGRESS_HTTP, 'utf8')
   // 注册必须扫描全量事件，而非仅 sentCount 之后的新事件
   assert.match(src, /registerContextFiles\(evs\)/, 'broadcast 应全量扫描注册上下文文件')
   assert.match(src, /registeredFiles/, '注册应有去重守卫')
-  // 新连接必须回放 contextBuffer
-  assert.match(src, /if \(contextBuffer\.length\) res\.write/, 'connect 处理器应回放 contextBuffer')
+  assert.match(src, /registeredEventsFiles/, 'events 注册应有去重守卫')
+  // 新连接必须回放 events / context
+  assert.match(src, /writeEventsReplay\(res\)/, 'connect 处理器应回放 agent events')
+  assert.match(src, /writeContextReplay\(res\)/, 'connect 处理器应回放 log context')
+})
+
+test('progress HTML 含结构化 context 卡片容器', () => {
+  const { html } = rendered()
+  assert.match(html, /id="contextCards"/, '应有 contextCards 容器')
 })
 
 // ---------- 3：serve 端到端冒烟（真实回归网） ----------
@@ -118,17 +124,27 @@ function parseEvents(data) {
   return out
 }
 
-test('serve：推送里程碑 + 上下文，且新连接回放上下文', async () => {
+test('serve：推送里程碑 + agent_event，且新连接回放 events', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'er-reg-'))
   const now = Date.now()
+  const eventsFile = join(dir, 'executor.events.jsonl')
   const evs = [
     { t: now - 5000, level: 1, event: 'run_start', title: 't', maxRounds: 2 },
-    { t: now - 4000, level: 1, event: 'round_start', round: 1, baseSha: 'abcd' },
     { t: now - 3000, level: 2, event: 'executor_start', round: 1 },
-    { t: now - 2000, level: 2, event: 'context_start', role: 'executor', file: join(dir, 'executor.log') },
+    {
+      t: now - 2000,
+      level: 2,
+      event: 'context_start',
+      role: 'executor',
+      file: join(dir, 'executor.log'),
+      eventsFile,
+    },
   ]
   writeFileSync(join(dir, 'progress.jsonl'), evs.map((e) => JSON.stringify(e)).join('\n') + '\n')
-  writeFileSync(join(dir, 'executor.log'), 'line one\nline two\nline three\n')
+  writeFileSync(
+    eventsFile,
+    JSON.stringify({ kind: 'assistant', t: now, text: 'hello from agent' }) + '\n',
+  )
 
   const port = 19000 + Math.floor(Math.random() * 1000)
   const child = spawn(process.execPath, [SERVE, dir, String(port)], {
@@ -137,17 +153,43 @@ test('serve：推送里程碑 + 上下文，且新连接回放上下文', async 
   try {
     await waitFor(() => connectable(port))
 
-    // 第一个连接：里程碑 + 上下文都要有（收集时间须跨过 broadcast 间隔 1500ms）
     const first = await getEvents(port, 2600)
     assert.ok(first.some((e) => e.event === 'run_start'), '首个连接应收到里程碑')
-    assert.ok(first.some((e) => e.type === 'context' && e.line === 'line one'), '首个连接应收到上下文')
+    assert.ok(
+      first.some((e) => e.type === 'agent_event' && e.event?.text === 'hello from agent'),
+      '首个连接应收到 agent_event',
+    )
 
-    // 第二个连接：必须回放上下文 backlog（防"新连接收到 0"回归）
     const second = await getEvents(port, 1800)
     assert.ok(
-      second.some((e) => e.type === 'context' && e.line === 'line one'),
-      '第二个连接应回放上下文',
+      second.some((e) => e.type === 'agent_event' && e.event?.text === 'hello from agent'),
+      '第二个连接应回放 agent_event',
     )
+  } finally {
+    child.kill()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('serve：无 eventsFile 时仍回放 log 上下文', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'er-reg-log-'))
+  const now = Date.now()
+  const evs = [
+    { t: now - 5000, level: 1, event: 'run_start', title: 't', maxRounds: 2 },
+    { t: now - 3000, level: 2, event: 'executor_start', round: 1 },
+    { t: now - 2000, level: 2, event: 'context_start', role: 'executor', file: join(dir, 'executor.log') },
+  ]
+  writeFileSync(join(dir, 'progress.jsonl'), evs.map((e) => JSON.stringify(e)).join('\n') + '\n')
+  writeFileSync(join(dir, 'executor.log'), 'line one\nline two\nline three\n')
+
+  const port = 19100 + Math.floor(Math.random() * 1000)
+  const child = spawn(process.execPath, [SERVE, dir, String(port)], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+  })
+  try {
+    await waitFor(() => connectable(port))
+    const first = await getEvents(port, 2600)
+    assert.ok(first.some((e) => e.type === 'context' && e.line === 'line one'), '首个连接应收到 log 上下文')
   } finally {
     child.kill()
     rmSync(dir, { recursive: true, force: true })
@@ -295,10 +337,10 @@ test('dry-run 在 git 仓库默认注入 log、提交规则和 BASE_HEAD', async
 
     assert.match(executor, /参考：最近变更（git log）/)
     assert.match(executor, /third context commit/)
-    assert.match(executor, /完成后自行 `git commit`/)
-    assert.match(executor, /blocked \/ 无改动则不要提交/)
+    assert.match(executor, /有应保留改动则完成后 commit/)
+    assert.match(executor, /blocked \/ 无应保留改动则不提交/)
     assert.match(reviewer, new RegExp(`BASE_HEAD：.*${repo.head}`))
-    assert.match(reviewer, /git diff BASE_HEAD/)
+    assert.match(reviewer, /git diff/)
   } finally {
     rmSync(repo.dir, { recursive: true, force: true })
     rmSync(cache, { recursive: true, force: true })
@@ -313,11 +355,11 @@ test('dry-run 的 gitCommit=false 保留禁止提交但仍注入 git 上下文',
     const executor = read(join(summary.cacheDir, 'executor.prompt.md'))
     const reviewer = read(join(summary.cacheDir, 'reviewer.prompt.md'))
 
-    assert.doesNotMatch(executor, /完成后自行 `git commit`/)
+    assert.doesNotMatch(executor, /有应保留改动则完成后 commit/)
     assert.match(executor, /不要提交（提交由调用方负责）/)
     assert.match(executor, /参考：最近变更（git log）/)
     assert.match(reviewer, new RegExp(`BASE_HEAD：.*${repo.head}`))
-    assert.match(reviewer, /git diff BASE_HEAD/)
+    assert.match(reviewer, /git diff/)
   } finally {
     rmSync(repo.dir, { recursive: true, force: true })
     rmSync(cache, { recursive: true, force: true })

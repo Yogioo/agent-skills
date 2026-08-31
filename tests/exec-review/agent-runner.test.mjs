@@ -62,7 +62,7 @@ test('buildAgentPromptArg 优先文件指针', () => {
   assert.equal(buildAgentPromptArg({ prompt: 'inline only' }), 'inline only')
 })
 
-test('buildAgentArgs 默认带 -p/--trust/--force', () => {
+test('buildAgentArgs 默认带 -p/--trust/--force 与 stream-json', () => {
   const args = buildAgentArgs(
     {
       workdir: 'C:/proj',
@@ -77,6 +77,8 @@ test('buildAgentArgs 默认带 -p/--trust/--force', () => {
   assert.ok(args.includes('--trust'))
   assert.ok(args.includes('--force'))
   assert.ok(args.includes('--approve-mcps'))
+  assert.ok(args.includes('--output-format'))
+  assert.equal(args[args.indexOf('--output-format') + 1], 'stream-json')
   assert.ok(args.includes('--workspace'))
   assert.equal(args[args.indexOf('--workspace') + 1], 'C:/proj')
   assert.equal(args[args.indexOf('--sandbox') + 1], 'disabled')
@@ -94,23 +96,29 @@ test('buildAgentArgs approve=false 不加 --force', () => {
   assert.equal(args[args.indexOf('--sandbox') + 1], 'enabled')
 })
 
-test('createAgentRunner dry-run 写 outcome 占位', async () => {
+test('createAgentRunner dry-run 写 outcome 占位与 events', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'er-agent-'))
   try {
     const outFile = join(dir, 'out.md')
     const logFile = join(dir, 'log.txt')
+    const eventsFile = join(dir, 'events.jsonl')
     const runner = createAgentRunner({ approve: true })
     const result = await runner.runTurn({
       workdir: dir,
       prompt: '{"status":"done"}',
       outFile,
       logFile,
+      eventsFile,
       dryRun: true,
     })
     assert.equal(result.code, 0)
     assert.equal(result.dryRun, true)
     assert.match(readFileSync(outFile, 'utf8'), /blocked/)
     assert.match(readFileSync(logFile, 'utf8'), /\[dry-run\]/)
+    const events = readFileSync(eventsFile, 'utf8').trim().split('\n')
+    assert.ok(events.length >= 1)
+    const last = JSON.parse(events.at(-1))
+    assert.equal(last.kind, 'outcome')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -176,7 +184,7 @@ function runDryRun(workdir, cacheDir, extraArgs = []) {
   })
 }
 
-test('dry-run --runner agent 能跑通并写 executor.log', async () => {
+test('dry-run --runner agent 能跑通并写 executor.log 与 events', async () => {
   const workdir = mkdtempSync(join(tmpdir(), 'er-agent-wd-'))
   const cache = mkdtempSync(join(tmpdir(), 'er-agent-cache-'))
   try {
@@ -187,6 +195,9 @@ test('dry-run --runner agent 能跑通并写 executor.log', async () => {
     assert.match(log, /-p/)
     assert.match(log, /--trust/)
     assert.match(log, /--force/)
+    assert.match(log, /stream-json/)
+    const events = readFileSync(join(summary.cacheDir, 'executor.events.jsonl'), 'utf8')
+    assert.match(events, /"kind":"outcome"/)
   } finally {
     rmSync(workdir, { recursive: true, force: true })
     rmSync(cache, { recursive: true, force: true })

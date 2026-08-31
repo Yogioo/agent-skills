@@ -1,4 +1,4 @@
-import { spawnTurn } from './spawn-turn.mjs'
+import { spawnAgentStreamTurn } from './spawn-agent-turn.mjs'
 
 /**
  * Map exec-review sandbox hints → Cursor `agent` CLI flags.
@@ -66,7 +66,7 @@ export function buildAgentArgs(turn, defaults = {}) {
   const args = [
     '-p',
     '--output-format',
-    'text',
+    'stream-json',
     '--workspace',
     turn.workdir,
     '--trust',
@@ -113,6 +113,7 @@ export function createAgentRunner(opts = {}) {
      * @param {string} [turn.promptFile]
      * @param {string} turn.outFile
      * @param {string} turn.logFile
+     * @param {string} [turn.eventsFile]
      * @param {string} [turn.schemaFile] ignored (no --output-schema); prompts demand JSON
      * @param {string} [turn.sandbox]
      * @param {string} [turn.model]
@@ -129,16 +130,16 @@ export function createAgentRunner(opts = {}) {
         approve,
       })
 
-      return spawnTurn({
+      return spawnAgentStreamTurn({
         bin,
         knownName: 'agent',
         workdir: turn.workdir,
         args,
         outFile: turn.outFile,
         logFile: turn.logFile,
+        eventsFile: turn.eventsFile,
         dryRun: turn.dryRun,
         signal: turn.signal,
-        stdoutIsOutput: true,
       })
     },
   }
