@@ -120,15 +120,27 @@ export function projectLoopState(loopEvents = [], progressEvents = []) {
       return true
     })
   }
-  const ready = mergeById(pipeline.ready, list.filter((task) => task.state === 'ready'), 'ready').map(withDetailUrl)
+  const settledIds = new Set(
+    list.filter((task) => task.state === 'done' || task.state === 'failed').map((task) => task.id),
+  )
+  const inProgressIds = new Set(
+    list.filter((task) => task.state === 'in_progress').map((task) => task.id),
+  )
+  const notSettled = (task) => task && !settledIds.has(task.id)
+  const notClaimed = (task) => notSettled(task) && !inProgressIds.has(task.id)
+  const ready = mergeById(pipeline.ready, list.filter((task) => task.state === 'ready'), 'ready')
+    .filter(notClaimed)
+    .map(withDetailUrl)
   const active = dropParentContainers(
     mergeById(
       pipeline.inProgress,
       list.filter((task) => task.state === 'in_progress'),
       'in_progress',
-    ),
+    ).filter(notSettled),
   ).map(withDetailUrl)
-  const blocked = (pipeline.blocked || []).map((task) => ({ ...task, state: 'blocked' }))
+  const blocked = (pipeline.blocked || [])
+    .filter(notClaimed)
+    .map((task) => ({ ...task, state: 'blocked' }))
   const done = list.filter((task) => task.state === 'done').map(withDetailUrl)
   const failed = list.filter((task) => task.state === 'failed').map(withDetailUrl)
   const currentTask = active.find((task) => task.id === currentId) || active.at(-1) || null

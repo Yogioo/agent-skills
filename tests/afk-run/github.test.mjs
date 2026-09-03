@@ -97,13 +97,13 @@ test('gh source lists ready issues, reuses detail, and writes lifecycle commands
   await withFakeGh(
     {
       issues: [
-        issue(1, 'default priority'),
-        issue(2, 'critical', '', ['P0']),
-        issue(3, 'blocked', '- [ ] #4', ['P1']),
-        issue(4, 'dependency', '', ['P3']),
-        issue(5, 'unlocked', '- [x] #4', ['P1']),
+        issue(1, 'default priority', '', ['ready-for-agent']),
+        issue(2, 'critical', '', ['P0', 'ready-for-agent']),
+        issue(3, 'blocked', '- [ ] #4', ['P1', 'ready-for-agent']),
+        issue(4, 'dependency', '', ['P3', 'ready-for-agent']),
+        issue(5, 'unlocked', '- [x] #4', ['P1', 'ready-for-agent']),
         issue(6, 'failed', '', ['afk-failed']),
-        issue(7, 'claimed', '', ['in-progress']),
+        issue(7, 'claimed', '', ['in-progress', 'ready-for-agent']),
       ],
     },
     async () => {
@@ -126,13 +126,32 @@ test('gh source lists ready issues, reuses detail, and writes lifecycle commands
         requirements: '',
       })
       assert.deepEqual(await source.describeBlocked(), {
-        blocked: [{ id: '3', title: 'blocked' }],
-        inProgress: [{ id: '7', title: 'claimed' }],
+        ready: [
+          { id: '2', title: 'critical', priority: 0 },
+          { id: '5', title: 'unlocked', priority: 1 },
+          { id: '1', title: 'default priority', priority: 2 },
+          { id: '4', title: 'dependency', priority: 3 },
+        ],
+        blocked: [{ id: '3', title: 'blocked', priority: 1, blockedBy: [] }],
+        inProgress: [{ id: '7', title: 'claimed', priority: 2 }],
       })
 
       await source.markInProgress('2')
+      assert.deepEqual(
+        (await source.describeBlocked()).inProgress.map((task) => task.id).sort(),
+        ['2', '7'],
+      )
       await source.markDone('2', { status: 'approved', summary: 'implemented' })
       await source.markFailed('3', 'review rejected')
+      assert.deepEqual(await source.describeBlocked(), {
+        ready: [
+          { id: '5', title: 'unlocked', priority: 1 },
+          { id: '1', title: 'default priority', priority: 2 },
+          { id: '4', title: 'dependency', priority: 3 },
+        ],
+        blocked: [],
+        inProgress: [{ id: '7', title: 'claimed', priority: 2 }],
+      })
 
       const state = JSON.parse(readFileSync(process.env.AFK_FAKE_GH_STATE, 'utf8'))
       assert.deepEqual(state.calls.slice(1), [
@@ -150,7 +169,7 @@ test('gh source retries transient CLI failures and fetches more than 100 issues'
     {
       failures: 2,
       failureText: 'ECONNRESET',
-      issues: Array.from({ length: 150 }, (_, i) => issue(i + 1, `issue-${i + 1}`)),
+      issues: Array.from({ length: 150 }, (_, i) => issue(i + 1, `issue-${i + 1}`, '', ['ready-for-agent'])),
     },
     async () => {
       const source = createGhSource({

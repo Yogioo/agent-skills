@@ -220,10 +220,34 @@ export function createGhSource(opts = {}) {
     return snapshot || loadIssues()
   }
 
+  function mutateSnapshot(id, mutator) {
+    if (!snapshot) return
+    const next = []
+    for (const issue of snapshot) {
+      if (issue.id !== String(id)) {
+        next.push(issue)
+        continue
+      }
+      const updated = mutator(issue)
+      if (updated) next.push(updated)
+    }
+    snapshot = next
+  }
+
+  function withLabel(issue, name) {
+    if (hasLabel(issue, name)) return issue
+    return { ...issue, labels: [...issue.labels, { name }] }
+  }
+
   function readyIssues(issues) {
     const openSet = new Set(issues.map((issue) => issue.number))
     return issues
-      .filter((issue) => !hasLabel(issue, 'afk-failed') && !hasLabel(issue, 'in-progress'))
+      .filter(
+        (issue) =>
+          hasLabel(issue, 'ready-for-agent') &&
+          !hasLabel(issue, 'afk-failed') &&
+          !hasLabel(issue, 'in-progress'),
+      )
       .filter((issue) => isReadyIssue(issue, openSet))
       .sort(compareIssues)
   }
@@ -252,11 +276,13 @@ export function createGhSource(opts = {}) {
 
     markInProgress(id) {
       run(issueArgs(repo, ['issue', 'edit', String(id), '--add-label', 'in-progress']))
+      mutateSnapshot(id, (issue) => withLabel(issue, 'in-progress'))
     },
 
     markDone(id, result = {}) {
       const comment = `afk: ${result.status || 'done'} — ${String(result.summary || '').slice(0, 200)}`
       run(issueArgs(repo, ['issue', 'close', String(id), '--comment', comment]))
+      mutateSnapshot(id, () => null)
     },
 
     /** GitHub source 无 beads 式 parent epic；保留 seam 供 loop 统一调用。 */
@@ -267,6 +293,7 @@ export function createGhSource(opts = {}) {
     markFailed(id, note = '') {
       run(issueArgs(repo, ['issue', 'comment', String(id), '--body', `afk failed: ${String(note).slice(0, 300)}`]))
       run(issueArgs(repo, ['issue', 'edit', String(id), '--add-label', 'afk-failed']))
+      mutateSnapshot(id, (issue) => withLabel(issue, 'afk-failed'))
     },
 
     describeBlocked() {
@@ -274,27 +301,26 @@ export function createGhSource(opts = {}) {
       const ready = readyIssues(issues).map((issue) => ({
         id: issue.id,
         title: issue.title,
-        priority: issue.priority ?? 2,
+        priority: priorityFromLabels(issue.labels),
       }))
       const readyIds = new Set(ready.map((issue) => issue.id))
-      const active = issues.filter((issue) => !hasLabel(issue, 'afk-failed'))
+      const active = issues.filter(
+        (issue) => hasLabel(issue, 'ready-for-agent') && !hasLabel(issue, 'afk-failed'),
+      )
+      const toTask = (issue) => ({
+        id: issue.id,
+        title: issue.title,
+        priority: priorityFromLabels(issue.labels),
+      })
       return {
         ready,
         blocked: active
           .filter((issue) => !hasLabel(issue, 'in-progress') && !readyIds.has(issue.id))
           .map((issue) => ({
-            id: issue.id,
-            title: issue.title,
-            priority: issue.priority ?? 2,
+            ...toTask(issue),
             blockedBy: [],
           })),
-        inProgress: active
-          .filter((issue) => hasLabel(issue, 'in-progress'))
-          .map((issue) => ({
-            id: issue.id,
-            title: issue.title,
-            priority: issue.priority ?? 2,
-          })),
+        inProgress: active.filter((issue) => hasLabel(issue, 'in-progress')).map(toTask),
       }
     },
   }

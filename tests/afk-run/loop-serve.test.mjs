@@ -115,6 +115,28 @@ test('loop-serve 队列更新会移除不再就绪的任务，同时保留历史
   assert.equal(state.lastEventAt, 4)
 })
 
+test('loop-serve 过期 pipeline 快照不能把已完成或进行中的工单留在就绪列', async () => {
+  const { projectLoopState } = await import('../../skills/afk-run/scripts/loop-serve.mjs')
+  const running = projectLoopState([
+    { t: 1, event: 'pipeline_snapshot', ready: [{ id: '10', title: 'Last', priority: 2 }], blocked: [], inProgress: [] },
+    { t: 2, event: 'queue_update', tasks: [{ id: '10', title: 'Last', priority: 2 }] },
+    { t: 3, event: 'task_start', id: '10', title: 'Last', priority: 2, attempt: 1 },
+  ])
+  assert.deepEqual(running.ready.map((task) => task.id), [])
+  assert.deepEqual(running.active.map((task) => task.id), ['10'])
+
+  const ended = projectLoopState([
+    ...running.events,
+    { t: 4, event: 'task_end', id: '10', title: 'Last', kind: 'done', status: 'approved', attempts: 1 },
+    { t: 5, event: 'pipeline_snapshot', ready: [{ id: '10', title: 'Last', priority: 2 }], blocked: [], inProgress: [] },
+    { t: 6, event: 'loop_end', reason: 'all-done' },
+  ])
+  assert.deepEqual(ended.ready.map((task) => task.id), [])
+  assert.deepEqual(ended.active.map((task) => task.id), [])
+  assert.deepEqual(ended.done.map((task) => task.id), ['10'])
+  assert.equal(ended.reason, 'all-done')
+})
+
 test('loop-serve /task/<id> 复用 exec-review structured context 页', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'afk-task-detail-'))
   const progressFile = join(dir, 'task-b-1.progress.jsonl')
