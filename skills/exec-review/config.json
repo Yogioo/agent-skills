@@ -1,19 +1,19 @@
 {
-  "runner": "codex",
+  "runner": "pi",
   "sandbox": "danger-full-access",
   "maxRounds": 3,
   "approve": true,
   "gitCommit": true,
   "timeout": 0,
   "executor": {
-    "runner": "codex",
+    "runner": "pi",
     "bin": "",
     "model": "",
     "provider": "",
     "thinking": ""
   },
   "reviewer": {
-    "runner": "codex",
+    "runner": "pi",
     "bin": "",
     "model": "",
     "provider": "",
