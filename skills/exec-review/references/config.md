@@ -17,6 +17,7 @@
   "sandbox": "workspace-write",
   "approve": true,
   "gitCommit": true,
+  "review": false,
   "serve": true,
   "port": 0,
   "returnLevel": 0,
@@ -48,6 +49,7 @@
 | `thinking` | 思考等级；**空 = 不传**。pi → `--thinking`；codex → `-c model_reasoning_effort=…`；agent → 折进 `--model …[effort=…]`（需同时有 model） |
 | `sandbox` / `approve` | 全局默认（仍可被 CLI 覆盖） |
 | `gitCommit` | git 仓库中是否允许执行端/审查端自行 commit；默认 `true`，`false` 或非 git 场景由调用方提交 |
+| `review` | 是否跑审查端；默认 `false`（只执行，定案 `done`，`review.status=skipped`）；`true` 时跑审查端 |
 | `serve` | 是否启动独立实时进度服务（默认 `true`） |
 | `port` | 进度服务端口；`0` = 由 workdir 自动派生（避免多工作区冲突） |
 | `returnLevel` | 摘要里附带进度投影的深度；`0` = 不附带（极简） |
@@ -99,6 +101,7 @@
 - `--thinking` / `--executor-thinking` / `--reviewer-thinking`
 - `--provider` / `--executor-provider` / `--reviewer-provider`
 - `--git-commit <true|false>`：覆盖 `gitCommit`（环境变量为 `EXEC_REVIEW_GIT_COMMIT`）
+- `--review <true|false>` / `--no-review`：覆盖 `review`（环境变量为 `EXEC_REVIEW_REVIEW`）
 
 ## 实时可视化（`serve`）
 
@@ -109,7 +112,7 @@ loop 运行时会启动一个**独立进程**（`scripts/serve.mjs`），把单�
 - `--no-serve`：不启动；`--port <端口>`：指定端口（默认按 workdir 派生）
 - `--heartbeat-ms <ms>`：心跳间隔
 
-> 单次 执行→审查 无回炉循环；`--max-rounds` 已废弃（仍被解析但不再影响行为）。改动检测用 `workspace.mjs` 的内容快照。
+> 默认只执行；`--review true` 时再跑审查。`--max-rounds` 已废弃（仍被解析但不再影响行为）。改动检测用 `workspace.mjs` 的内容快照。
 
 ## 渐进式披露（给调用方 Agent）
 

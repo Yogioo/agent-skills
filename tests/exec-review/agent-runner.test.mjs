@@ -142,6 +142,14 @@ test('resolveSettings 对 agent 默认 bin=agent', () => {
   assert.equal(settings.reviewer.runner, 'agent')
 })
 
+test('resolveSettings review 默认 false，可被 CLI/config 开启', () => {
+  assert.equal(resolveSettings({}, { path: 'x', data: {} }).review, false)
+  assert.equal(resolveSettings({}, { path: 'x', data: { review: true } }).review, true)
+  assert.equal(resolveSettings({ review: true }, { path: 'x', data: { review: false } }).review, true)
+  assert.equal(resolveSettings({ review: 'false' }, { path: 'x', data: { review: true } }).review, false)
+  assert.equal(resolveSettings({ review: 'true' }, { path: 'x', data: {} }).review, true)
+})
+
 test('resolveBin(agent) 在 Windows 上优先直连 cursor-agent index.js', () => {
   if (process.platform !== 'win32') return
   const resolved = resolveBin('agent', { knownName: 'agent' })

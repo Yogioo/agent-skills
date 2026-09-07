@@ -234,6 +234,12 @@ export function resolveSettings(args, loaded) {
     asBool(process.env.EXEC_REVIEW_GIT_COMMIT, asBool(cfg.gitCommit, true)),
   )
 
+  // review 默认关闭；CLI `--review true` 或 config/env 可开
+  const review = asBool(
+    args.review,
+    asBool(process.env.EXEC_REVIEW_REVIEW, asBool(cfg.review, false)),
+  )
+
   const structuredContext = asBool(
     args.structuredContext,
     asBool(process.env.EXEC_REVIEW_STRUCTURED_CONTEXT, asBool(cfg.structuredContext, true)),
@@ -249,6 +255,7 @@ export function resolveSettings(args, loaded) {
     sandbox,
     approve,
     gitCommit,
+    review,
     structuredContext,
     streamPartialOutput,
     serve,

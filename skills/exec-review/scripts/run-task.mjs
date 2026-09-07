@@ -46,7 +46,7 @@ function usage(code = 1) {
     [--bin <路径>] [--model <id>] [--provider <name>] [--thinking <level>]
     [--executor-model …] [--reviewer-model …] [--executor-thinking …] [--reviewer-thinking …]
     [--sandbox workspace-write|danger-full-access|read-only]
-    [--git-commit <true|false>]
+    [--git-commit <true|false>] [--review <true|false>] [--no-review]
     [--no-approve] [--dry-run]
     [--no-serve] [--port <端口>] [--return-level <0-3>] [--heartbeat-ms <ms>]
     [--progress-file <路径>]
@@ -95,6 +95,7 @@ function parseArgs(argv) {
     reviewerThinking: '',
     approve: null,
     gitCommit: null,
+    review: null,
     serve: null,
     open: null,
     port: 0,
@@ -204,6 +205,12 @@ function parseArgs(argv) {
         break
       case '--git-commit':
         out.gitCommit = next()
+        break
+      case '--review':
+        out.review = next()
+        break
+      case '--no-review':
+        out.review = false
         break
       case '--no-serve':
         out.serve = false
@@ -478,7 +485,9 @@ async function main() {
   }
 
   const executorRunner = createRoleRunner(settings.executor, settings)
-  const reviewerRunner = createRoleRunner(settings.reviewer, settings)
+  const reviewerRunner = settings.review
+    ? createRoleRunner(settings.reviewer, settings)
+    : null
 
   let rawTask = ''
   if (args.taskFile) {
@@ -515,6 +524,7 @@ async function main() {
         sandbox: settings.sandbox,
         approve: settings.approve,
         gitCommit: settings.gitCommit,
+        review: settings.review,
         serve: settings.serve,
         port: settings.port,
         returnLevel: settings.returnLevel,
@@ -605,16 +615,19 @@ async function main() {
   writeFileSync(join(runDir, 'task.md'), taskSnap, 'utf8')
 
   const executorTpl = readFileSync(join(SKILL_ROOT, 'prompts', 'executor.md'), 'utf8')
-  const reviewerTpl = readFileSync(join(SKILL_ROOT, 'prompts', 'reviewer.md'), 'utf8')
+  const reviewerTpl = settings.review
+    ? readFileSync(join(SKILL_ROOT, 'prompts', 'reviewer.md'), 'utf8')
+    : ''
   const outcomeSchema = join(SKILL_ROOT, 'schemas', 'outcome.schema.json')
   const reviewSchema = join(SKILL_ROOT, 'schemas', 'review.schema.json')
 
+  const reviewerLabel = settings.review
+    ? `${settings.reviewer.runner}/${settings.reviewer.bin}`
+    : 'off'
   logMain(
     mainLogPath,
-    `start config=${settings.configPath} executor=${settings.executor.runner}/${settings.executor.bin} reviewer=${settings.reviewer.runner}/${settings.reviewer.bin} id=${task.id || '-'} title=${JSON.stringify(task.title)} workdir=${workdir} cache=${runDir}`,
+    `start config=${settings.configPath} executor=${settings.executor.runner}/${settings.executor.bin} reviewer=${reviewerLabel} review=${settings.review} id=${task.id || '-'} title=${JSON.stringify(task.title)} workdir=${workdir} cache=${runDir}`,
   )
-
-  let lastReview = null
 
   // 执行前快照与 git 上下文：快照检测改动，git 查询只读
   const before = snapshot(workdir)
@@ -627,11 +640,13 @@ async function main() {
     gitContext.isGit && gitContext.recentLog
       ? `\n## 参考：最近变更（git log）\n\n\`\`\`\n${gitContext.recentLog}\n\`\`\`\n`
       : ''
-  const gitReviewContext = buildReviewerGitContext({
-    gitCommit: settings.gitCommit,
-    isGit: gitContext.isGit,
-    baseHead: gitContext.baseHead,
-  })
+  const gitReviewContext = settings.review
+    ? buildReviewerGitContext({
+        gitCommit: settings.gitCommit,
+        isGit: gitContext.isGit,
+        baseHead: gitContext.baseHead,
+      })
+    : ''
 
   // ---- 执行阶段：实现 ----
   const executorPrompt = renderTemplate(executorTpl, {
@@ -762,6 +777,30 @@ async function main() {
     return
   }
 
+  // review 关闭：只执行，定案为 done
+  if (!settings.review) {
+    let commitsSinceBase = null
+    if (gitContext.isGit && settings.gitCommit && gitContext.baseHead) {
+      const raw = gitOutput(workdir, ['rev-list', '--count', `${gitContext.baseHead}..HEAD`])
+      commitsSinceBase = raw ? Number(raw) : null
+    }
+    const summary = {
+      status: 'done',
+      id: task.id || undefined,
+      workdir,
+      cacheDir: runDir,
+      summary: outcome.note || '已实现；未跑审查（review=false）',
+      changedFiles,
+      reviewChangedFiles: [],
+      review: { status: 'skipped', note: 'review 已关闭' },
+      outcome,
+      commitsSinceBase,
+    }
+    logMain(mainLogPath, `review: 跳过（review=false，改动文件 ${changedFiles.length} 个）`)
+    finalize(summary, join(runDir, 'summary.json'))
+    return
+  }
+
   // ---- 审查阶段：审查端直接改进 ----
   const reviewerPrompt = renderTemplate(reviewerTpl, {
     TASK_ID: task.id || task.title,
@@ -837,7 +876,6 @@ async function main() {
     review.status = 'refined'
     review.note = (review.note || '') + ' (有改动但 status 缺失；按 refined 计)'
   }
-  lastReview = review
   progress.write('reviewer_end', { status: review.status, changed: reviewChanged.length })
 
   let commitsSinceBase = null

@@ -16,7 +16,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import http from 'node:http'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -236,6 +236,8 @@ test('run-task 保持单次 执行→审查 两阶段（executor_start / reviewe
   assert.match(src, /status: 'approved'/, '审查后应定案 approved')
   // 审查端直接改进：审查阶段不再把结论交回执行端
   assert.match(src, /审查阶段：审查端直接改进/, '应注释审查端直接改进')
+  assert.match(src, /settings\.review/, '应支持 review 开关')
+  assert.match(src, /status: 'skipped'/, '关闭 review 时应标记 skipped')
 })
 
 test('提示词模板使用动态提交规则和 git 上下文占位符', () => {
@@ -338,7 +340,7 @@ test('dry-run 在 git 仓库默认注入 log、提交规则和 BASE_HEAD', async
   const repo = makeGitRepo()
   const cache = mkdtempSync(join(tmpdir(), 'er-git-cache-'))
   try {
-    const summary = await runDryRun(repo.dir, cache)
+    const summary = await runDryRun(repo.dir, cache, ['--review', 'true'])
     const executor = read(join(summary.cacheDir, 'executor.prompt.md'))
     const reviewer = read(join(summary.cacheDir, 'reviewer.prompt.md'))
 
@@ -362,7 +364,7 @@ test('dry-run 的 gitCommit=false 保留禁止提交但仍注入 git 上下文',
   const repo = makeGitRepo()
   const cache = mkdtempSync(join(tmpdir(), 'er-git-cache-'))
   try {
-    const summary = await runDryRun(repo.dir, cache, ['--git-commit', 'false'])
+    const summary = await runDryRun(repo.dir, cache, ['--git-commit', 'false', '--review', 'true'])
     const executor = read(join(summary.cacheDir, 'executor.prompt.md'))
     const reviewer = read(join(summary.cacheDir, 'reviewer.prompt.md'))
 
@@ -377,11 +379,27 @@ test('dry-run 的 gitCommit=false 保留禁止提交但仍注入 git 上下文',
   }
 })
 
+test('dry-run 默认跳过审查阶段并定案 done', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'er-no-review-'))
+  const cache = mkdtempSync(join(tmpdir(), 'er-no-review-cache-'))
+  try {
+    const summary = await runDryRun(dir, cache)
+    assert.equal(summary.status, 'done')
+    assert.equal(summary.review?.status, 'skipped')
+    assert.ok(!existsSync(join(summary.cacheDir, 'reviewer.prompt.md')))
+    const settings = JSON.parse(read(join(summary.cacheDir, 'settings.json')))
+    assert.equal(settings.review, false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(cache, { recursive: true, force: true })
+  }
+})
+
 test('dry-run 在非 git 目录不注入 git 相关提示词', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'er-no-git-'))
   const cache = mkdtempSync(join(tmpdir(), 'er-no-git-cache-'))
   try {
-    const summary = await runDryRun(dir, cache)
+    const summary = await runDryRun(dir, cache, ['--review', 'true'])
     const prompts = [
       read(join(summary.cacheDir, 'executor.prompt.md')),
       read(join(summary.cacheDir, 'reviewer.prompt.md')),

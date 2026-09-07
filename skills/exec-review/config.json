@@ -4,6 +4,7 @@
   "maxRounds": 3,
   "approve": true,
   "gitCommit": true,
+  "review": false,
   "timeout": 0,
   "executor": {
     "runner": "pi",
