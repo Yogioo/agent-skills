@@ -231,7 +231,7 @@ const HTML = `
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>afk-run · 实时看板</title>
 <style>
-  :root { --bg:#0c1016; --panel:#151b24; --line:#2a3442; --text:#e8edf3; --muted:#95a2b2; --dim:#687587; --blue:#5ca7f7; --green:#4bc47b; --amber:#d8a23a; --red:#e06767; --mono:ui-monospace,SFMono-Regular,Consolas,monospace; }
+  :root { --bg:#0c1016; --panel:#151b24; --line:#2a3442; --text:#e8edf3; --muted:#95a2b2; --dim:#687587; --blue:#5ca7f7; --green:#4bc47b; --amber:#d8a23a; --red:#e06767; --purple:#a78bfa; --mono:ui-monospace,SFMono-Regular,Consolas,monospace; }
   * { box-sizing:border-box; margin:0; }
   body { background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; padding:28px clamp(16px,4vw,64px) 60px; }
   .grip { color:var(--dim); font:11px var(--mono); letter-spacing:.12em; text-transform:uppercase; margin-bottom:12px; }
@@ -241,6 +241,10 @@ const HTML = `
   .badge.done { color:var(--green); } .badge.stale { color:var(--amber); }
   .summary { display:flex; flex-wrap:wrap; gap:10px 22px; margin-top:18px; color:var(--muted); font-size:12px; }
   .summary span b { color:var(--text); font-family:var(--mono); font-weight:600; }
+  .pipeline { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+  .pill { border:1px solid var(--line); background:var(--panel); border-radius:999px; padding:4px 12px; font-size:12px; color:var(--muted); }
+  .pill b { font-family:var(--mono); color:var(--text); margin-left:4px; }
+  .pill.active b { color:var(--blue); } .pill.ok b { color:var(--green); } .pill.bad b { color:var(--red); } .pill.warn b { color:var(--amber); }
   section { margin-top:20px; }
   h2 { color:var(--dim); font-size:12px; letter-spacing:.08em; text-transform:uppercase; margin-bottom:10px; }
   .queues { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
@@ -252,19 +256,29 @@ const HTML = `
   .taskid { color:var(--blue); font:12px var(--mono); }
   .tasktitle { overflow-wrap:anywhere; margin-top:2px; }
   .taskmeta { color:var(--muted); font-size:12px; margin-top:3px; overflow-wrap:anywhere; }
-  .tasklink { display:block; color:inherit; text-decoration:none; border-radius:4px; padding:1px 0; }
+  .tasklink { display:block; color:inherit; text-decoration:none; border-radius:4px; padding:2px 4px; margin:0 -4px; }
   .tasklink:hover { background:#1a2230; }
   .tasklink .taskid { text-decoration:underline; text-underline-offset:2px; }
   .taskhint { color:var(--dim); font-size:11px; margin-top:2px; }
+  .chip { display:inline-block; font-size:10px; font-weight:600; padding:1px 7px; border-radius:4px; margin-left:6px; vertical-align:middle; }
+  .chip.run { color:var(--blue); background:#5ca7f722; }
+  .chip.exec { color:var(--blue); background:#5ca7f722; }
+  .chip.review { color:var(--purple); background:#a78bfa22; }
+  .chip.ok { color:var(--green); background:#4bc47b22; }
+  .chip.bad { color:var(--red); background:#e0676722; }
   .failed .taskid { color:var(--red); } .finished .taskid { color:var(--green); }
   .blockedcol .taskid { color:var(--amber); }
   .empty { color:var(--dim); font-size:13px; }
   .current { border:1px solid var(--line); background:var(--panel); padding:18px; border-radius:6px; display:grid; grid-template-columns:minmax(220px,1fr) 210px; gap:24px; }
+  .current.live { border-color:color-mix(in srgb,var(--blue) 45%,var(--line)); box-shadow:0 0 0 1px #5ca7f718; }
   .stage { display:flex; align-items:center; gap:9px; font-size:19px; font-weight:650; }
   .dot { width:10px; height:10px; border-radius:50%; background:var(--green); box-shadow:0 0 0 4px #4bc47b20; flex:none; }
   .dot.stale { background:var(--amber); box-shadow:0 0 0 4px #d8a23a20; }
+  .dot.exec { background:var(--blue); box-shadow:0 0 0 4px #5ca7f720; }
+  .dot.review { background:var(--purple); box-shadow:0 0 0 4px #a78bfa20; }
   .bartrack { height:8px; background:#0d1219; border:1px solid var(--line); margin-top:17px; overflow:hidden; border-radius:4px; }
   .bar { height:100%; width:0%; background:var(--blue); transition:width .3s; }
+  .bar.review { background:var(--purple); }
   .stagehint { color:var(--muted); font-size:12px; margin-top:6px; }
   .stats { display:grid; gap:8px; align-content:center; }
   .stat { display:flex; justify-content:space-between; border-bottom:1px solid var(--line); padding:5px 0; color:var(--muted); font-size:12px; }
@@ -280,6 +294,13 @@ const HTML = `
   <h1 id="title">AFK 运行看板</h1>
   <div class="sub" id="meta">等待 loop 开始...</div>
   <div class="badge" id="status">连接中</div>
+  <div class="pipeline" id="pipeline">
+    <span class="pill">就绪<b id="pillready">0</b></span>
+    <span class="pill active">进行中<b id="pillactive">0</b></span>
+    <span class="pill warn">阻塞<b id="pillblocked">0</b></span>
+    <span class="pill ok">完成<b id="pillfinished">0</b></span>
+    <span class="pill bad">失败<b id="pillfailed">0</b></span>
+  </div>
   <div class="summary">
     <span>启动 <b id="started">-</b></span>
     <span>来源 <b id="source">-</b></span>
@@ -301,7 +322,7 @@ const HTML = `
 
   <section>
     <h2>当前任务</h2>
-    <div class="current">
+    <div class="current" id="currentpanel">
       <div>
         <div class="stage"><span class="dot" id="dot"></span><span id="stage">等待任务...</span></div>
         <div class="stagehint" id="taskname">执行和审查阶段会显示在这里。</div>
@@ -312,6 +333,7 @@ const HTML = `
         <div class="stat"><span>本阶段耗时</span><b id="stagedur">-</b></div>
         <div class="stat"><span>心跳</span><b id="heartbeat">0</b></div>
         <div class="stat"><span>尝试</span><b id="attempt">-</b></div>
+        <div class="stat"><span>详情</span><b id="detailstat">-</b></div>
       </div>
     </div>
   </section>
@@ -328,19 +350,38 @@ const HTML = `
   function esc(value) { return String(value || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function ts(value) { if (!value) return '-'; const d = new Date(value); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0'); }
   function dur(value) { const seconds = Math.max(0, Math.round(value / 1000)); if (seconds < 60) return seconds+'s'; const minutes = Math.floor(seconds / 60); return minutes+'m '+(seconds % 60)+'s'; }
-  function taskBody(task, extraMeta) {
-    return '<div class="taskid">'+esc(task.id)+'</div><div class="tasktitle">'+esc(task.title || task.id)+'</div><div class="taskmeta">P'+esc(task.priority == null ? '-' : task.priority)+' · 第 '+esc(task.attempts || task.attempt || 1)+' 次'+(extraMeta || '')+(task.reason ? '<br>'+esc(task.reason) : '')+'</div>'+(task.detailUrl ? '<div class="taskhint">点击查看 exec-review 详情</div>' : '');
+  function stageChip(task) {
+    const stage = task && task.stage;
+    if (stage === 'executing') return '<span class="chip exec">执行中</span>';
+    if (stage === 'reviewing') return '<span class="chip review">审查中</span>';
+    if (stage === 'settled') return '<span class="chip ok">已结束</span>';
+    if (task && task.state === 'in_progress') return '<span class="chip run">进行中</span>';
+    if (task && task.state === 'done') return '<span class="chip ok">'+(esc(task.status || 'done'))+'</span>';
+    if (task && task.state === 'failed') return '<span class="chip bad">'+(esc(task.status || task.kind || 'failed'))+'</span>';
+    return '';
   }
-  function task(task) {
-    const inner = taskBody(task);
-    if (task.detailUrl) return '<a class="tasklink" href="'+esc(task.detailUrl)+'" target="_blank" rel="noopener">'+inner+'</a>';
+  function taskBody(task, extraMeta) {
+    return '<div class="taskid">'+esc(task.id)+stageChip(task)+'</div><div class="tasktitle">'+esc(task.title || task.id)+'</div><div class="taskmeta">P'+esc(task.priority == null ? '-' : task.priority)+' · 第 '+esc(task.attempts || task.attempt || 1)+' 次'+(extraMeta || '')+(task.reason ? '<br>'+esc(task.reason) : '')+'</div>'+(task.detailUrl ? '<div class="taskhint">打开 exec-review 详情 →</div>' : '');
+  }
+  function task(taskItem) {
+    const t = enrich(taskItem);
+    const inner = taskBody(t);
+    if (t.detailUrl) return '<a class="tasklink task" href="'+esc(t.detailUrl)+'" target="_blank" rel="noopener">'+inner+'</a>';
     return '<div class="task">'+inner+'</div>';
   }
+  function enrich(task) {
+    if (!task) return task;
+    if (state && state.current && task.id === state.current.id) {
+      return { ...task, stage: state.current.stage, stageLabel: state.current.stageLabel };
+    }
+    return task;
+  }
   function blockedTask(task) {
-    const blockers = Array.isArray(task.blockedBy) && task.blockedBy.length
-      ? '等待 '+task.blockedBy.map((id) => esc(id)).join(', ')
+    const t = enrich(task);
+    const blockers = Array.isArray(t.blockedBy) && t.blockedBy.length
+      ? '等待 '+t.blockedBy.map((id) => esc(id)).join(', ')
       : '等待依赖';
-    return '<div class="task">'+taskBody(task, ' · '+blockers)+'</div>';
+    return '<div class="task">'+taskBody(t, ' · '+blockers)+'</div>';
   }
   // 注意：只接收 (id, tasks)。曾误写成 (id, count, tasks) 却只传两参，导致 render 抛错、徽章一直停在「连接中」。
   function queue(id, tasks, renderTask) {
@@ -350,6 +391,8 @@ const HTML = `
     const listEl = $(id);
     if (countEl) countEl.textContent = list.length;
     if (listEl) listEl.innerHTML = list.length ? list.map(renderOne).join('') : '<div class="empty">-</div>';
+    const pill = $('pill' + id);
+    if (pill) pill.textContent = list.length;
   }
   function render() {
     if (!state) return;
@@ -370,18 +413,34 @@ const HTML = `
     if (state.reason) { badge.textContent = '已结束 · '+state.reason; badge.className = 'badge done'; }
     else if (age > 25000) { badge.textContent = '无新事件'; badge.className = 'badge stale'; }
     else { badge.textContent = current ? '运行中' : '等待任务'; badge.className = 'badge'; }
+    const panel = $('currentpanel');
+    panel.className = 'current'+(current && !state.reason ? ' live' : '');
     const dot = $('dot');
-    dot.className = 'dot'+(current && age > 25000 ? ' stale' : '');
-    if (!current) { $('stage').textContent = state.reason ? '本轮已结束' : '等待任务...'; $('taskname').textContent = '-'; $('stagehint').textContent = '-'; $('bar').style.width = '0%'; $('heartbeat').textContent = '0'; $('stagedur').textContent = '-'; $('attempt').textContent = '-'; }
-    else {
+    const bar = $('bar');
+    if (!current) {
+      dot.className = 'dot'+(age > 25000 ? ' stale' : '');
+      $('stage').textContent = state.reason ? '本轮已结束' : '等待任务...';
+      $('taskname').textContent = '-';
+      $('stagehint').textContent = state.reason ? ('停止原因：'+state.reason) : '-';
+      bar.style.width = '0%';
+      bar.className = 'bar';
+      $('heartbeat').textContent = '0';
+      $('stagedur').textContent = '-';
+      $('attempt').textContent = '-';
+      $('detailstat').textContent = '-';
+    } else {
+      const stage = current.stage || '';
+      dot.className = 'dot'+(age > 25000 ? ' stale' : stage === 'reviewing' ? ' review' : stage === 'executing' ? ' exec' : '');
       $('stage').textContent = current.stageLabel || current.stage || '准备中';
       const detail = current.detailUrl ? '<a href="'+esc(current.detailUrl)+'" target="_blank" rel="noopener">'+esc(current.id || '-')+'</a>' : esc(current.id || '-');
       $('taskname').innerHTML = detail+' · '+esc(current.title || current.id || '')+(current.detailUrl ? ' · <a href="'+esc(current.detailUrl)+'" target="_blank" rel="noopener">打开详情</a>' : '');
-      $('stagehint').textContent = current.stage === 'reviewing' ? '执行已完成，正在审查' : current.stage === 'executing' ? '执行端正在工作' : '正在准备执行';
-      $('bar').style.width = current.stage === 'reviewing' ? '65%' : current.stage === 'settled' ? '100%' : current.stage === 'executing' ? '30%' : '8%';
+      $('stagehint').textContent = current.stage === 'reviewing' ? '执行已完成，正在审查' : current.stage === 'executing' ? '执行端正在工作' : current.stage === 'settled' ? '本任务已定案' : '正在准备执行';
+      bar.style.width = current.stage === 'reviewing' ? '65%' : current.stage === 'settled' ? '100%' : current.stage === 'executing' ? '30%' : '8%';
+      bar.className = 'bar'+(current.stage === 'reviewing' ? ' review' : '');
       $('heartbeat').textContent = current.heartbeats || 0;
       $('stagedur').textContent = current.stageSince ? dur(Date.now() - current.stageSince) : '-';
       $('attempt').textContent = current.attempt || 1;
+      $('detailstat').innerHTML = current.detailUrl ? '<a href="'+esc(current.detailUrl)+'" target="_blank" rel="noopener">打开</a>' : '-';
     }
     $('report').innerHTML = state.reportFile ? '<a href="/report">'+esc(state.reportFile)+'</a>' : '运行结束后可查看 report.md。';
   }

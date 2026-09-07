@@ -13,6 +13,10 @@ import {
   extractEditWritePreview,
   fmtToolSummary,
   formatToolBody,
+  fmtMessageSummary,
+  formatMessageBody,
+  fmtRawSummary,
+  renderJsonDetails,
   PAYLOAD_TRUNCATE,
 } from '../../skills/exec-review/scripts/context-ui.mjs'
 
@@ -66,6 +70,17 @@ test('fmtToolSummary shell one-liner', () => {
   assert.match(summary, /shell · start · echo hello world/)
 })
 
+test('fmtToolSummary read / grep one-liners', () => {
+  assert.match(
+    fmtToolSummary({ toolName: 'read', phase: 'done', args: { path: 'x.mjs', offset: 10, limit: 20 } }),
+    /read · done · x\.mjs \[10\+20\]/,
+  )
+  assert.match(
+    fmtToolSummary({ toolName: 'grep', phase: 'start', args: { pattern: 'foo', path: 'src' } }),
+    /grep · start · foo · src/,
+  )
+})
+
 test('formatToolBody shell includes ctx-shell-cmd and ctx-trunc for large stdout', () => {
   const body = formatToolBody(
     { toolName: 'shell', args: { command: 'run' } },
@@ -90,4 +105,60 @@ test('formatToolBody edit includes ctx-edit-head', () => {
   )
   assert.match(body, /ctx-edit-head/)
   assert.match(body, /x\.mjs/)
+})
+
+test('formatToolBody read shows path head and content', () => {
+  const body = formatToolBody(
+    { toolName: 'read', args: { path: 'a.txt' } },
+    { toolName: 'read', result: { content: 'hello' } },
+    'read',
+    't3',
+    esc,
+  )
+  assert.match(body, /ctx-path-head/)
+  assert.match(body, /hello/)
+})
+
+test('formatToolBody unknown tool collapses JSON behind details', () => {
+  const body = formatToolBody(
+    { toolName: 'mystery', args: { nested: { a: 1 } } },
+    { toolName: 'mystery', result: { ok: true } },
+    'mystery',
+    't4',
+    esc,
+  )
+  assert.match(body, /ctx-json/)
+  assert.match(body, /args/)
+  assert.match(body, /result/)
+  assert.doesNotMatch(body, /^args:\n\{/m)
+})
+
+test('fmtMessageSummary extracts status from outcome JSON', () => {
+  const s = fmtMessageSummary('{"status":"done","taskId":"t1","note":"ok"}', 'outcome')
+  assert.match(s, /outcome · done · t1 · ok/)
+})
+
+test('formatMessageBody renders key fields not raw dump', () => {
+  const body = formatMessageBody(
+    JSON.stringify({ status: 'blocked', note: 'need human', extra: { x: 1 } }),
+    'm1',
+    esc,
+  )
+  assert.match(body, /ctx-kv/)
+  assert.match(body, /blocked/)
+  assert.match(body, /更多字段/)
+})
+
+test('fmtRawSummary one-lines turn events', () => {
+  assert.equal(fmtRawSummary({ type: 'turn.started' }), 'turn.started')
+  assert.match(
+    fmtRawSummary({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 2 } }),
+    /turn\.completed · in 1 · out 2/,
+  )
+})
+
+test('renderJsonDetails wraps payload', () => {
+  const html = renderJsonDetails({ a: 1 }, 'j1', esc, 'payload')
+  assert.match(html, /ctx-json/)
+  assert.match(html, /payload/)
 })

@@ -63,7 +63,7 @@ test('loop-serve 页面提供看板所需区块，且不提供写停止文件入
   const used = [...new Set([...script[1].matchAll(/\$\(['"]([a-zA-Z]+)['"]\)/g)].map((m) => m[1]))]
   const defined = new Set([...html.matchAll(/id="([a-zA-Z]+)"/g)].map((m) => m[1]))
   assert.deepEqual(used.filter((id) => !defined.has(id)), [], '脚本引用的 id 都必须存在')
-  for (const id of ['ready', 'active', 'finished', 'failed', 'stage', 'heartbeat', 'stopfile', 'rundir', 'report']) {
+  for (const id of ['ready', 'active', 'finished', 'failed', 'stage', 'heartbeat', 'stopfile', 'rundir', 'report', 'pipeline', 'currentpanel', 'detailstat', 'pillready']) {
     assert.ok(defined.has(id), `页面应有 #${id}`)
   }
   assert.doesNotMatch(html, /<button/i, '看板必须只读')

@@ -55,8 +55,9 @@ test('beads: recoverStale 重置超阈值 in_progress，保留近期工单并写
     assert.deepEqual(source.recoverStale(60, Date.now), [])
     assert.equal(row(dir, freshId).status, 'in_progress')
     assert.deepEqual(source.describeBlocked(), {
+      ready: [],
       blocked: [],
-      inProgress: [{ id: freshId, title: 'fresh' }],
+      inProgress: [{ id: freshId, title: 'fresh', priority: 2 }],
     })
     assert.match(
       bd(dir, ['comments', staleId, '--json']),

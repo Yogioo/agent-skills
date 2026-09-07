@@ -144,13 +144,30 @@ export function renderProgressHtml(opts = {}) {
   .ctx-trunc-preview { max-height:180px; overflow:hidden; }
   .ctx-shell-cmd { color:var(--amber); font-weight:600; }
   .ctx-shell-exit { color:var(--muted); }
-  .ctx-edit-head { color:var(--green); font-weight:600; }
+  .ctx-shell-exit.ok { color:var(--green); }
+  .ctx-shell-exit.bad { color:var(--red); }
+  .ctx-edit-head, .ctx-path-head { color:var(--green); font-weight:600; }
+  .ctx-kv { padding:2px 0; color:#9db0c8; }
+  .ctx-k { color:var(--dim); font-weight:600; min-width:4.5em; display:inline-block; }
+  .ctx-json { margin-top:6px; }
+  .ctx-json > summary { cursor:pointer; color:var(--blue); font-size:11px; padding:4px 0; list-style:none; }
+  .ctx-json > summary::-webkit-details-marker { display:none; }
+  .ctx-json > summary::before { content:'▸ '; color:var(--dim); }
+  .ctx-json[open] > summary::before { content:'▾ '; }
   .ctx-card.tool.shell summary { color:var(--amber); }
-  .ctx-card.tool.edit summary, .ctx-card.tool.write summary { color:var(--green); }
-  .ctx-card.assistant .body, .ctx-card.outcome .body { display:block; padding:8px 12px 10px; }
+  .ctx-card.tool.edit summary, .ctx-card.tool.write summary,
+  .ctx-card.tool.read summary, .ctx-card.tool.Read summary { color:var(--green); }
+  .ctx-card.tool.grep summary, .ctx-card.tool.Grep summary,
+  .ctx-card.tool.glob summary, .ctx-card.tool.Glob summary,
+  .ctx-card.tool.search summary { color:var(--blue); }
+  .ctx-card.assistant .body, .ctx-card.outcome .body, .ctx-card.raw .body { padding:0 12px 10px; }
   .ctx-card.assistant.streaming .body { opacity:.92; border-left:2px solid var(--blue); padding-left:10px; }
   .ctx-card.assistant, .ctx-card.outcome { border-color:color-mix(in srgb,var(--blue) 30%,var(--border)); }
   .ctx-card.outcome { border-color:color-mix(in srgb,var(--green) 30%,var(--border)); }
+  .context-console.console { height:min(70vh, 640px); }
+  .ctx-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+  .ctx-toolbar label { color:var(--muted); font-size:11px; display:flex; align-items:center; gap:4px; cursor:pointer; }
+  .ctx-count { color:var(--dim); font-size:11px; font-family:var(--mono); margin-left:auto; }
 
   footer { margin-top:18px; color:var(--dim); font-size:12px; font-family:var(--mono); word-break:break-all; }
   .empty { color:var(--dim); font-size:13px; }
@@ -195,6 +212,11 @@ export function renderProgressHtml(opts = {}) {
     </div>
     <div class="col">
       <h2>Agent 上下文 · 结构化事件</h2>
+      <div class="ctx-toolbar">
+        <label><input type="checkbox" id="hideRaw" checked /> 隐藏生命周期噪声</label>
+        <label><input type="checkbox" id="collapseDone" checked /> 完成项默认折叠</label>
+        <span class="ctx-count" id="ctxCount"></span>
+      </div>
       <div class="context-console console"><div class="ctx-cards" id="contextCards"></div></div>
     </div>
   </section>
@@ -229,18 +251,10 @@ ${clientContextUiSource()}
   function roleTag(role){ const cls=role==='reviewer'?'role-review':'role-exec'; const lbl=role==='reviewer'?'审查':'执行'; return '<span class="'+cls+'">['+lbl+']</span>'; }
   function tsBadge(t){ return '<span class="ctx-ts">'+esc(ts(t))+'</span>'; }
   function rawPayloadType(node){ const p=node.ev && node.ev.payload; return (p && typeof p === 'object' && p.type) ? String(p.type) : ''; }
-  function formatRawSummary(node){
-    const p=node.ev && node.ev.payload;
-    if (!p || typeof p !== 'object') return JSON.stringify(node.ev && node.ev.payload != null ? node.ev.payload : node.ev, null, 2);
-    const type=String(p.type || '');
-    if (type === 'thread.started') return 'thread.started'+(p.thread_id ? ' · '+p.thread_id : '');
-    if (type === 'turn.started') return 'turn.started';
-    if (type === 'turn.completed'){
-      const u=p.usage;
-      if (u && typeof u === 'object') return 'turn.completed · in '+u.input_tokens+' · out '+u.output_tokens+(u.reasoning_output_tokens ? ' · reason '+u.reasoning_output_tokens : '');
-      return 'turn.completed';
-    }
-    return JSON.stringify(p, null, 2);
+  function isLifecycleNoise(type){
+    return type === 'thread.started' || type === 'turn.started' || type === 'turn.completed'
+      || type === 'thread.token_usage_updated' || type === 'agent_start' || type === 'turn_start'
+      || type === 'session' || type.startsWith('session.');
   }
   function isTurnInProgress(node, sorted, idx){
     if (rawPayloadType(node) !== 'turn.started') return false;
@@ -253,11 +267,9 @@ ${clientContextUiSource()}
     }
     return true;
   }
-  function formatAssistantBody(text){
-    const s=String(text || '');
-    try { return esc(JSON.stringify(JSON.parse(s), null, 2)); } catch { return esc(s); }
-  }
   function dur(ms){ if(ms==null) return '—'; const s=Math.round(ms/1000); if(s<60) return s+'s'; const m=Math.floor(s/60); if(m<60) return m+'m '+ (s%60)+'s'; const h=Math.floor(m/60); return h+'h '+ (m%60)+'m'; }
+  function hideRawChecked(){ const el=$('hideRaw'); return !el || el.checked; }
+  function collapseDoneChecked(){ const el=$('collapseDone'); return !el || el.checked; }
 
   function stageNow(){
     for (let i=events.length-1;i>=0;i--){
@@ -285,15 +297,16 @@ ${clientContextUiSource()}
     let cls='', txt='';
     switch(e.event){
       case 'run_start': cls='ev-run'; txt='运行开始 · '+ (e.title||e.id||'') + (e.runner?' · runner='+e.runner:''); break;
-      case 'executor_start': txt='执行端启动'; break;
-      case 'executor_end': cls='ev-round'; txt='执行端完成 · status='+e.status+' · 改动文件='+e.changed; break;
-      case 'reviewer_start': txt='审查端启动'; break;
-      case 'reviewer_end': cls=(e.status==='refined'?'ev-approve':'ev-round'); txt='审查端完成 · '+e.status+' · 改动文件='+e.changed; break;
-      case 'settle': cls=(e.status==='approved'?'ev-approve':'ev-error'); txt='定案 · '+e.status; break;
+      case 'executor_start': cls='ev-run'; txt='执行端启动'; break;
+      case 'executor_end': cls='ev-round'; txt='执行端完成 · '+e.status+(e.changed!=null?' · '+e.changed+' 文件':''); break;
+      case 'reviewer_start': cls='ev-run'; txt='审查端启动'; break;
+      case 'reviewer_end': cls=(e.status==='refined'?'ev-approve':'ev-round'); txt='审查端完成 · '+e.status+(e.changed!=null?' · '+e.changed+' 文件':''); break;
+      case 'settle': cls=(e.status==='approved'||e.status==='done'?'ev-approve':'ev-error'); txt='定案 · '+e.status; break;
+      case 'context_start': txt='上下文流 · '+(e.role==='reviewer'?'审查':'执行'); break;
       case 'heartbeat': return null;
       default: txt=e.event;
     }
-    return '<span class="stamp">'+st+'</span>  '+txt;
+    return '<span class="'+cls+'"><span class="stamp">'+st+'</span>  '+txt+'</span>';
   }
 
   function render(){
@@ -338,13 +351,16 @@ ${clientContextUiSource()}
     else {
       pBox.innerHTML = keys.map((k)=>{
         const p=meta.phases[k];
-        const stt = p.status ? '<span class="phase-status '+(p.status==='refined'?'refined':'clean')+'">'+p.status+'</span>' : '<span class="phase-status">…</span>';
-        const changeInfo = (p.changed!=null && p.changed>0) ? (' · '+p.changed+' 文件改动') : '';
-        return '<div class="phase"><div class="phase-idx">'+k+'</div>'+
+        const label = k==='executor'?'执行':'审查';
+        const stt = p.status
+          ? '<span class="phase-status '+(p.status==='refined'||p.status==='done'||p.status==='approved'?'refined':'clean')+'">'+esc(p.status)+'</span>'
+          : '<span class="phase-status">…</span>';
+        const changeInfo = (p.changed!=null && p.changed>0) ? (' · '+p.changed+' 文件改动') : (p.changed===0 ? ' · 无文件改动' : '');
+        return '<div class="phase"><div class="phase-idx">'+label+'</div>'+
           '<div class="phase-body">'+
             '<div class="phase-row"><span class="lbl">结果</span>'+stt+changeInfo+'</div>'+
           '</div>'+
-          '<div class="phase-idx">'+(k==='executor'?'执行':'审查')+'</div>'+
+          '<div class="phase-idx">'+esc(k)+'</div>'+
         '</div>';
       }).join('');
     }
@@ -411,6 +427,10 @@ ${clientContextUiSource()}
     const wasAtBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 48;
     const sorted = [...ctxNodes].sort((a,b)=>(a.t-b.t)||(a.seq-b.seq));
     const html = [];
+    const collapseDone = collapseDoneChecked();
+    const hideRaw = hideRawChecked();
+    let shown = 0;
+    let hiddenNoise = 0;
     for (let i=0;i<sorted.length;i++){
       const node = sorted[i];
       if (node.kind === 'sep') {
@@ -424,40 +444,65 @@ ${clientContextUiSource()}
         const badge = running ? '<span class="ctx-badge run">进行中</span>' : (node.done ? '<span class="ctx-badge done">完成</span>' : '');
         const label = fmtToolSummary(ev);
         const body = formatToolBody(node.start, node.done, ev.toolName || 'tool', 'tool-'+node.callId, esc);
-        html.push('<details class="ctx-card tool ctx-tool-'+esc(toolKind)+'"'+(running?' open':'')+'><summary><span class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+' '+esc(label)+badge+'</span></summary><div class="body">'+body+'</div></details>');
+        const openAttr = running || !collapseDone ? ' open' : '';
+        html.push('<details class="ctx-card tool '+esc(toolKind)+'"'+openAttr+'><summary><span class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+' '+esc(label)+badge+'</span></summary><div class="body">'+body+'</div></details>');
+        shown++;
         continue;
       }
       if (node.kind === 'assistant') {
-        const streamCls = node.streaming ? ' streaming' : '';
+        const streaming = !!node.streaming;
         const text = node.text || '';
-        const body = text.length > PAYLOAD_LIMIT
-          ? renderTruncBlock(text, 'asst-'+node.seq, esc, PAYLOAD_LIMIT)
-          : formatAssistantBody(text);
-        html.push('<div class="ctx-card assistant'+streamCls+'"><div class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+(node.streaming?'<span class="ctx-badge run">输出中</span>':'')+'</div><div class="body">'+body+'</div></div>');
+        const label = fmtMessageSummary(text, streaming ? 'assistant' : 'assistant');
+        const body = formatMessageBody(text, 'asst-'+node.seq, esc);
+        const badge = streaming ? '<span class="ctx-badge run">输出中</span>' : '';
+        const openAttr = streaming || !collapseDone ? ' open' : '';
+        html.push('<details class="ctx-card assistant'+(streaming?' streaming':'')+'"'+openAttr+'><summary><span class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+' '+esc(label)+badge+'</span></summary><div class="body">'+body+'</div></details>');
+        shown++;
         continue;
       }
       if (node.kind === 'outcome') {
-        html.push('<div class="ctx-card outcome"><div class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+'<span class="ctx-badge done">outcome</span></div><div class="body">'+formatAssistantBody(node.text)+'</div></div>');
+        const text = node.text || '';
+        const label = fmtMessageSummary(text, 'outcome');
+        const body = formatMessageBody(text, 'out-'+node.seq, esc);
+        const openAttr = !collapseDone ? ' open' : '';
+        html.push('<details class="ctx-card outcome"'+openAttr+'><summary><span class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+' '+esc(label)+'<span class="ctx-badge done">outcome</span></span></summary><div class="body">'+body+'</div></details>');
+        shown++;
         continue;
       }
       if (node.kind === 'raw-line') {
-        html.push('<div class="ctx-card raw"><div class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+'</div><div class="body">'+esc(node.line || '')+'</div></div>');
+        const line = node.line || '';
+        const openAttr = !collapseDone ? ' open' : '';
+        html.push('<details class="ctx-card raw"'+openAttr+'><summary><span class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+' '+esc(oneLine(line, 100))+'</span></summary><div class="body">'+esc(line)+'</div></details>');
+        shown++;
         continue;
       }
       if (node.kind === 'raw') {
+        const type = rawPayloadType(node);
+        if (hideRaw && isLifecycleNoise(type)) { hiddenNoise++; continue; }
         const inProg = isTurnInProgress(node, sorted, i);
-        const badge = inProg ? '<span class="ctx-badge run">进行中</span>' : (rawPayloadType(node) === 'turn.completed' ? '<span class="ctx-badge done">完成</span>' : '');
-        const summary = formatRawSummary(node);
-        const body = summary.length > PAYLOAD_LIMIT
-          ? renderTruncBlock(summary, 'raw-'+node.seq, esc, PAYLOAD_LIMIT)
-          : esc(summary);
-        html.push('<div class="ctx-card raw"><div class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+badge+'</div><div class="body">'+body+'</div></div>');
+        const badge = inProg ? '<span class="ctx-badge run">进行中</span>' : (type === 'turn.completed' ? '<span class="ctx-badge done">完成</span>' : '');
+        const summary = fmtRawSummary(node.ev && node.ev.payload, node.ev);
+        const full = (()=>{
+          try { return JSON.stringify(node.ev && node.ev.payload != null ? node.ev.payload : node.ev, null, 2); }
+          catch { return String(node.ev && node.ev.payload != null ? node.ev.payload : node.ev); }
+        })();
+        const body = renderJsonDetails(full, 'raw-'+node.seq, esc, '原始 JSON');
+        const openAttr = inProg || !collapseDone ? ' open' : '';
+        html.push('<details class="ctx-card raw"'+openAttr+'><summary><span class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+' '+esc(summary)+badge+'</span></summary><div class="body">'+body+'</div></details>');
+        shown++;
       }
     }
-    box.innerHTML = html.join('');
+    box.innerHTML = html.join('') || '<div class="empty">尚无 Agent 事件。</div>';
+    const countEl = $('ctxCount');
+    if (countEl) countEl.textContent = shown + ' 条' + (hiddenNoise ? ' · 已隐藏 '+hiddenNoise+' 噪声' : '');
     if (wasAtBottom) panel.scrollTop = panel.scrollHeight;
   }
   setInterval(()=>{ if(ctxDirty){ renderContext(); ctxDirty=false; } }, 150);
+
+  const hideRawEl = $('hideRaw');
+  const collapseDoneEl = $('collapseDone');
+  if (hideRawEl) hideRawEl.addEventListener('change', ()=>{ ctxDirty=true; });
+  if (collapseDoneEl) collapseDoneEl.addEventListener('change', ()=>{ ctxDirty=true; });
 
   const es = new EventSource(EVENTS_URL);
   es.onmessage = (m)=>{ try{ const e=JSON.parse(m.data); if(e.type==='agent_event'){ handleAgentEvent(e); return; } if(e.type==='context'){ ctxNodes.push({ kind:'raw-line', role:e.role, line:e.line||'', t:typeof e.t==='number'?e.t:Date.now(), seq:ctxSeq++ }); ctxDirty=true; return; } handleEvent(e); render(); }catch(err){} };

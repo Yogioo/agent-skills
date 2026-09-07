@@ -217,7 +217,7 @@ test('runLoop: 就绪空但有未完成工单 → stuck', async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('runLoop: done → 提交 + markDone + 连续失败清零', async () => {
+test('runLoop: done → markDone + 连续失败清零（提交由 exec-review 负责）', async () => {
   const t1 = { id: 't1', title: 'T1', priority: 1 }
   const { source, execReview, git, calls } = makeFakes({
     source: { listReady: queue([[t1], []]) },
@@ -229,8 +229,7 @@ test('runLoop: done → 提交 + markDone + 连续失败清零', async () => {
   assert.deepEqual(calls.inProgress, ['t1'])
   assert.equal(calls.done.length, 1)
   assert.equal(calls.done[0].id, 't1')
-  assert.equal(calls.commits.length, 1)
-  assert.equal(calls.commits[0].id, 't1')
+  assert.equal(calls.commits.length, 0, 'AFK 层不再 commitAll；gitCommit 在 exec-review')
   assert.equal(calls.resets, 0)
   rmSync(dir, { recursive: true, force: true })
 })
