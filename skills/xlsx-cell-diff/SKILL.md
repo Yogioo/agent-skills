@@ -1,6 +1,6 @@
 ---
 name: xlsx-cell-diff
-description: xlsx 显示值 diff 与 overlay 合并。触发：源配置表格比对、xlsx 合并冲突、提交里配置改了啥。
+description: xlsx 显示值 diff 与 overlay 合并。触发：源配置表格比对、xlsx 合并冲突、提交里有xlsx修改
 ---
 
 # xlsx 显示值 diff
