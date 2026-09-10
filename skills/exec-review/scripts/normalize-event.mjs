@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
  * Unified normalized event model for all exec-review runners.
  *
  * @typedef {object} NormalizedEvent
- * @property {string} kind - 'tool' | 'assistant' | 'assistant_partial' | 'outcome' | 'raw'
+ * @property {string} kind - 'tool' | 'assistant' | 'assistant_partial' | 'thinking' | 'thinking_partial' | 'outcome' | 'raw'
  * @property {number} t
  * @property {string} [callId]
  * @property {string} [phase] - 'start' | 'done' for tool events
@@ -46,7 +46,9 @@ export function detectSource(raw) {
   const ev = /** @type {Record<string, unknown>} */ (raw)
   const type = String(ev.type || '')
 
-  if (type === 'assistant' || type === 'tool_call' || type === 'result') return 'agent'
+  if (type === 'assistant' || type === 'tool_call' || type === 'result' || type === 'thinking') {
+    return 'agent'
+  }
   if (type === 'session' || type === 'message_end' || type === 'tool_execution_start') return 'pi'
   if (
     type.startsWith('item.') ||
@@ -85,6 +87,16 @@ export function normalizeAgentEvent(raw) {
   const ev = /** @type {Record<string, unknown>} */ (raw)
   const type = String(ev.type || '')
 
+  if (type === 'thinking') {
+    const subtype = String(ev.subtype || '')
+    const text = typeof ev.text === 'string' ? ev.text : extractMessageContentText(ev)
+    if (subtype === 'delta' || subtype === 'partial') {
+      return { kind: 'thinking_partial', t, text, payload: raw }
+    }
+    // completed (and other terminals): close the streaming block; text may be empty
+    return { kind: 'thinking', t, text, payload: raw }
+  }
+
   if (type === 'assistant') {
     const text = extractMessageContentText(ev.message)
     const subtype = String(ev.subtype || '')
@@ -100,8 +112,11 @@ export function normalizeAgentEvent(raw) {
     const toolCall = ev.tool_call && typeof ev.tool_call === 'object' ? ev.tool_call : {}
     const rawName = Object.keys(toolCall)[0] || 'unknown'
     const toolName = mapAgentToolName(rawName)
+    // Cursor nests under readToolCall / grepToolCall — look up the raw key, not the short name.
     const toolBody =
-      toolCall[toolName] && typeof toolCall[toolName] === 'object' ? toolCall[toolName] : {}
+      (toolCall[rawName] && typeof toolCall[rawName] === 'object' ? toolCall[rawName] : null) ||
+      (toolCall[toolName] && typeof toolCall[toolName] === 'object' ? toolCall[toolName] : null) ||
+      {}
     const phase = subtype === 'completed' ? 'done' : 'start'
     return {
       kind: 'tool',

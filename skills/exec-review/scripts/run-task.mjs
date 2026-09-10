@@ -578,6 +578,8 @@ async function main() {
   progress.write('run_start', {
     id: task.id || '',
     title: task.title,
+    body: task.body,
+    requirements: task.requirements,
     workdir,
     runner: settings.executor.runner,
     heartbeatMs: settings.heartbeatMs,

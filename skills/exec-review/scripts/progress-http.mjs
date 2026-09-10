@@ -63,6 +63,8 @@ export function renderProgressHtml(opts = {}) {
   .grip { color:var(--dim); font-size:11px; letter-spacing:.14em; text-transform:uppercase; margin-bottom:14px; }
   h1 { font-size:24px; font-weight:650; letter-spacing:-.01em; }
   .sub { color:var(--muted); margin-top:6px; font-size:13px; word-break:break-all; }
+  .task-detail { white-space:pre-wrap; word-break:break-word; color:#c7d1dc; font-size:13px; line-height:1.7; max-height:420px; overflow:auto; }
+  .task-detail h3 { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase; margin:0 0 8px; }
 
   .status-badge {
     display:inline-block; margin-top:14px; padding:6px 14px; border-radius:999px;
@@ -121,25 +123,32 @@ export function renderProgressHtml(opts = {}) {
   .context-console .role-review { color:var(--purple); font-weight:600; }
   .context-console .ctx-sep { color:var(--dim); margin:8px 0; font-size:12px; }
   .ctx-ts { color:var(--dim); font-size:10px; font-family:var(--mono); flex:none; }
-  .ctx-head { display:flex; align-items:baseline; gap:6px; flex-wrap:wrap; margin-bottom:6px; }
+  .ctx-head { display:flex; align-items:baseline; gap:6px; flex-wrap:wrap; margin:0; flex:1; min-width:0; }
   .ctx-badge { font-size:10px; font-weight:600; padding:1px 7px; border-radius:4px; }
   .ctx-badge.run { color:var(--blue); background:color-mix(in srgb,var(--blue) 18%,transparent); }
   .ctx-badge.done { color:var(--green); background:color-mix(in srgb,var(--green) 14%,transparent); }
   .ctx-cards { display:flex; flex-direction:column; gap:8px; }
   .ctx-card { border:1px solid var(--border); border-radius:8px; background:#0a0d12; overflow:hidden; }
-  .ctx-card summary { cursor:pointer; padding:8px 12px; font-size:12px; color:var(--muted); list-style:none; }
-  .ctx-card summary::-webkit-details-marker { display:none; }
-  .ctx-card summary::before { content:'▸ '; color:var(--dim); }
-  .ctx-card[open] summary::before { content:'▾ '; }
-  .ctx-card.tool summary { color:var(--amber); }
-  .ctx-card.assistant summary { color:var(--blue); }
-  .ctx-card.outcome summary { color:var(--green); }
-  .ctx-card.raw summary { color:var(--dim); }
+  .ctx-card > summary {
+    display:flex; align-items:flex-start; gap:6px;
+    cursor:pointer; padding:8px 12px; font-size:12px; color:var(--muted); list-style:none;
+  }
+  .ctx-card > summary::-webkit-details-marker { display:none; }
+  .ctx-card > summary::before {
+    content:'▸'; color:var(--dim); flex:none; line-height:1.55; width:0.9em; text-align:center;
+  }
+  .ctx-card[open] > summary::before { content:'▾'; }
+  .ctx-card.tool > summary { color:var(--amber); }
+  .ctx-card.assistant > summary { color:var(--blue); }
+  .ctx-card.thinking > summary { color:var(--purple); }
+  .ctx-card.outcome > summary { color:var(--green); }
+  .ctx-card.raw > summary { color:var(--dim); }
   .ctx-card .body { padding:0 12px 10px; font-family:var(--mono); font-size:11px; line-height:1.6; color:#9db0c8; white-space:pre-wrap; word-break:break-word; }
   .ctx-mono { margin:0; padding:8px 10px; background:#07090e; border:1px solid var(--border); border-radius:6px; white-space:pre-wrap; word-break:break-word; font-family:var(--mono); font-size:11px; line-height:1.55; color:#9db0c8; }
   .ctx-trunc { margin-top:6px; }
-  .ctx-trunc summary { cursor:pointer; color:var(--blue); font-size:11px; padding:4px 0; list-style:none; }
-  .ctx-trunc summary::-webkit-details-marker { display:none; }
+  .ctx-trunc > summary { cursor:pointer; color:var(--blue); font-size:11px; padding:4px 0; list-style:none; display:block; }
+  .ctx-trunc > summary::-webkit-details-marker { display:none; }
+  .ctx-trunc > summary::before { content:none; }
   .ctx-trunc-full { margin-top:6px; max-height:420px; overflow:auto; }
   .ctx-trunc-preview { max-height:180px; overflow:hidden; }
   .ctx-shell-cmd { color:var(--amber); font-weight:600; }
@@ -147,22 +156,27 @@ export function renderProgressHtml(opts = {}) {
   .ctx-shell-exit.ok { color:var(--green); }
   .ctx-shell-exit.bad { color:var(--red); }
   .ctx-edit-head, .ctx-path-head { color:var(--green); font-weight:600; }
+  .ctx-section-label { color:var(--dim); font-size:10px; letter-spacing:.06em; text-transform:uppercase; margin:8px 0 4px; }
+  .ctx-input, .ctx-output { margin-top:2px; }
+  .ctx-muted { color:var(--dim); font-size:11px; }
   .ctx-kv { padding:2px 0; color:#9db0c8; }
   .ctx-k { color:var(--dim); font-weight:600; min-width:4.5em; display:inline-block; }
   .ctx-json { margin-top:6px; }
-  .ctx-json > summary { cursor:pointer; color:var(--blue); font-size:11px; padding:4px 0; list-style:none; }
+  .ctx-json > summary { cursor:pointer; color:var(--blue); font-size:11px; padding:4px 0; list-style:none; display:block; }
   .ctx-json > summary::-webkit-details-marker { display:none; }
   .ctx-json > summary::before { content:'▸ '; color:var(--dim); }
   .ctx-json[open] > summary::before { content:'▾ '; }
-  .ctx-card.tool.shell summary { color:var(--amber); }
-  .ctx-card.tool.edit summary, .ctx-card.tool.write summary,
-  .ctx-card.tool.read summary, .ctx-card.tool.Read summary { color:var(--green); }
-  .ctx-card.tool.grep summary, .ctx-card.tool.Grep summary,
-  .ctx-card.tool.glob summary, .ctx-card.tool.Glob summary,
-  .ctx-card.tool.search summary { color:var(--blue); }
-  .ctx-card.assistant .body, .ctx-card.outcome .body, .ctx-card.raw .body { padding:0 12px 10px; }
-  .ctx-card.assistant.streaming .body { opacity:.92; border-left:2px solid var(--blue); padding-left:10px; }
+  .ctx-card.tool.shell > summary { color:var(--amber); }
+  .ctx-card.tool.edit > summary, .ctx-card.tool.write > summary,
+  .ctx-card.tool.read > summary, .ctx-card.tool.Read > summary { color:var(--green); }
+  .ctx-card.tool.grep > summary, .ctx-card.tool.Grep > summary,
+  .ctx-card.tool.glob > summary, .ctx-card.tool.Glob > summary,
+  .ctx-card.tool.search > summary { color:var(--blue); }
+  .ctx-card.assistant .body, .ctx-card.thinking .body, .ctx-card.outcome .body, .ctx-card.raw .body { padding:0 12px 10px; }
+  .ctx-card.assistant.streaming .body, .ctx-card.thinking.streaming .body { opacity:.92; border-left:2px solid var(--blue); padding-left:10px; }
+  .ctx-card.thinking.streaming .body { border-left-color:var(--purple); }
   .ctx-card.assistant, .ctx-card.outcome { border-color:color-mix(in srgb,var(--blue) 30%,var(--border)); }
+  .ctx-card.thinking { border-color:color-mix(in srgb,var(--purple) 35%,var(--border)); }
   .ctx-card.outcome { border-color:color-mix(in srgb,var(--green) 30%,var(--border)); }
   .context-console.console { height:min(70vh, 640px); }
   .ctx-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
@@ -179,6 +193,11 @@ export function renderProgressHtml(opts = {}) {
   <h1 id="title">等待运行…</h1>
   <div class="sub" id="meta"></div>
   <div class="status-badge" id="status">准备中</div>
+
+  <details class="panel" id="taskDetailPanel" open>
+    <summary style="cursor:pointer;color:var(--muted);font-size:12px;letter-spacing:.1em;text-transform:uppercase">当前工单详情</summary>
+    <div class="task-detail" id="taskDetail"><div class="empty">等待工单内容…</div></div>
+  </details>
 
   <section class="hero panel">
     <div class="hero-main">
@@ -234,6 +253,7 @@ ${clientContextUiSource()}
   const ctxNodes = []; let ctxSeq = 0; let ctxDirty = false;
   const toolCards = {};
   const streamingAssistant = {};
+  const streamingThinking = {};
   const MAX_PHASES = 2;
   const meta = { phases: {}, settled: false, status: '', lastT: Date.now(), started: Date.now(), heartbeats: 0, stageStart: Date.now() };
 
@@ -286,7 +306,7 @@ ${clientContextUiSource()}
     if (e.event==='heartbeat'){ meta.heartbeats++; return; }
     if (e.event==='executor_start'||e.event==='reviewer_start'){ meta.stageStart=e.t; }
     if (e.event==='context_start'){ ctxNodes.push({ kind:'sep', role:e.role, t:e.t || Date.now(), seq:ctxSeq++ }); ctxDirty=true; }
-    if (e.event==='run_start'){ meta.title=e.title; meta.workdir=e.workdir; meta.runner=e.runner; meta.id=e.id; meta.runDir=e.runDir; }
+    if (e.event==='run_start'){ meta.title=e.title; meta.body=e.body; meta.requirements=e.requirements; meta.workdir=e.workdir; meta.runner=e.runner; meta.id=e.id; meta.runDir=e.runDir; }
     if (e.event==='executor_end'){ meta.phases.executor={status:e.status, changed:e.changed}; }
     if (e.event==='reviewer_end'){ meta.phases.reviewer={status:e.status, changed:e.changed}; }
     if (e.event==='settle'){ meta.settled=true; meta.status=e.status; }
@@ -321,6 +341,7 @@ ${clientContextUiSource()}
       sb.className='status-badge run';
     }
     if (meta.title){ $('title').textContent=meta.title; $('meta').textContent=(meta.id?('id '+meta.id+' · '):'')+(meta.workdir||''); }
+    if (meta.body != null || meta.requirements != null) $('taskDetail').innerHTML='<h3>正文</h3>'+esc(meta.body||'')+'<h3 style="margin-top:16px">要求</h3>'+esc(meta.requirements||'');
     $('stage').textContent = meta.settled ? (STAGE_LABEL['settle_'+ (meta.status==='approved'?'approved':'other')]) : (STAGE_LABEL[stage]||stage);
     $('stage').style.color = stColor;
     const dot=$('dot');
@@ -377,6 +398,19 @@ ${clientContextUiSource()}
     const role = e.role || 'executor';
     const ev = e.event || {};
     const t = eventTime(e.t, ev);
+
+    // Legacy events.jsonl: thinking was stored as kind:raw + payload.type=thinking
+    if (ev.kind === 'raw' && ev.payload && ev.payload.type === 'thinking') {
+      const subtype = String(ev.payload.subtype || '');
+      const text = typeof ev.payload.text === 'string' ? ev.payload.text : '';
+      if (subtype === 'delta' || subtype === 'partial') {
+        handleAgentEvent({ role, t, event: { kind:'thinking_partial', text, t } });
+      } else {
+        handleAgentEvent({ role, t, event: { kind:'thinking', text, t } });
+      }
+      return;
+    }
+
     if (ev.kind === 'tool') {
       const id = ev.callId || ('tool-'+Object.keys(toolCards).length);
       if (toolCards[id] == null) {
@@ -386,6 +420,29 @@ ${clientContextUiSource()}
       const node = ctxNodes[toolCards[id]];
       if (ev.phase === 'start') { node.start = ev; node.t = t; }
       else node.done = ev;
+      ctxDirty = true;
+      return;
+    }
+    if (ev.kind === 'thinking_partial') {
+      const delta = ev.text || '';
+      if (streamingThinking[role] == null) {
+        streamingThinking[role] = { idx: ctxNodes.length };
+        ctxNodes.push({ kind:'thinking', role, t, text:delta, streaming:true, seq:ctxSeq++ });
+      } else {
+        ctxNodes[streamingThinking[role].idx].text += delta;
+      }
+      ctxDirty = true;
+      return;
+    }
+    if (ev.kind === 'thinking') {
+      if (streamingThinking[role] != null) {
+        const node = ctxNodes[streamingThinking[role].idx];
+        if (ev.text) node.text = ev.text;
+        node.streaming = false;
+        delete streamingThinking[role];
+      } else if (ev.text) {
+        ctxNodes.push({ kind:'thinking', role, t, text:ev.text || '', streaming:false, seq:ctxSeq++ });
+      }
       ctxDirty = true;
       return;
     }
@@ -438,14 +495,25 @@ ${clientContextUiSource()}
         continue;
       }
       if (node.kind === 'tool') {
-        const ev = node.done || node.start || {};
-        const toolKind = mapToolName(ev.toolName || 'tool');
+        const hydrated = hydrateToolEv(node.start, node.done);
+        const toolKind = mapToolName(hydrated.toolName || 'tool');
         const running = node.start && !node.done;
         const badge = running ? '<span class="ctx-badge run">进行中</span>' : (node.done ? '<span class="ctx-badge done">完成</span>' : '');
-        const label = fmtToolSummary(ev);
-        const body = formatToolBody(node.start, node.done, ev.toolName || 'tool', 'tool-'+node.callId, esc);
+        const label = fmtToolSummary(hydrated);
+        const body = formatToolBody(node.start, node.done, hydrated.toolName || 'tool', 'tool-'+node.callId, esc);
         const openAttr = running || !collapseDone ? ' open' : '';
         html.push('<details class="ctx-card tool '+esc(toolKind)+'"'+openAttr+'><summary><span class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+' '+esc(label)+badge+'</span></summary><div class="body">'+body+'</div></details>');
+        shown++;
+        continue;
+      }
+      if (node.kind === 'thinking') {
+        const streaming = !!node.streaming;
+        const text = node.text || '';
+        const label = fmtThinkingSummary(text, streaming);
+        const body = renderTruncBlock(text, 'think-'+node.seq, esc);
+        const badge = streaming ? '<span class="ctx-badge run">输出中</span>' : '<span class="ctx-badge done">完成</span>';
+        const openAttr = streaming || !collapseDone ? ' open' : '';
+        html.push('<details class="ctx-card thinking'+(streaming?' streaming':'')+'"'+openAttr+'><summary><span class="ctx-head">'+tsBadge(node.t)+roleTag(node.role)+' '+esc(label)+badge+'</span></summary><div class="body">'+body+'</div></details>');
         shown++;
         continue;
       }

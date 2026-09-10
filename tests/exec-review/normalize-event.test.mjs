@@ -48,6 +48,7 @@ test('normalizeAgentEvent 映射 assistant / tool / outcome / raw', () => {
   assert.equal(toolStart.phase, 'start')
   assert.equal(toolStart.callId, 'c1')
   assert.equal(toolStart.toolName, 'read')
+  assert.deepEqual(toolStart.args, { path: 'a.txt' })
 
   const toolDone = normalizeAgentEvent({
     type: 'tool_call',
@@ -56,6 +57,7 @@ test('normalizeAgentEvent 映射 assistant / tool / outcome / raw', () => {
     tool_call: { readToolCall: { result: { success: { content: 'x' } } } },
   })
   assert.equal(toolDone.phase, 'done')
+  assert.deepEqual(toolDone.result, { success: { content: 'x' } })
 
   const outcome = normalizeAgentEvent({
     type: 'result',
@@ -75,6 +77,20 @@ test('normalizeAgentEvent 映射 assistant / tool / outcome / raw', () => {
   })
   assert.equal(partial.kind, 'assistant_partial')
   assert.equal(partial.text, 'Hel')
+
+  const thinkDelta = normalizeAgentEvent({
+    type: 'thinking',
+    subtype: 'delta',
+    text: 'Opening ',
+  })
+  assert.equal(thinkDelta.kind, 'thinking_partial')
+  assert.equal(thinkDelta.text, 'Opening ')
+
+  const thinkDone = normalizeAgentEvent({
+    type: 'thinking',
+    subtype: 'completed',
+  })
+  assert.equal(thinkDone.kind, 'thinking')
 })
 
 test('agent fixture → normalized golden', () => {

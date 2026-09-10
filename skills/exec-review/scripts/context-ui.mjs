@@ -20,14 +20,51 @@ function asObj(v) {
   return v && typeof v === 'object' ? /** @type {Record<string, unknown>} */ (v) : {}
 }
 
-/** @param {Record<string, unknown> | null | undefined} ev */
-function pickArgs(ev) {
-  return asObj(ev?.args)
+/**
+ * Recover tool args from normalized event, including legacy payloads that
+ * stored args only under payload.tool_call.readToolCall.args.
+ * @param {Record<string, unknown> | null | undefined} ev
+ */
+export function pickArgs(ev) {
+  const direct = asObj(ev?.args)
+  if (Object.keys(direct).length) return direct
+  const payload = asObj(ev?.payload)
+  const toolCall = asObj(payload.tool_call)
+  const rawName = Object.keys(toolCall)[0]
+  if (!rawName) return {}
+  return asObj(asObj(toolCall[rawName]).args)
 }
 
-/** @param {Record<string, unknown> | null | undefined} ev */
-function pickResult(ev) {
-  return asObj(ev?.result)
+/**
+ * @param {Record<string, unknown> | null | undefined} ev
+ */
+export function pickResult(ev) {
+  const direct = asObj(ev?.result)
+  if (Object.keys(direct).length) return direct
+  const payload = asObj(ev?.payload)
+  const toolCall = asObj(payload.tool_call)
+  const rawName = Object.keys(toolCall)[0]
+  if (!rawName) return {}
+  return asObj(asObj(toolCall[rawName]).result)
+}
+
+/**
+ * Merge start/done tool events so summary always sees inputs.
+ * @param {Record<string, unknown> | null | undefined} start
+ * @param {Record<string, unknown> | null | undefined} done
+ */
+export function hydrateToolEv(start, done) {
+  const base = /** @type {Record<string, unknown>} */ (done || start || {})
+  const args = pickArgs(start)
+  const argsFallback = Object.keys(args).length ? args : pickArgs(done)
+  return {
+    ...base,
+    phase: done ? 'done' : 'start',
+    toolName: base.toolName || start?.toolName || done?.toolName,
+    args: argsFallback,
+    result: pickResult(done),
+    payload: start?.payload || done?.payload || base.payload,
+  }
 }
 
 /**
@@ -100,6 +137,67 @@ export function renderJsonDetails(value, expandId, esc, label = 'JSON') {
 }
 
 /**
+ * Render tool inputs as labeled rows (full context in overview body).
+ * @param {Record<string, unknown>} args
+ * @param {string} expandId
+ * @param {(s: string) => string} esc
+ */
+export function renderArgsBlock(args, expandId, esc) {
+  const obj = asObj(args)
+  const keys = Object.keys(obj)
+  if (!keys.length) {
+    return (
+      '<div class="ctx-input"><div class="ctx-section-label">输入</div>' +
+      '<div class="ctx-muted">(无参数)</div></div>'
+    )
+  }
+  const preferred = [
+    'path',
+    'file',
+    'target_file',
+    'targetDirectory',
+    'pattern',
+    'query',
+    'command',
+    'cmd',
+    'globPattern',
+    'glob_pattern',
+    'glob',
+    'offset',
+    'limit',
+    'start_line',
+    'end_line',
+  ]
+  const ordered = [
+    ...preferred.filter((k) => k in obj),
+    ...keys.filter((k) => !preferred.includes(k) && k !== 'toolCallId'),
+  ]
+  const lines = ordered.map((k) => {
+    const v = obj[k]
+    const shown = typeof v === 'string' ? v : JSON.stringify(v)
+    return (
+      '<div class="ctx-kv"><span class="ctx-k">' +
+      esc(k) +
+      '</span> ' +
+      esc(oneLine(String(shown), 240)) +
+      '</div>'
+    )
+  })
+  lines.push(renderJsonDetails(obj, expandId + '-args-json', esc, '完整参数 JSON'))
+  return '<div class="ctx-input"><div class="ctx-section-label">输入</div>' + lines.join('') + '</div>'
+}
+
+/**
+ * @param {string} text
+ * @param {boolean} [streaming]
+ */
+export function fmtThinkingSummary(text, streaming = false) {
+  const head = streaming ? 'thinking · 输出中' : 'thinking'
+  const body = oneLine(text || '', 100)
+  return body ? head + ' · ' + body : head
+}
+
+/**
  * @param {Record<string, unknown> | null | undefined} start
  * @param {Record<string, unknown> | null | undefined} done
  */
@@ -149,13 +247,23 @@ export function extractEditWritePreview(start, done, toolName) {
  */
 export function extractPathToolFields(start, done) {
   const args = pickArgs(start)
+  const argsDone = pickArgs(done)
+  const merged = { ...argsDone, ...args }
   const result = pickResult(done)
   const path = String(
-    args.path || args.file || args.target_file || args.target || result.path || '',
+    merged.path ||
+      merged.file ||
+      merged.target_file ||
+      merged.target ||
+      merged.targetDirectory ||
+      result.path ||
+      '',
   ).trim()
-  const pattern = String(args.pattern || args.glob || args.glob_pattern || args.query || '').trim()
-  const offset = args.offset ?? args.start_line ?? args.startLine
-  const limit = args.limit ?? args.end_line ?? args.endLine
+  const pattern = String(
+    merged.pattern || merged.glob || merged.glob_pattern || merged.globPattern || merged.query || '',
+  ).trim()
+  const offset = merged.offset ?? merged.start_line ?? merged.startLine
+  const limit = merged.limit ?? merged.end_line ?? merged.endLine
   const content = String(
     result.content ??
       result.output ??
@@ -163,7 +271,7 @@ export function extractPathToolFields(start, done) {
       asObj(result.success).output ??
       '',
   ).trim()
-  return { path, pattern, offset, limit, content }
+  return { path, pattern, offset, limit, content, args: merged }
 }
 
 /**
@@ -308,8 +416,17 @@ export function fmtToolSummary(ev) {
     )
   }
   if (name === 'glob' || name === 'Glob' || name === 'listDir' || name === 'LS') {
-    const pattern = String(args.glob_pattern || args.pattern || args.glob || args.path || '').trim()
-    return name.toLowerCase() + ' · ' + phase + (pattern ? ' · ' + pattern : '')
+    const pattern = String(
+      args.globPattern || args.glob_pattern || args.pattern || args.glob || args.path || '',
+    ).trim()
+    const dir = String(args.targetDirectory || '').trim()
+    return (
+      name.toLowerCase() +
+      ' · ' +
+      phase +
+      (pattern ? ' · ' + pattern : '') +
+      (dir ? ' · ' + dir : '')
+    )
   }
   if (name === 'SemSearch' || name === 'search' || name === 'semanticSearch') {
     const q = String(args.query || args.pattern || args.search_term || '').trim()
@@ -336,119 +453,128 @@ export function fmtToolSummary(ev) {
  */
 export function formatToolBody(start, done, toolName, expandPrefix, esc) {
   const name = mapToolName(toolName)
+  const args = (() => {
+    const a = pickArgs(start)
+    return Object.keys(a).length ? a : pickArgs(done)
+  })()
+  const input = renderArgsBlock(args, expandPrefix, esc)
+  const outParts = []
+
   if (name === 'shell') {
     const { command, exitCode, stdout, stderr } = extractShellFields(start, done)
-    const lines = ['<span class="ctx-shell-cmd">$ ' + esc(command) + '</span>']
+    outParts.push('<span class="ctx-shell-cmd">$ ' + esc(command) + '</span>')
     if (done && exitCode != null) {
       const exitCls = exitCode === 0 ? 'ctx-shell-exit ok' : 'ctx-shell-exit bad'
-      lines.push('<span class="' + exitCls + '">exit ' + esc(String(exitCode)) + '</span>')
+      outParts.push('<span class="' + exitCls + '">exit ' + esc(String(exitCode)) + '</span>')
     }
-    if (stdout) lines.push('', 'stdout:', renderTruncBlock(stdout, expandPrefix + '-stdout', esc))
-    if (stderr) lines.push('', 'stderr:', renderTruncBlock(stderr, expandPrefix + '-stderr', esc))
-    if (!done) lines.push('', '(running…)')
-    return lines.join('\n')
-  }
-
-  if (name === 'edit' || name === 'write') {
+    if (stdout) outParts.push('', 'stdout:', renderTruncBlock(stdout, expandPrefix + '-stdout', esc))
+    if (stderr) outParts.push('', 'stderr:', renderTruncBlock(stderr, expandPrefix + '-stderr', esc))
+    if (!done) outParts.push('', '(running…)')
+  } else if (name === 'edit' || name === 'write') {
     const preview = extractEditWritePreview(start, done, name)
     const head = preview.path ? preview.action + ' ' + preview.path : preview.action
-    const parts = ['<span class="ctx-edit-head">' + esc(head) + '</span>']
+    outParts.push('<span class="ctx-edit-head">' + esc(head) + '</span>')
     if (preview.body) {
-      parts.push('', preview.kind === 'diff' ? '--- diff ---' : '--- content ---')
-      parts.push(renderTruncBlock(preview.body, expandPrefix + '-body', esc))
-    } else {
-      const dump = []
-      if (start?.args != null) dump.push(renderJsonDetails(start.args, expandPrefix + '-args', esc, 'args'))
-      if (done?.result != null) {
-        dump.push(renderJsonDetails(done.result, expandPrefix + '-result', esc, 'result'))
-      }
-      parts.push(...(dump.length ? dump : ['(no preview)']))
+      outParts.push('', preview.kind === 'diff' ? '--- diff ---' : '--- content ---')
+      outParts.push(renderTruncBlock(preview.body, expandPrefix + '-body', esc))
+    } else if (!done) {
+      outParts.push('', '(running…)')
     }
-    return parts.join('\n')
-  }
-
-  if (name === 'read' || name === 'Read') {
+  } else if (name === 'read' || name === 'Read') {
     const { path, offset, limit, content } = extractPathToolFields(start, done)
     const range =
       offset != null || limit != null
         ? ' · lines ' + (offset ?? '?') + (limit != null ? '+' + limit : '')
         : ''
-    const parts = [
+    outParts.push(
       '<span class="ctx-path-head">read ' + esc(path || '(no path)') + esc(range) + '</span>',
-    ]
+    )
     if (content) {
-      parts.push('', renderTruncBlock(content, expandPrefix + '-content', esc))
+      outParts.push(
+        '',
+        '<div class="ctx-section-label">输出</div>',
+        renderTruncBlock(content, expandPrefix + '-content', esc),
+      )
     } else if (!done) {
-      parts.push('', '(reading…)')
-    } else if (done?.result != null) {
-      parts.push(renderJsonDetails(done.result, expandPrefix + '-result', esc, 'result'))
+      outParts.push('', '(reading…)')
+    } else {
+      const result = pickResult(done)
+      if (Object.keys(result).length) {
+        outParts.push(
+          '',
+          '<div class="ctx-section-label">输出</div>',
+          renderJsonDetails(result, expandPrefix + '-result', esc, 'result'),
+        )
+      }
     }
-    return parts.join('\n')
-  }
-
-  if (name === 'grep' || name === 'Grep' || name === 'rg') {
+  } else if (name === 'grep' || name === 'Grep' || name === 'rg' || name === 'glob' || name === 'Glob' || name === 'listDir' || name === 'LS') {
     const { path, pattern, content } = extractPathToolFields(start, done)
-    const parts = [
-      '<span class="ctx-path-head">grep ' +
-        esc(pattern || '(no pattern)') +
-        (path ? ' · ' + esc(path) : '') +
-        '</span>',
-    ]
-    if (content) parts.push('', renderTruncBlock(content, expandPrefix + '-out', esc))
-    else if (!done) parts.push('', '(searching…)')
-    else if (done?.result != null) {
-      parts.push(renderJsonDetails(done.result, expandPrefix + '-result', esc, 'result'))
+    const label =
+      name === 'grep' || name === 'Grep' || name === 'rg'
+        ? 'grep ' + (pattern || '(no pattern)') + (path ? ' · ' + path : '')
+        : name.toLowerCase() + ' ' + (pattern || path || '(no pattern)')
+    outParts.push('<span class="ctx-path-head">' + esc(label) + '</span>')
+    if (content) {
+      outParts.push(
+        '',
+        '<div class="ctx-section-label">输出</div>',
+        renderTruncBlock(content, expandPrefix + '-out', esc),
+      )
+    } else if (!done) {
+      outParts.push('', '(running…)')
+    } else {
+      const result = pickResult(done)
+      if (Object.keys(result).length) {
+        outParts.push(
+          '',
+          '<div class="ctx-section-label">输出</div>',
+          renderJsonDetails(result, expandPrefix + '-result', esc, 'result'),
+        )
+      }
     }
-    return parts.join('\n')
-  }
-
-  if (name === 'glob' || name === 'Glob' || name === 'listDir' || name === 'LS') {
-    const { path, pattern, content } = extractPathToolFields(start, done)
-    const target = pattern || path || '(no pattern)'
-    const parts = ['<span class="ctx-path-head">' + esc(name.toLowerCase()) + ' ' + esc(target) + '</span>']
-    if (content) parts.push('', renderTruncBlock(content, expandPrefix + '-out', esc))
-    else if (!done) parts.push('', '(listing…)')
-    else if (done?.result != null) {
-      parts.push(renderJsonDetails(done.result, expandPrefix + '-result', esc, 'result'))
-    }
-    return parts.join('\n')
-  }
-
-  if (name === 'delete' || name === 'Delete') {
+  } else if (name === 'delete' || name === 'Delete') {
     const { path } = extractPathToolFields(start, done)
-    const parts = ['<span class="ctx-path-head">delete ' + esc(path || '(no path)') + '</span>']
-    if (!done) parts.push('', '(deleting…)')
-    else if (done?.result != null) {
-      parts.push(renderJsonDetails(done.result, expandPrefix + '-result', esc, 'result'))
-    }
-    return parts.join('\n')
-  }
-
-  if (name === 'SemSearch' || name === 'search' || name === 'semanticSearch') {
-    const args = pickArgs(start)
+    outParts.push('<span class="ctx-path-head">delete ' + esc(path || '(no path)') + '</span>')
+    if (!done) outParts.push('', '(deleting…)')
+  } else if (name === 'SemSearch' || name === 'search' || name === 'semanticSearch') {
     const q = String(args.query || args.pattern || args.search_term || '').trim()
-    const parts = ['<span class="ctx-path-head">search ' + esc(q || '(no query)') + '</span>']
-    if (done?.result != null) {
+    outParts.push('<span class="ctx-path-head">search ' + esc(q || '(no query)') + '</span>')
+    if (done) {
       const result = pickResult(done)
       const text = String(result.content ?? result.output ?? '').trim()
-      if (text) parts.push('', renderTruncBlock(text, expandPrefix + '-out', esc))
-      else parts.push(renderJsonDetails(done.result, expandPrefix + '-result', esc, 'result'))
-    } else if (!done) {
-      parts.push('', '(searching…)')
+      if (text) {
+        outParts.push(
+          '',
+          '<div class="ctx-section-label">输出</div>',
+          renderTruncBlock(text, expandPrefix + '-out', esc),
+        )
+      } else if (Object.keys(result).length) {
+        outParts.push(
+          '',
+          '<div class="ctx-section-label">输出</div>',
+          renderJsonDetails(result, expandPrefix + '-result', esc, 'result'),
+        )
+      }
+    } else {
+      outParts.push('', '(searching…)')
     }
-    return parts.join('\n')
+  } else {
+    if (!done) outParts.push('(running…)')
+    else {
+      const result = pickResult(done)
+      if (Object.keys(result).length) {
+        outParts.push(
+          '<div class="ctx-section-label">输出</div>',
+          renderJsonDetails(result, expandPrefix + '-result', esc, 'result'),
+        )
+      }
+    }
   }
 
-  // Unknown tools: human summary line + collapsed JSON (not a wall of nested dump)
-  const parts = []
-  if (start?.args != null) {
-    parts.push(renderJsonDetails(start.args, expandPrefix + '-args', esc, 'args'))
-  }
-  if (done?.result != null) {
-    parts.push(renderJsonDetails(done.result, expandPrefix + '-result', esc, 'result'))
-  }
-  if (!done) parts.push('(running…)')
-  return parts.join('\n') || '(no details)'
+  const outputHtml = outParts.length
+    ? '<div class="ctx-output">' + outParts.join('\n') + '</div>'
+    : ''
+  return input + (outputHtml ? '\n' + outputHtml : '')
 }
 
 /** Browser-safe source: strip imports/exports and helper loader. */

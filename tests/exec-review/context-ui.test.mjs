@@ -17,6 +17,8 @@ import {
   formatMessageBody,
   fmtRawSummary,
   renderJsonDetails,
+  pickArgs,
+  hydrateToolEv,
   PAYLOAD_TRUNCATE,
 } from '../../skills/exec-review/scripts/context-ui.mjs'
 
@@ -161,4 +163,41 @@ test('renderJsonDetails wraps payload', () => {
   const html = renderJsonDetails({ a: 1 }, 'j1', esc, 'payload')
   assert.match(html, /ctx-json/)
   assert.match(html, /payload/)
+})
+
+test('pickArgs recovers from legacy payload.tool_call.readToolCall', () => {
+  const args = pickArgs({
+    toolName: 'read',
+    phase: 'start',
+    payload: { type: 'tool_call', tool_call: { readToolCall: { args: { path: 'x.ts' } } } },
+  })
+  assert.deepEqual(args, { path: 'x.ts' })
+  const summary = fmtToolSummary(
+    hydrateToolEv(
+      {
+        toolName: 'read',
+        phase: 'start',
+        payload: { type: 'tool_call', tool_call: { readToolCall: { args: { path: 'x.ts' } } } },
+      },
+      null,
+    ),
+  )
+  assert.match(summary, /read · start · x\.ts/)
+})
+
+test('formatToolBody always shows 输入 section with args', () => {
+  const body = formatToolBody(
+    {
+      toolName: 'grep',
+      args: { pattern: 'AFK', path: 'C:/proj' },
+    },
+    null,
+    'grep',
+    'g1',
+    esc,
+  )
+  assert.match(body, /ctx-input/)
+  assert.match(body, /输入/)
+  assert.match(body, /AFK/)
+  assert.match(body, /C:\/proj/)
 })
