@@ -65,6 +65,9 @@ export function renderProgressHtml(opts = {}) {
   .sub { color:var(--muted); margin-top:6px; font-size:13px; word-break:break-all; }
   .task-detail { white-space:pre-wrap; word-break:break-word; color:#c7d1dc; font-size:13px; line-height:1.7; max-height:420px; overflow:auto; }
   .task-detail h3 { color:var(--muted); font-size:11px; letter-spacing:.08em; text-transform:uppercase; margin:0 0 8px; }
+  .task-detail h1,.task-detail h2,.task-detail h3,.task-detail h4 { color:var(--text); margin:14px 0 6px; letter-spacing:0; text-transform:none; }
+  .task-detail p { margin:7px 0; }.task-detail ul { margin:7px 0 7px 24px; }.task-detail blockquote { border-left:3px solid var(--border); color:var(--muted); padding-left:12px; }
+  .task-detail code,.task-detail pre { background:#07090e; border:1px solid var(--border); border-radius:6px; padding:2px 5px; font-family:var(--mono); }.task-detail pre { padding:10px; overflow:auto; white-space:pre; }
 
   .status-badge {
     display:inline-block; margin-top:14px; padding:6px 14px; border-radius:999px;
@@ -288,6 +291,7 @@ ${clientContextUiSource()}
     return true;
   }
   function dur(ms){ if(ms==null) return '—'; const s=Math.round(ms/1000); if(s<60) return s+'s'; const m=Math.floor(s/60); if(m<60) return m+'m '+ (s%60)+'s'; const h=Math.floor(m/60); return h+'h '+ (m%60)+'m'; }
+  function md(value){ let s=esc(value||''); s=s.replace(/^```[\s\S]*?```$/gm,(x)=>'<pre>'+x.slice(3,-3)+'</pre>'); s=s.replace(/^#{1,4}\s+(.+)$/gm,'<h2>$1</h2>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/`([^`]+)`/g,'<code>$1</code>').replace(/^>\s?(.+)$/gm,'<blockquote>$1</blockquote>'); return s.split(/\n\n+/).map(x=>/^<(h2|pre|blockquote)/.test(x)?x:'<p>'+x.replace(/\n/g,'<br>')+'</p>').join(''); }
   function hideRawChecked(){ const el=$('hideRaw'); return !el || el.checked; }
   function collapseDoneChecked(){ const el=$('collapseDone'); return !el || el.checked; }
 
@@ -341,7 +345,7 @@ ${clientContextUiSource()}
       sb.className='status-badge run';
     }
     if (meta.title){ $('title').textContent=meta.title; $('meta').textContent=(meta.id?('id '+meta.id+' · '):'')+(meta.workdir||''); }
-    if (meta.body != null || meta.requirements != null) $('taskDetail').innerHTML='<h3>正文</h3>'+esc(meta.body||'')+'<h3 style="margin-top:16px">要求</h3>'+esc(meta.requirements||'');
+    if (meta.body != null || meta.requirements != null) $('taskDetail').innerHTML='<h3>正文</h3>'+md(meta.body)+'<h3 style="margin-top:16px">要求</h3>'+md(meta.requirements);
     $('stage').textContent = meta.settled ? (STAGE_LABEL['settle_'+ (meta.status==='approved'?'approved':'other')]) : (STAGE_LABEL[stage]||stage);
     $('stage').style.color = stColor;
     const dot=$('dot');
