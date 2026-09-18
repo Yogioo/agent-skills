@@ -291,7 +291,7 @@ ${clientContextUiSource()}
     return true;
   }
   function dur(ms){ if(ms==null) return '—'; const s=Math.round(ms/1000); if(s<60) return s+'s'; const m=Math.floor(s/60); if(m<60) return m+'m '+ (s%60)+'s'; const h=Math.floor(m/60); return h+'h '+ (m%60)+'m'; }
-  function md(value){ let s=esc(value||''); s=s.replace(/^```[\s\S]*?```$/gm,(x)=>'<pre>'+x.slice(3,-3)+'</pre>'); s=s.replace(/^#{1,4}\s+(.+)$/gm,'<h2>$1</h2>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/`([^`]+)`/g,'<code>$1</code>').replace(/^>\s?(.+)$/gm,'<blockquote>$1</blockquote>'); return s.split(/\n\n+/).map(x=>/^<(h2|pre|blockquote)/.test(x)?x:'<p>'+x.replace(/\n/g,'<br>')+'</p>').join(''); }
+  function md(value){ let s=esc(value||''); s=s.replace(/^\`\`\`[\\s\\S]*?\`\`\`$/gm,(x)=>'<pre>'+x.slice(3,-3)+'</pre>'); s=s.replace(/^#{1,4}\\s+(.+)$/gm,'<h2>$1</h2>').replace(/\\*\\*([^*]+)\\*\\*/g,'<strong>$1</strong>').replace(/\`([^\`]+)\`/g,'<code>$1</code>').replace(/^>\\s?(.+)$/gm,'<blockquote>$1</blockquote>'); return s.split(/\\n\\n+/).map(x=>/^<(h2|pre|blockquote)/.test(x)?x:'<p>'+x.replace(/\\n/g,'<br>')+'</p>').join(''); }
   function hideRawChecked(){ const el=$('hideRaw'); return !el || el.checked; }
   function collapseDoneChecked(){ const el=$('collapseDone'); return !el || el.checked; }
 
