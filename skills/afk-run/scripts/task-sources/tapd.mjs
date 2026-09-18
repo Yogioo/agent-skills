@@ -349,6 +349,18 @@ export function createTapdSource(opts = {}) {
   }
 
   /**
+   * 写评论之前先确认评论人可用。tapd-cli 在 TAPD_NPC_ROLE 未设置时会直接拒写。
+   * 必须在**动标签之前**校验：否则会留下「标签已改成失败、评论却没写」的半成品，
+   * 人在 TAPD 上只看到一个没有原因的失败。
+   */
+  function requireCommentAuthor() {
+    if (config.commentAuthor || process.env.TAPD_NPC_ROLE) return
+    throw new Error(
+      'TAPD 写评论需要评论人：请在配置里设 task.tapd.commentAuthor，或设置环境变量 TAPD_NPC_ROLE',
+    )
+  }
+
+  /**
    * 服务端已按 owner + label 过滤，本地再核一遍标签：tapd-cli 静默丢参数时
    * 过滤会失效，本地复查把它变回「少做」而不是「做错」。
    */
@@ -475,6 +487,7 @@ export function createTapdSource(opts = {}) {
     },
 
     markDone(id, result = {}) {
+      requireCommentAuthor()
       const story = fetchStory(id)
       writeLabels(id, [...story.labels.filter((label) => label !== config.claimedLabel), config.deliveredLabel])
       const lines = [`${COMMENT_PREFIX} 开发完成，请验收。`]
@@ -486,6 +499,7 @@ export function createTapdSource(opts = {}) {
     },
 
     markFailed(id, note = '') {
+      requireCommentAuthor()
       const story = fetchStory(id)
       writeLabels(id, [...story.labels.filter((label) => label !== config.claimedLabel), config.failedLabel])
       addComment(id, `${COMMENT_PREFIX} 失败：${String(note || '未说明原因').slice(0, 300)}`)

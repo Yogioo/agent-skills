@@ -105,7 +105,7 @@ function installFakeTapd(dir, stories = defaultStories(), extra = {}) {
   writeFileSync(cli, FAKE_CLI, 'utf8')
   process.env.AFK_FAKE_TAPD_STATE = stateFile
   return {
-    opts: { command: process.execPath, commandPrefix: [cli], retries: 0, imageDir: dir, tapd: { assignee: '彭云洁' } },
+    opts: { command: process.execPath, commandPrefix: [cli], retries: 0, imageDir: dir, tapd: { assignee: '彭云洁', commentAuthor: '彭云洁' } },
     state: () => JSON.parse(readFileSync(stateFile, 'utf8')),
     labels: (id) => JSON.parse(readFileSync(stateFile, 'utf8')).stories.find((s) => s.id === id).label,
   }
@@ -262,6 +262,32 @@ test('markFailed swaps claimed for failed and comments the reason', () => {
     assert.equal(fake.labels('3'), 'ready-for-agent|afk-failed')
     const comment = fake.state().calls.find((call) => call.entity === 'comment' && call.sub === 'add')
     assert.match(comment.params.description, /\[AFK\] 失败：单测没过/)
+  })
+})
+
+test('markFailed refuses to half-write when no comment author is configured', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir)
+    const source = createTapdSource({ ...fake.opts, tapd: { assignee: '彭云洁' } })
+    const previous = process.env.TAPD_NPC_ROLE
+    delete process.env.TAPD_NPC_ROLE
+    try {
+      assert.throws(() => source.markFailed('3', 'x'), /commentAuthor/)
+    } finally {
+      if (previous !== undefined) process.env.TAPD_NPC_ROLE = previous
+    }
+    assert.equal(fake.labels('3'), 'ready-for-agent|afk-claimed', '写不成评论就不该先改标签')
+    assert.equal(fake.state().calls.filter((c) => c.entity === 'comment' && c.sub === 'add').length, 0)
+
+    // 环境变量才是 tapd-cli 原来的约定，设了它也应当放行
+    process.env.TAPD_NPC_ROLE = 'npc-user'
+    try {
+      source.markFailed('3', '环境变量路径')
+    } finally {
+      if (previous === undefined) delete process.env.TAPD_NPC_ROLE
+      else process.env.TAPD_NPC_ROLE = previous
+    }
+    assert.equal(fake.labels('3'), 'ready-for-agent|afk-failed')
   })
 })
 

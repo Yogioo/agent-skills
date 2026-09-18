@@ -15,4 +15,5 @@ The TAPD adapter shells out to the installed `tapd-cli` binary and parses its JS
 - Every TAPD read and write is a subprocess. A missing `tapd-cli` is a startup error, never an empty ready list — a silent empty list makes the watcher idle for a whole session.
 - Parameter names must use underscores. `tapd-cli` silently drops hyphenated names, so `entry-id=X` returns unfiltered results instead of an error.
 - Multi-value fields need their real separator. `label` is `|`-separated; a comma-joined write does not error, it makes TAPD create a label whose name is `a,b`. Every label write is therefore verified by re-reading the story, because only the read-back can tell the two apart.
+- Comments need an author: `comment add` is rejected unless `TAPD_NPC_ROLE` or an explicit `author` is supplied. The adapter checks that before it writes any label, so a missing author fails loudly instead of leaving a story marked failed with no explanation on the ticket.
 - Neither the `tapd-cli` help text nor its skill documentation is authoritative; each command gets verified against the live API before it is relied on.
