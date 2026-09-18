@@ -10,6 +10,9 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
 
 export const DEFAULT_READY_LABEL = 'ready-for-agent'
 export const DEFAULT_CLAIMED_LABEL = 'afk-claimed'
@@ -23,6 +26,11 @@ const DEFAULT_RETRY_DELAY_MS = 100
 const COMMENT_PREFIX = '[AFK]'
 const COMMENT_MAX = 2000
 const UNPRIORITIZED = 1
+
+/** 内嵌图片的签名链接只有 300 秒有效期，所以图片一律先落到本地再引用。 */
+const IMAGE_DIR_NAME = 'afk-tapd'
+const MAX_IMAGES = 20
+const IMAGE_TIMEOUT_MS = 20000
 
 /** TAPD 的 priority 是中文档位，不是数字。 */
 const PRIORITY_BY_LABEL = { 高: 0, 中: 1, 低: 2 }
@@ -205,12 +213,41 @@ export function isBlankRequirement(descriptionText, comments = []) {
   return !(Array.isArray(comments) ? comments : []).some((comment) => commentText(comment?.description))
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * 找出正文里的 TAPD 内嵌图片路径（既包括 markdown 链接，也包括裸路径）。
+ * @returns {string[]} 去重后的 `/tfl/...` 路径，最多 MAX_IMAGES 个
+ */
+export function extractImagePaths(text) {
+  const found = new Set()
+  const source = String(text || '')
+  for (const match of source.matchAll(/\]\(\s*(\/tfl\/[^)\s]+)\s*\)/g)) found.add(match[1])
+  for (const match of source.matchAll(/(?:src|href)\s*=\s*["']?(\/tfl\/[^"'\s>]+)/gi)) found.add(match[1])
+  for (const match of source.matchAll(/(\/tfl\/[^\s)"'<>]+)/g)) found.add(match[1])
+  return [...found].slice(0, MAX_IMAGES)
+}
+
+/** 把某个图片路径换成替换文本；已经包在 markdown 链接里时连链接语法一起吃掉。 */
+export function replaceImagePath(text, path, replacement) {
+  const pattern = new RegExp(`!?\\[[^\\]]*\\]\\(\\s*${escapeRegExp(path)}\\s*\\)`, 'g')
+  return String(text).replace(pattern, replacement).split(path).join(replacement)
+}
+
+/** 文件名只留安全字符，防止路径穿越。 */
+export function safeImageName(path) {
+  return basename(String(path)).replace(/[^A-Za-z0-9._-]/g, '_') || 'image'
+}
+
 /**
  * @param {{ cwd?: string, tapd?: object, command?: string, commandPrefix?: string[], retries?: number, retryDelayMs?: number }} [opts]
  */
 export function createTapdSource(opts = {}) {
   const cwd = opts.cwd || process.cwd()
   const config = normalizeTapdConfig(opts.tapd || opts.mapping || {})
+  const imageDir = opts.imageDir || join(tmpdir(), IMAGE_DIR_NAME)
   const request = (args) => runTapd(args, { ...opts, cwd })
 
   function requireAssignee() {
@@ -259,6 +296,7 @@ export function createTapdSource(opts = {}) {
       priority: priorityValue(story.priority),
       owner: String(story.owner || '').replace(/;/g, '').trim(),
       status: String(story.status || ''),
+      workspaceId: String(story.workspace_id ?? story.workspaceId ?? ''),
       description: String(story.description ?? ''),
     }
   }
@@ -338,6 +376,45 @@ export function createTapdSource(opts = {}) {
     return { status: 'claimed', claimMode }
   }
 
+  /**
+   * 把一张内嵌图片落到本地：tapd-cli 换签名链接（300 秒有效），再用 Node 内置 fetch 下载。
+   * 已存在且非空的文件直接复用，重跑不重复下载。
+   * @returns {Promise<string>} 本地绝对路径
+   */
+  async function ensureImage(story, imagePath) {
+    const target = join(imageDir, safeImageName(story.id), safeImageName(imagePath))
+    if (existsSync(target) && statSync(target).size > 0) return target
+
+    const args = ['attachment', 'get-image', `image_path=${imagePath}`]
+    if (story.workspaceId) args.push(`workspaceid=${story.workspaceId}`)
+    const payload = parseTapdPayload(request(args), 'tapd-cli attachment get-image')
+    const url = payload?.data?.Attachment?.download_url || ''
+    if (!url) throw new Error(`get-image 未返回 download_url: ${imagePath}`)
+
+    const response = await fetch(url, { signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS) })
+    if (!response.ok) throw new Error(`图片下载失败 ${response.status}: ${imagePath}`)
+    const bytes = Buffer.from(await response.arrayBuffer())
+    if (!bytes.length) throw new Error(`图片为空: ${imagePath}`)
+    mkdirSync(join(imageDir, safeImageName(story.id)), { recursive: true })
+    writeFileSync(target, bytes)
+    return target
+  }
+
+  /** 正文里的每个图片路径都换成本地绝对路径；单张失败只降级标记，不影响开工。 */
+  async function localizeImages(body, story) {
+    let out = body
+    for (const imagePath of extractImagePaths(body)) {
+      let replacement = `[图片下载失败: ${imagePath}]`
+      try {
+        replacement = `![图片](${await ensureImage(story, imagePath)})`
+      } catch {
+        // 交付一个可开工的正文，比因为一张图卡死整条需求重要
+      }
+      out = replaceImagePath(out, imagePath, replacement)
+    }
+    return out
+  }
+
   return {
     name: 'tapd',
     // 读-改-写标签不是原子操作：同机由 watcher 注册表兜底，跨机靠标签出队兜底。
@@ -348,12 +425,13 @@ export function createTapdSource(opts = {}) {
       return readyStories().map(describeStory)
     },
 
-    getDetail(id) {
+    async getDetail(id) {
       const story = fetchStory(id)
+      const body = renderTaskBody(htmlToText(story.description), fetchComments(id))
       return {
         id: story.id,
         title: story.title,
-        body: renderTaskBody(htmlToText(story.description), fetchComments(id)),
+        body: await localizeImages(body, story),
         requirements: '',
       }
     },

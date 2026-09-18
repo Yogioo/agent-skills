@@ -29,6 +29,7 @@ afk-run 通过 adapter 消费任务源。**怎么写工单才能被正确消费*
 - **就绪判据**：`处理人=task.tapd.assignee` 且标签含 `readyLabel`（默认 `ready-for-agent`）且**不含**任何机器标签（`afk-claimed` / `afk-delivered` / `afk-failed`）。前两项服务端过滤，机器标签在本地排除。
 - **队列就是标签**：人加 `ready-for-agent` 把需求交给机器，人撤销它表示需求离开机器的手。
 - **正文来源**：需求描述 + 全部评论，按时间升序拼进任务正文，不截断。人类在评论里补充的信息、以及上一次尝试留下的 `[AFK]` 评论（失败原因、上次提交）都会被执行端读到。
+- **图片落本地**：描述/评论里的 `/tfl/` 内嵌图会被下载到 `<系统临时目录>/afk-tapd/<需求ID>/`，正文里换成绝对路径——执行端直接 read 本地图片。单张下载失败只降级成 `[图片下载失败: …]`，不阻断开工。签名链接只有 300 秒，所以不把 URL 写进正文（见 [ADR-0004](../../../docs/adr/0004-localize-tapd-images.md)）。
 - **空壳需求拒单**：描述与评论都为空时不认领，直接贴 `afk-failed` + 评论「需求描述与评论都为空，无法开工」，让人补充后撤销标签重跑——宁可漏跑，不可凭标题猜。
 - **状态流转（由循环自动执行）**：
   - 开始：加 `afk-claimed`（出队即锁）
@@ -37,7 +38,7 @@ afk-run 通过 adapter 消费任务源。**怎么写工单才能被正确消费*
 - **执行批次不写状态，也不写处理人**：TAPD 的状态与处理人属于人和策划的流程，验收流转由人做。见 [ADR-0002](../../../docs/adr/0002-tapd-transport-is-the-cli.md) / [ADR-0003](../../../docs/adr/0003-labels-are-the-tapd-queue.md)。
 - **重跑**：撤销 `afk-delivered` 或 `afk-failed` 即可。`ready-for-agent` 一直挂着，需求自动重新入队。
 - **多开安全**：同一项目的两份拷贝各自跑 watcher 时不会同时接单——谁先加上 `afk-claimed`，需求就从另一个环境的就绪池里消失。
-- **命令细节**：所有 tapd-cli 参数必须用**下划线**（`entry_id` 而非 `entry-id`）；连字符形式会被静默丢弃，把带过滤的查询变成不带过滤的查询。
+- **命令细节**：所有 tapd-cli 参数必须用**下划线**（`entry_id` 而非 `entry-id`）；连字符形式会被静默丢弃，把带过滤的查询变成不带过滤的查询。在 Git Bash 里手测时，`image_path=/tfl/…` 这类以 `/` 开头的值会被 MSYS 做路径转换（返回里的 `value` 变成 `C:/Program Files/Git/tfl/…`），加 `MSYS_NO_PATHCONV=1`——适配器走 `execFileSync` 不经 shell，不受影响。
 
 ## 通用语义
 

@@ -9,12 +9,14 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   commentText,
   createTapdSource,
+  extractImagePaths,
   hasLabel,
   htmlToText,
   isBlankRequirement,
@@ -22,6 +24,8 @@ import {
   normalizeTapdConfig,
   priorityValue,
   renderTaskBody,
+  replaceImagePath,
+  safeImageName,
 } from '../../skills/afk-run/scripts/task-sources/tapd.mjs'
 import { createSource } from '../../skills/afk-run/scripts/task-sources/index.mjs'
 
@@ -59,6 +63,9 @@ if (state.status !== undefined && state.status !== 1) {
   if (story && params.label !== undefined) story.label = params.label
   save()
   out({ status: 1, data: { Story: story || {} } })
+} else if (entity === 'attachment' && sub === 'get-image') {
+  save()
+  out({ status: 1, data: { Attachment: { download_url: state.imageUrl || '', filename: 'tapd.png' } } })
 } else if (entity === 'comment' && sub === 'list') {
   const rows = (state.comments || {})[params.entry_id] || []
   save()
@@ -94,7 +101,7 @@ function installFakeTapd(dir, stories = defaultStories(), extra = {}) {
   writeFileSync(cli, FAKE_CLI, 'utf8')
   process.env.AFK_FAKE_TAPD_STATE = stateFile
   return {
-    opts: { command: process.execPath, commandPrefix: [cli], retries: 0, tapd: { assignee: '彭云洁' } },
+    opts: { command: process.execPath, commandPrefix: [cli], retries: 0, imageDir: dir, tapd: { assignee: '彭云洁' } },
     state: () => JSON.parse(readFileSync(stateFile, 'utf8')),
     labels: (id) => JSON.parse(readFileSync(stateFile, 'utf8')).stories.find((s) => s.id === id).label,
   }
@@ -108,6 +115,31 @@ function withTempDir(body) {
     rmSync(dir, { recursive: true, force: true })
   }
 }
+
+async function withTempDirAsync(body) {
+  const dir = tempDir()
+  try {
+    return await body(dir)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/** 起一个只服务固定字节的本地 HTTP 服务，模拟 TAPD 的签名直链。 */
+async function withImageServer(bytes, body) {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'image/png' })
+    res.end(bytes)
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    return await body(`http://127.0.0.1:${server.address().port}/tfl.png`)
+  } finally {
+    server.close()
+  }
+}
+
+const PNG_BYTES = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
 
 test('tapd factory is wired into createSource', () => {
   const source = createSource('tapd', { tapd: { assignee: '彭云洁' } })
@@ -229,11 +261,11 @@ test('describeBlocked separates in-progress from re-arm-needed', () => {
   })
 })
 
-test('getDetail converts the HTML description to text', () => {
-  withTempDir((dir) => {
+test('getDetail converts the HTML description to text', async () => {
+  await withTempDirAsync(async (dir) => {
     const fake = installFakeTapd(dir)
     const source = createTapdSource(fake.opts)
-    const detail = source.getDetail('1')
+    const detail = await source.getDetail('1')
     assert.equal(detail.id, '1')
     assert.equal(detail.title, '低优先级')
     assert.equal(detail.body, '正文')
@@ -281,8 +313,8 @@ test('a non-success tapd-cli payload is an error, not an empty list', () => {
   })
 })
 
-test('getDetail appends comments in ascending time order', () => {
-  withTempDir((dir) => {
+test('getDetail appends comments in ascending time order', async () => {
+  await withTempDirAsync(async (dir) => {
     const fake = installFakeTapd(dir, defaultStories(), {
       comments: {
         1: [
@@ -292,7 +324,7 @@ test('getDetail appends comments in ascending time order', () => {
       },
     })
     const source = createTapdSource(fake.opts)
-    const body = source.getDetail('1').body
+    const body = (await source.getDetail('1')).body
     assert.ok(body.startsWith('正文'))
     assert.match(body, /## 评论（TAPD，时间升序，共 2 条）/)
     assert.ok(body.indexOf('一开始写的') < body.indexOf('后来补充的'), '评论应按时间升序')
@@ -300,15 +332,15 @@ test('getDetail appends comments in ascending time order', () => {
   })
 })
 
-test('getDetail falls back to comments when the description is empty', () => {
-  withTempDir((dir) => {
+test('getDetail falls back to comments when the description is empty', async () => {
+  await withTempDirAsync(async (dir) => {
     const fake = installFakeTapd(
       dir,
       [{ id: '10', name: '只有评论', owner: '彭云洁;', label: 'ready-for-agent', priority: '中', status: 'developing', description: '' }],
       { comments: { 10: [{ id: 'c1', created: '2026-09-18 15:00:00', author: '张远瞻', description: '需求是把血条改短' }] } },
     )
     const source = createTapdSource(fake.opts)
-    const body = source.getDetail('10').body
+    const body = (await source.getDetail('10')).body
     assert.match(body, /（需求描述为空）/)
     assert.match(body, /需求是把血条改短/)
   })
@@ -351,6 +383,81 @@ test('commentText only strips text that really is html', () => {
   assert.ok(isBlankRequirement(htmlToText('<p></p>'), []))
   assert.ok(!isBlankRequirement('', [{ description: '有评论' }]))
   assert.ok(!isBlankRequirement('有描述', []))
+})
+
+test('getDetail downloads embedded images and points the body at local files', async () => {
+  await withImageServer(PNG_BYTES, async (imageUrl) => {
+    await withTempDirAsync(async (dir) => {
+      const fake = installFakeTapd(
+        dir,
+        [
+          {
+            id: '20',
+            name: '带图需求',
+            owner: '彭云洁;',
+            label: 'ready-for-agent',
+            priority: '中',
+            status: 'developing',
+            description: '<p>看图</p><p><img src="/tfl/captures/2026-09/pic.png" width="100"/></p>',
+          },
+        ],
+        { imageUrl },
+      )
+      const source = createTapdSource(fake.opts)
+      const body = (await source.getDetail('20')).body
+      const local = join(dir, '20', 'pic.png')
+
+      assert.ok(body.includes(`![图片](${local})`), `正文应指向本地文件，实际:\n${body}`)
+      assert.ok(!body.includes('/tfl/captures/2026-09/pic.png'), '原始路径应被替换掉')
+      assert.deepEqual(readFileSync(local), PNG_BYTES)
+
+      // 重跑：文件已在，不再调 get-image
+      const before = fake.state().calls.filter((c) => c.entity === 'attachment').length
+      await source.getDetail('20')
+      const after = fake.state().calls.filter((c) => c.entity === 'attachment').length
+      assert.equal(after, before, '已下载过的图片不应重复调用 get-image')
+    })
+  })
+})
+
+test('a failed image download degrades to a placeholder instead of blocking the task', async () => {
+  await withTempDirAsync(async (dir) => {
+    const fake = installFakeTapd(
+      dir,
+      [
+        {
+          id: '21',
+          name: '图挂了',
+          owner: '彭云洁;',
+          label: 'ready-for-agent',
+          priority: '中',
+          status: 'developing',
+          description: '<p>正文照旧</p><img src="/tfl/captures/2026-09/gone.png"/>',
+        },
+      ],
+      { imageUrl: 'http://127.0.0.1:1/tfl.png' },
+    )
+    const source = createTapdSource(fake.opts)
+    const body = (await source.getDetail('21')).body
+    assert.match(body, /正文照旧/)
+    assert.match(body, /\[图片下载失败: \/tfl\/captures\/2026-09\/gone\.png\]/)
+  })
+})
+
+test('image path helpers dedupe, rewrite links, and keep file names safe', () => {
+  assert.deepEqual(extractImagePaths('看 ![图片](/tfl/captures/a.png) 和 /tfl/captures/b.png'), [
+    '/tfl/captures/a.png',
+    '/tfl/captures/b.png',
+  ])
+  assert.deepEqual(extractImagePaths('没有图'), [])
+  assert.equal(
+    replaceImagePath('[图片](/tfl/captures/a.png)', '/tfl/captures/a.png', '![图片](/tmp/a.png)'),
+    '![图片](/tmp/a.png)',
+  )
+  assert.equal(replaceImagePath('裸路径 /tfl/a.png 结束', '/tfl/a.png', 'X'), '裸路径 X 结束')
+  assert.equal(safeImageName('/tfl/captures/a.png'), 'a.png')
+  assert.equal(safeImageName('/tfl/../..//etc/passwd'), 'passwd')
+  assert.equal(safeImageName('/tfl/a b?.png'), 'a_b_.png')
 })
 
 test('tapd helpers normalize labels, priority, and html', () => {
