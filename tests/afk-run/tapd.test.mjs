@@ -13,12 +13,15 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  commentText,
   createTapdSource,
   hasLabel,
   htmlToText,
+  isBlankRequirement,
   labelList,
   normalizeTapdConfig,
   priorityValue,
+  renderTaskBody,
 } from '../../skills/afk-run/scripts/task-sources/tapd.mjs'
 import { createSource } from '../../skills/afk-run/scripts/task-sources/index.mjs'
 
@@ -56,6 +59,10 @@ if (state.status !== undefined && state.status !== 1) {
   if (story && params.label !== undefined) story.label = params.label
   save()
   out({ status: 1, data: { Story: story || {} } })
+} else if (entity === 'comment' && sub === 'list') {
+  const rows = (state.comments || {})[params.entry_id] || []
+  save()
+  out({ status: 1, data: rows.map((c) => ({ Comment: c })) })
 } else if (entity === 'comment' && sub === 'add') {
   save()
   out({ status: 1, data: { id: 'c1' } })
@@ -72,7 +79,7 @@ function tempDir() {
 function defaultStories() {
   return [
     { id: '1', name: '低优先级', owner: '彭云洁;', label: 'ready-for-agent', priority: '低', status: 'developing', description: '<p>正文</p>' },
-    { id: '2', name: '高优先级', owner: '彭云洁;', label: 'ready-for-agent', priority: '高', status: 'developing', description: '' },
+    { id: '2', name: '高优先级', owner: '彭云洁;', label: 'ready-for-agent', priority: '高', status: 'developing', description: '<p>高优先级正文</p>' },
     { id: '3', name: '已认领', owner: '彭云洁;', label: 'ready-for-agent,afk-claimed', priority: '高', status: 'developing', description: '' },
     { id: '4', name: '别人的需求', owner: '张远瞻;', label: 'ready-for-agent', priority: '高', status: 'developing', description: '' },
     { id: '5', name: '交付待验收', owner: '彭云洁;', label: 'ready-for-agent,afk-delivered', priority: '高', status: 'developing', description: '' },
@@ -141,7 +148,7 @@ test('tryClaim writes the full label set including the claim label', () => {
 test('tryClaim preserves existing labels while claiming', () => {
   withTempDir((dir) => {
     const fake = installFakeTapd(dir, [
-      { id: '9', name: '带业务标签', owner: '彭云洁;', label: 'ready-for-agent,有风险', priority: '中', status: 'developing', description: '' },
+      { id: '9', name: '带业务标签', owner: '彭云洁;', label: 'ready-for-agent,有风险', priority: '中', status: 'developing', description: '<p>正文</p>' },
     ])
     const source = createTapdSource(fake.opts)
     assert.equal(source.tryClaim('9').status, 'claimed')
@@ -190,7 +197,7 @@ test('markDone swaps claimed for delivered and comments with the commit', () => 
     const source = createTapdSource(fake.opts)
     source.markDone('3', { status: 'done', summary: '按需求改好了', commit: 'abc1234de' })
     assert.equal(fake.labels('3'), 'ready-for-agent,afk-delivered')
-    const comment = fake.state().calls.find((call) => call.entity === 'comment')
+    const comment = fake.state().calls.find((call) => call.entity === 'comment' && call.sub === 'add')
     assert.equal(comment.params.entry_id, '3')
     assert.equal(comment.params.entry_type, 'stories')
     assert.match(comment.params.description, /\[AFK\] 开发完成/)
@@ -205,7 +212,7 @@ test('markFailed swaps claimed for failed and comments the reason', () => {
     const source = createTapdSource(fake.opts)
     source.markFailed('3', '单测没过')
     assert.equal(fake.labels('3'), 'ready-for-agent,afk-failed')
-    const comment = fake.state().calls.find((call) => call.entity === 'comment')
+    const comment = fake.state().calls.find((call) => call.entity === 'comment' && call.sub === 'add')
     assert.match(comment.params.description, /\[AFK\] 失败：单测没过/)
   })
 })
@@ -272,6 +279,78 @@ test('a non-success tapd-cli payload is an error, not an empty list', () => {
     const source = createTapdSource(fake.opts)
     assert.throws(() => source.listReady(), /invalid token/)
   })
+})
+
+test('getDetail appends comments in ascending time order', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir, defaultStories(), {
+      comments: {
+        1: [
+          { id: 'c2', created: '2026-09-18 16:21:26', author: '张远瞻', description: '后来补充的' },
+          { id: 'c1', created: '2026-09-18 15:30:02', author: '彭云洁', description: '一开始写的' },
+        ],
+      },
+    })
+    const source = createTapdSource(fake.opts)
+    const body = source.getDetail('1').body
+    assert.ok(body.startsWith('正文'))
+    assert.match(body, /## 评论（TAPD，时间升序，共 2 条）/)
+    assert.ok(body.indexOf('一开始写的') < body.indexOf('后来补充的'), '评论应按时间升序')
+    assert.match(body, /- 2026-09-18 15:30:02 彭云洁：一开始写的/)
+  })
+})
+
+test('getDetail falls back to comments when the description is empty', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(
+      dir,
+      [{ id: '10', name: '只有评论', owner: '彭云洁;', label: 'ready-for-agent', priority: '中', status: 'developing', description: '' }],
+      { comments: { 10: [{ id: 'c1', created: '2026-09-18 15:00:00', author: '张远瞻', description: '需求是把血条改短' }] } },
+    )
+    const source = createTapdSource(fake.opts)
+    const body = source.getDetail('10').body
+    assert.match(body, /（需求描述为空）/)
+    assert.match(body, /需求是把血条改短/)
+  })
+})
+
+test('a story with no description and no comments is refused, not guessed', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir, [
+      { id: '11', name: '只有标题', owner: '彭云洁;', label: 'ready-for-agent', priority: '中', status: 'developing', description: '' },
+    ])
+    const source = createTapdSource(fake.opts)
+    const result = source.tryClaim('11')
+    assert.equal(result.status, 'error')
+    assert.match(result.message, /描述与评论都为空/)
+    assert.equal(fake.labels('11'), 'ready-for-agent,afk-failed')
+    const comment = fake.state().calls.find((call) => call.entity === 'comment' && call.sub === 'add')
+    assert.match(comment.params.description, /无法开工/)
+  })
+})
+
+test('a story with an empty description but a spec in the comments is claimable', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(
+      dir,
+      [{ id: '12', name: '空描述但评论有料', owner: '彭云洁;', label: 'ready-for-agent', priority: '中', status: 'developing', description: '' }],
+      { comments: { 12: [{ id: 'c1', created: '2026-09-18 15:00:00', author: '张远瞻', description: '把血条改短' }] } },
+    )
+    const source = createTapdSource(fake.opts)
+    assert.equal(source.tryClaim('12').status, 'claimed')
+    assert.equal(fake.labels('12'), 'ready-for-agent,afk-claimed')
+  })
+})
+
+test('commentText only strips text that really is html', () => {
+  assert.equal(commentText('a < b && c > d'), 'a < b && c > d')
+  assert.equal(commentText('<p>第一行<br/>第二行</p>'), '第一行\n第二行')
+  assert.equal(renderTaskBody('正文', []), '正文')
+  assert.equal(renderTaskBody('', []), '')
+  assert.ok(isBlankRequirement('', []))
+  assert.ok(isBlankRequirement(htmlToText('<p></p>'), []))
+  assert.ok(!isBlankRequirement('', [{ description: '有评论' }]))
+  assert.ok(!isBlankRequirement('有描述', []))
 })
 
 test('tapd helpers normalize labels, priority, and html', () => {

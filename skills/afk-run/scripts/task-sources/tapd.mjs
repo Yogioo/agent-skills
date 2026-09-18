@@ -168,6 +168,44 @@ export function htmlToText(html) {
 export { COMMENT_PREFIX }
 
 /**
+ * 评论正文可能是纯文本，也可能是 HTML。只有认出真的 HTML 标签才走 htmlToText，
+ * 否则 `a < b` 这类代码片段会被当成标签吃掉。
+ */
+export function commentText(raw) {
+  const value = String(raw ?? '')
+  // 标签名不能跟 `<` 分开，且必须以 `>` 收尾：`a < b && c > d` 不该被当成 HTML。
+  if (/<\/?(p|div|br|span|img|a|ul|ol|li|strong|b|em|table|tr|td|h[1-6])(\s[^>]*)?\/?>/i.test(value)) {
+    return htmlToText(value)
+  }
+  return value.replace(/\r\n/g, '\n').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/**
+ * 把描述和评论拼成进给执行端的正文。评论按时间升序，不给条数或长度上限。
+ * @param {string} descriptionText 已经是纯文本的描述
+ * @param {object[]} comments tapd-cli 返回的评论行
+ */
+export function renderTaskBody(descriptionText, comments = []) {
+  const rows = (Array.isArray(comments) ? comments : [])
+    .map((comment) => ({
+      created: String(comment?.created || '').trim(),
+      author: String(comment?.author || '').trim(),
+      text: commentText(comment?.description),
+    }))
+    .filter((comment) => comment.text)
+  const head = String(descriptionText || '').trim()
+  if (!rows.length) return head
+  const lines = rows.map((comment) => `- ${[comment.created, comment.author].filter(Boolean).join(' ')}：${comment.text}`)
+  return [head || '（需求描述为空）', '', `## 评论（TAPD，时间升序，共 ${rows.length} 条）`, '', ...lines].join('\n')
+}
+
+/** 描述和评论都为空时，执行端无从下手——只能拒单，不能凭标题猜。 */
+export function isBlankRequirement(descriptionText, comments = []) {
+  if (String(descriptionText || '').trim()) return false
+  return !(Array.isArray(comments) ? comments : []).some((comment) => commentText(comment?.description))
+}
+
+/**
  * @param {{ cwd?: string, tapd?: object, command?: string, commandPrefix?: string[], retries?: number, retryDelayMs?: number }} [opts]
  */
 export function createTapdSource(opts = {}) {
@@ -197,6 +235,20 @@ export function createTapdSource(opts = {}) {
     const story = rows[0]
     if (!story) throw new Error(`TAPD 需求不存在或无权读取: ${id}`)
     return normalizeStory(story)
+  }
+
+  /** 评论按时间升序；不分页上限（MAX_PAGES 只封 API 调用次数，不封内容长度）。 */
+  function fetchComments(id) {
+    const rows = []
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const raw = request(['comment', 'list', 'entry_type=stories', `entry_id=${id}`, `limit=${PAGE_SIZE}`, `page=${page}`])
+      const batch = (parseTapdPayload(raw, 'tapd-cli comment list').data || [])
+        .map((row) => (row && row.Comment) || row)
+        .filter(Boolean)
+      rows.push(...batch)
+      if (batch.length < PAGE_SIZE) break
+    }
+    return rows.sort((a, b) => String(a.created || '').localeCompare(String(b.created || '')))
   }
 
   function normalizeStory(story) {
@@ -262,6 +314,22 @@ export function createTapdSource(opts = {}) {
     if (machine) {
       return { status: 'already-claimed', claimMode, message: `TAPD 需求已带 ${machine} 标签，先由人撤销再重跑: ${id}` }
     }
+    // 描述与评论都为空时拒单，并贴上失败标签：故事就此离开就绪池，不会卡住后面的工单。
+    let comments
+    try {
+      comments = fetchComments(id)
+    } catch (err) {
+      return { status: 'error', claimMode, message: err.message }
+    }
+    if (isBlankRequirement(htmlToText(story.description), comments)) {
+      try {
+        writeLabels(id, [...story.labels, config.failedLabel])
+        addComment(id, `${COMMENT_PREFIX} 需求描述与评论都为空，无法开工。请补充描述或评论，然后撤销 ${config.failedLabel} 重跑。`)
+      } catch (err) {
+        return { status: 'error', claimMode, message: `需求为空，写回失败: ${err.message}` }
+      }
+      return { status: 'error', claimMode, message: `需求描述与评论都为空，已标记 ${config.failedLabel}: ${id}` }
+    }
     try {
       writeLabels(id, [...story.labels, config.claimedLabel])
     } catch (err) {
@@ -282,7 +350,12 @@ export function createTapdSource(opts = {}) {
 
     getDetail(id) {
       const story = fetchStory(id)
-      return { id: story.id, title: story.title, body: htmlToText(story.description), requirements: '' }
+      return {
+        id: story.id,
+        title: story.title,
+        body: renderTaskBody(htmlToText(story.description), fetchComments(id)),
+        requirements: '',
+      }
     },
 
     tryClaim(id) {
