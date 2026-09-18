@@ -27,3 +27,13 @@ afk-run 通过 adapter 消费任务源。**怎么写工单才能被正确消费*
 
 - `listReady()` 只返回**就绪**（无未完成前置）且**按优先级排好**的工单；loop 不做任何排序。
 - 失败任务通过 `afk-failed` 标记排除出就绪池；**宁可漏跑，不可重跑**。
+
+## 认领（tryClaim）
+
+`tryClaim(id)` 返回 `{ status, claimMode }`。`claimMode` 是 `atomic`、`best-effort` 或 `unsupported`。`status` 是 `claimed`、`already-claimed`、`unsupported` 或 `error`。
+
+- **beads**：`claimMode` 为 `atomic`。`bd update --claim` 成功是 `claimed`（同一 actor 重复认领仍是 `claimed`）；其它 actor 已认领时是 `already-claimed`。
+- **GitHub**：`claimMode` 为 `best-effort`。已有 `in-progress` 标签则 `already-claimed`，否则加标签并返回 `claimed`。两次添加之间没有比较并交换。
+- **TAPD**：字段名来自配置 `tapd.statusField` / `tapd.ownerField` / `tapd.customFields`，不默认成 `status` 或 `owner`。映射不够认领时 `claimMode` 为 `unsupported`。读写由注入的 transport 完成。
+
+afk-run 批次仍调用 `markInProgress`。watcher 在启动批次前调用 `tryClaim`；若工单因此离开就绪列表，watcher 会把该 id 作为 `--pinned-id` 传给这一次 afk-run（同一批次内每个 pinned id 只处理一次，不会被反复注入队列）。

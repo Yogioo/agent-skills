@@ -534,3 +534,52 @@ test('CLI: staleThresholdSec 可由 config 覆盖，缺省时按有效超时动�
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('runLoop: pinned id is processed when listReady omits in-progress work', async () => {
+  const { source, execReview, git, calls } = makeFakes({
+    source: {
+      listReady: async () => [],
+      getDetail: async (id) => ({ id, title: 'claimed', body: 'b', requirements: '' }),
+    },
+  })
+  const dir = tmpDir()
+  const result = await runLoop({
+    config: { ...baseConfig, maxTasks: 1, pinnedIds: ['abc'] },
+    source,
+    execReview,
+    git,
+    hooks: { taskDir: dir },
+  })
+  assert.equal(result.reason, 'max-tasks')
+  assert.equal(result.stats.done, 1)
+  assert.equal(result.tasks[0].id, 'abc')
+  assert.deepEqual(calls.inProgress, ['abc'])
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('runLoop: 同一 pinned id 只处理一次，不会被反复注入队列', async () => {
+  let polls = 0
+  const { source, execReview, git, calls } = makeFakes({
+    source: {
+      // 上限 5 次：若 pinned id 被反复注入，这里会以 source-error 终止而不是挂死。
+      listReady: async () => {
+        polls += 1
+        if (polls > 5) throw new Error('pinned id 被反复注入')
+        return []
+      },
+      getDetail: async (id) => ({ id, title: 'claimed', body: 'b', requirements: '' }),
+    },
+  })
+  const dir = tmpDir()
+  const result = await runLoop({
+    config: { ...baseConfig, maxTasks: 0, pinnedIds: ['abc'] },
+    source,
+    execReview,
+    git,
+    hooks: { taskDir: dir },
+  })
+  assert.equal(result.reason, 'all-done')
+  assert.equal(result.stats.attempted, 1)
+  assert.deepEqual(calls.inProgress, ['abc'])
+  rmSync(dir, { recursive: true, force: true })
+})

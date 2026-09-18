@@ -254,6 +254,7 @@ export function createGhSource(opts = {}) {
 
   return {
     name: 'gh',
+    claimMode: 'best-effort',
 
     listReady() {
       return readyIssues(loadIssues()).map((issue) => ({
@@ -277,6 +278,28 @@ export function createGhSource(opts = {}) {
     markInProgress(id) {
       run(issueArgs(repo, ['issue', 'edit', String(id), '--add-label', 'in-progress']))
       mutateSnapshot(id, (issue) => withLabel(issue, 'in-progress'))
+    },
+
+    tryClaim(id) {
+      const claimMode = 'best-effort'
+      let issues
+      try {
+        issues = loadIssues()
+      } catch (err) {
+        return { status: 'error', claimMode, message: err.message }
+      }
+      const issue = issues.find((candidate) => candidate.id === String(id))
+      if (!issue) {
+        return { status: 'error', claimMode, message: `GitHub issue 不存在或无法读取: ${id}` }
+      }
+      if (hasLabel(issue, 'in-progress')) return { status: 'already-claimed', claimMode }
+      try {
+        run(issueArgs(repo, ['issue', 'edit', String(id), '--add-label', 'in-progress']))
+      } catch (err) {
+        return { status: 'error', claimMode, message: err.message }
+      }
+      mutateSnapshot(id, (row) => withLabel(row, 'in-progress'))
+      return { status: 'claimed', claimMode }
     },
 
     markDone(id, result = {}) {

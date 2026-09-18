@@ -72,3 +72,20 @@ test('beads: recoverStale 重置超阈值 in_progress，保留近期工单并写
     cleanup(dir)
   }
 })
+
+test('beads tryClaim is atomic: same actor can repeat, another actor is already-claimed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afk-beads-claim-'))
+  try {
+    bd(dir, ['init', '--quiet', '--skip-agents', '--skip-hooks', '--prefix', 'afk-claim'])
+    const id = bd(dir, ['create', 'claim-me', '--silent']).trim()
+    const alice = createBeadsSource({ cwd: dir, actor: 'alice' })
+    assert.equal(alice.claimMode, 'atomic')
+    assert.deepEqual(alice.tryClaim(id), { status: 'claimed', claimMode: 'atomic' })
+    assert.deepEqual(alice.tryClaim(id), { status: 'claimed', claimMode: 'atomic' })
+    const bob = createBeadsSource({ cwd: dir, actor: 'bob' })
+    assert.deepEqual(bob.tryClaim(id), { status: 'already-claimed', claimMode: 'atomic' })
+    assert.equal(row(dir, id).status, 'in_progress')
+  } finally {
+    cleanup(dir)
+  }
+})

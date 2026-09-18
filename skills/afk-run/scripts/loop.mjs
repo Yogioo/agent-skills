@@ -190,6 +190,31 @@ export function createExecReview(workdir, execCfg = {}, onLog = () => {}) {
   }
 }
 
+/**
+ * 把调用方已认领、但 listReady 不再返回的 pinned 工单补进本轮队列。
+ * 本批次已处理过的 id 不再补入，否则会反复领取同一工单。
+ */
+async function includePinnedReady(ready, source, pinnedIds, attemptedIds) {
+  const ids = Array.isArray(pinnedIds) ? pinnedIds.map((id) => String(id)).filter(Boolean) : []
+  const tasks = Array.isArray(ready) ? ready : []
+  if (!ids.length) return tasks
+  const seen = new Set(tasks.map((task) => String(task.id)))
+  const extras = []
+  for (const id of ids) {
+    if (seen.has(id) || attemptedIds?.has(id)) continue
+    seen.add(id)
+    let title = id
+    try {
+      const detail = await source.getDetail(id)
+      if (detail?.title) title = detail.title
+    } catch {
+      // watcher 已认领的工单仍要进入本批次，即使 listReady 因 in-progress 把它排除了。
+    }
+    extras.push({ id, title, priority: 2 })
+  }
+  return extras.length ? [...extras, ...tasks] : tasks
+}
+
 // ---------- 主循环（可注入） ----------
 
 async function emitPipelineSnapshot(source, hooks) {
@@ -222,6 +247,7 @@ export async function runLoop(deps) {
   const { config, source, execReview, git, hooks = {} } = deps
   const stats = { attempted: 0, done: 0, failed: 0 }
   const tasks = []
+  const attemptedIds = new Set()
   let consecutiveFailures = 0
 
   const finish = (reason) => ({ reason, stats, tasks })
@@ -238,6 +264,7 @@ export async function runLoop(deps) {
     let ready
     try {
       ready = await source.listReady()
+      ready = await includePinnedReady(ready, source, config.pinnedIds, attemptedIds)
     } catch (err) {
       return finish(`source-error: ${err.message}`)
     }
@@ -269,6 +296,7 @@ export async function runLoop(deps) {
     if (hooks.onQueue) hooks.onQueue(ready)
 
     const task = ready[0]
+    attemptedIds.add(String(task.id))
     await source.markInProgress(task.id)
     const detail = await source.getDetail(task.id)
     const taskFile = join(hooks.taskDir || tmpdir(), `task-${task.id}.md`)
@@ -381,7 +409,7 @@ function usage(code = 1) {
   const text = `用法:
   node loop.mjs --workdir <目录> [--source beads|gh] [--repo owner/name]
     [--max-tasks <N>] [--max-failures <N>] [--retry <N>]
-    [--stop-file <路径>] [--allow-dirty]
+    [--stop-file <路径>] [--allow-dirty] [--pinned-id <id>]
     [--use-bot-identity] [--no-bot-identity]
     [--git-name <名>] [--git-email <邮箱>]
     [--config <config.json>] [--cache-dir <目录>] [--dry-run]
@@ -408,6 +436,7 @@ function parseArgs(argv) {
     retry: 0,
     stopFile: '',
     allowDirty: false,
+    pinnedIds: [],
     useBotIdentity: null,
     gitName: '',
     gitEmail: '',
@@ -463,6 +492,9 @@ function parseArgs(argv) {
         break
       case '--allow-dirty':
         out.allowDirty = true
+        break
+      case '--pinned-id':
+        out.pinnedIds.push(String(next()))
         break
       case '--use-bot-identity':
         out.useBotIdentity = true
@@ -941,6 +973,7 @@ function main() {
     maxFailures: args.maxFailures || cfg.maxFailures || 0,
     retry: args.retry || cfg.retry || 0,
     staleThresholdSec,
+    pinnedIds: args.pinnedIds,
   }
 
   // 启动校验：强制 git + 干净工作区（dry-run 跳过实际执行，但保证可验证装配）

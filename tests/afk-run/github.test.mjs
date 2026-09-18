@@ -37,6 +37,19 @@ const stateFile = process.env.AFK_FAKE_GH_STATE
 const state = JSON.parse(readFileSync(stateFile, 'utf8'))
 const args = process.argv.slice(2)
 state.calls.push(args)
+if (args[0] === 'issue' && args[1] === 'edit') {
+  const id = args[2]
+  const addAt = args.indexOf('--add-label')
+  if (addAt >= 0) {
+    const issue = (state.issues || []).find((item) => String(item.number) === String(id))
+    const name = args[addAt + 1]
+    if (issue && name) {
+      const labels = Array.isArray(issue.labels) ? issue.labels : []
+      if (!labels.some((label) => label && label.name === name)) labels.push({ name })
+      issue.labels = labels
+    }
+  }
+}
 if (state.failures > 0) {
   state.failures -= 1
   writeFileSync(stateFile, JSON.stringify(state), 'utf8')
@@ -184,6 +197,30 @@ test('gh source retries transient CLI failures and fetches more than 100 issues'
       const state = JSON.parse(readFileSync(process.env.AFK_FAKE_GH_STATE, 'utf8'))
       assert.equal(state.calls.filter((args) => args[0] === 'issue' && args[1] === 'list').length, 3)
       assert.ok(state.calls[2].includes('--limit'))
+    },
+  )
+})
+
+test('gh tryClaim is best-effort and reports an in-progress issue as already-claimed', async () => {
+  await withFakeGh(
+    {
+      issues: [
+        issue(2, 'critical', '', ['P0', 'ready-for-agent']),
+        issue(7, 'claimed', '', ['in-progress', 'ready-for-agent']),
+      ],
+    },
+    async () => {
+      const source = createGhSource({
+        cwd: process.cwd(),
+        repo: 'owner/repo',
+        command: process.execPath,
+        commandPrefix: [join(dirname(process.env.AFK_FAKE_GH_STATE), 'fake-gh.mjs')],
+      })
+      assert.equal(source.claimMode, 'best-effort')
+      assert.deepEqual(await source.tryClaim('2'), { status: 'claimed', claimMode: 'best-effort' })
+      assert.deepEqual(await source.tryClaim('2'), { status: 'already-claimed', claimMode: 'best-effort' })
+      assert.deepEqual(await source.tryClaim('7'), { status: 'already-claimed', claimMode: 'best-effort' })
+      assert.equal((await source.tryClaim('999')).status, 'error')
     },
   )
 })

@@ -33,8 +33,16 @@ function resolveBd() {
 
 const BD = resolveBd()
 
-function runBd(cwd, args) {
-  return execFileSync(BD.command, [...BD.prefix, ...args], {
+function commandErrorText(err) {
+  return [err?.stderr, err?.stdout, err?.message]
+    .filter(Boolean)
+    .map((value) => String(value))
+    .join(' ')
+}
+
+function runBd(cwd, args, actor = '') {
+  const actorArgs = actor ? ['--actor', actor] : []
+  return execFileSync(BD.command, [...BD.prefix, ...actorArgs, ...args], {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -47,14 +55,17 @@ function runBd(cwd, args) {
  */
 export function createBeadsSource(opts = {}) {
   const cwd = opts.cwd || process.cwd()
+  const actor = opts.actor || ''
+  const bd = (args) => runBd(cwd, args, actor)
 
   return {
     name: 'beads',
+    claimMode: 'atomic',
 
     listReady() {
       // bd ready 不排除 afk-failed 工单，需要自己过滤；labels 从 bd list 拿（ready 输出无 labels）
-      const ready = JSON.parse(runBd(cwd, ['ready', '--json']))
-      const open = JSON.parse(runBd(cwd, ['list', '--json']))
+      const ready = JSON.parse(bd(['ready', '--json']))
+      const open = JSON.parse(bd(['list', '--json']))
       const openById = new Map(
         open.filter((r) => r && r.id).map((r) => [r.id, r]),
       )
@@ -107,7 +118,7 @@ export function createBeadsSource(opts = {}) {
     },
 
     getDetail(id) {
-      const raw = runBd(cwd, ['list', '--id', id, '--json'])
+      const raw = bd(['list', '--id', id, '--json'])
       const rows = JSON.parse(raw)
       const r = rows && rows[0]
       if (!r || !r.id) {
@@ -122,12 +133,24 @@ export function createBeadsSource(opts = {}) {
     },
 
     markInProgress(id) {
-      runBd(cwd, ['update', id, '--claim'])
+      bd(['update', id, '--claim'])
+    },
+
+    tryClaim(id) {
+      const claimMode = 'atomic'
+      try {
+        bd(['update', id, '--claim'])
+        return { status: 'claimed', claimMode }
+      } catch (err) {
+        const message = commandErrorText(err)
+        if (/already claimed/i.test(message)) return { status: 'already-claimed', claimMode }
+        return { status: 'error', claimMode, message }
+      }
     },
 
     markDone(id, result = {}) {
       const reason = `afk: ${result.status || 'done'} — ${String(result.summary || '').slice(0, 200)}`
-      runBd(cwd, ['close', id, '--reason', reason])
+      bd(['close', id, '--reason', reason])
     },
 
     /**
@@ -136,7 +159,7 @@ export function createBeadsSource(opts = {}) {
      */
     closeEligibleParents() {
       try {
-        const raw = runBd(cwd, ['epic', 'close-eligible', '--json']).trim()
+        const raw = bd(['epic', 'close-eligible', '--json']).trim()
         if (!raw) return []
         const data = JSON.parse(raw)
         return Array.isArray(data.closed) ? data.closed : []
@@ -149,8 +172,8 @@ export function createBeadsSource(opts = {}) {
     },
 
     markFailed(id, note = '') {
-      runBd(cwd, ['label', 'add', id, 'afk-failed'])
-      runBd(cwd, ['comment', id, `afk failed: ${String(note).slice(0, 300)}`])
+      bd(['label', 'add', id, 'afk-failed'])
+      bd(['comment', id, `afk failed: ${String(note).slice(0, 300)}`])
     },
 
     recoverStale(thresholdSec, now = Date.now) {
@@ -159,15 +182,15 @@ export function createBeadsSource(opts = {}) {
       const nowMs = typeof now === 'function' ? now() : Number(now)
       if (!Number.isFinite(nowMs)) throw new Error('stale 恢复时钟无效')
 
-      const stale = JSON.parse(runBd(cwd, ['list', '--json']))
+      const stale = JSON.parse(bd(['list', '--json']))
         .filter((r) => r && r.id && r.status === 'in_progress')
         .map((r) => ({ ...r, updatedMs: Date.parse(r.updated_at) }))
         .filter((r) => Number.isFinite(r.updatedMs) && nowMs - r.updatedMs > threshold * 1000)
 
       for (const issue of stale) {
         const ageMinutes = Math.floor((nowMs - issue.updatedMs) / 60000)
-        runBd(cwd, ['update', issue.id, '--status', 'open'])
-        runBd(cwd, [
+        bd(['update', issue.id, '--status', 'open'])
+        bd([
           'comment',
           issue.id,
           `afk stale 自动重置: 卡了 ${ageMinutes} 分钟，updated_at=${issue.updated_at}`,
@@ -183,7 +206,7 @@ export function createBeadsSource(opts = {}) {
     describeBlocked() {
       const ready = this.listReady()
       const readyIds = new Set(ready.map((t) => t.id))
-      const rows = JSON.parse(runBd(cwd, ['list', '--json']))
+      const rows = JSON.parse(bd(['list', '--json']))
       const active = rows.filter(
         (r) => r && r.id && r.status !== 'closed' && !(Array.isArray(r.labels) && r.labels.includes('afk-failed')),
       )
