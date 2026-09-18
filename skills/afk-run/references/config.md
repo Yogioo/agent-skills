@@ -27,7 +27,7 @@
 | `task.retry` | `1` | 每任务失败重试次数（最多执行 1+retry 次） |
 | `task.allowDirty` | `false` | 启动时工作区有未提交改动时放行（默认拒绝） |
 | `task.stopFile` | `''` | 停止文件路径；空 = 默认 `workdir/afk-stop` |
-| `task.tapd.*` | 空 | TAPD 认领映射，字段同 [afk-watch 配置](../../afk-watch/references/config.md) |
+| `task.tapd.*` | 空 | TAPD 标签队列配置，字段同 [afk-watch 配置](../../afk-watch/references/config.md) |
 
 ## `run`
 

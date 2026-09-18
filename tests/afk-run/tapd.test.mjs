@@ -1,5 +1,7 @@
 /**
- * TAPD claim mapping stays in configuration. No universal status or owner field.
+ * TAPD adapter tests with a fake tapd-cli executable.
+ *
+ * 队列由标签定义（docs/adr/0003）：ready-for-agent 是人的开关，afk-* 是机器的三件套。
  *
  * Run:
  *   node --test tests/afk-run/tapd.test.mjs
@@ -7,60 +9,282 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  createTapdSource,
+  hasLabel,
+  htmlToText,
+  labelList,
+  normalizeTapdConfig,
+  priorityValue,
+} from '../../skills/afk-run/scripts/task-sources/tapd.mjs'
 import { createSource } from '../../skills/afk-run/scripts/task-sources/index.mjs'
-import { createTapdSource } from '../../skills/afk-run/scripts/task-sources/tapd.mjs'
 
-test('tapd without a field mapping cannot claim', () => {
-  const source = createSource('tapd', {})
-  assert.equal(source.claimMode, 'unsupported')
-  assert.deepEqual(source.tryClaim('1'), { status: 'unsupported', claimMode: 'unsupported' })
-  assert.deepEqual(source.listReady(), [])
-})
+const FAKE_CLI = `import { readFileSync, writeFileSync } from 'node:fs'
+const stateFile = process.env.AFK_FAKE_TAPD_STATE
+const state = JSON.parse(readFileSync(stateFile, 'utf8'))
+const args = process.argv.slice(2)
+const save = () => writeFileSync(stateFile, JSON.stringify(state), 'utf8')
+const out = (value) => process.stdout.write(JSON.stringify(value))
+const params = {}
+for (const arg of args) {
+  const i = arg.indexOf('=')
+  if (i > 0) params[arg.slice(0, i)] = arg.slice(i + 1)
+}
+const entity = args[0]
+const sub = args[1]
+state.calls.push({ entity, sub, params })
+if (state.error) {
+  process.stderr.write(state.error)
+  process.exit(1)
+}
+if (state.status !== undefined && state.status !== 1) {
+  save()
+  out({ status: state.status, info: state.info || 'boom' })
+} else if (entity === 'story' && sub === 'list') {
+  const rows = params.id
+    ? state.stories.filter((s) => s.id === params.id)
+    : state.stories.filter((s) =>
+        (!params.owner || String(s.owner || '').indexOf(params.owner) >= 0) &&
+        (!params.label || String(s.label || '').split(',').indexOf(params.label) >= 0))
+  save()
+  out({ status: 1, data: rows.map((s) => ({ Story: s })) })
+} else if (entity === 'story' && sub === 'update') {
+  const story = state.stories.find((s) => s.id === params.id)
+  if (story && params.label !== undefined) story.label = params.label
+  save()
+  out({ status: 1, data: { Story: story || {} } })
+} else if (entity === 'comment' && sub === 'add') {
+  save()
+  out({ status: 1, data: { id: 'c1' } })
+} else {
+  process.stderr.write('unexpected command')
+  process.exit(1)
+}
+`
 
-test('tapd claim update uses the configured field names', () => {
-  const updates = []
-  let seenMapping = null
-  const source = createTapdSource({
-    tapd: {
-      statusField: 'v_status',
-      ownerField: 'current_owner',
-      readyValue: '待处理',
-      claimedValue: '开发中',
-      ownerValue: 'agent',
-      customFields: { custom_field_9: 'afk' },
-    },
-    transport: {
-      listReady(mapping) {
-        seenMapping = mapping
-        return [{ id: 's1', title: 'story', priority: 1 }]
-      },
-      tryClaim(id, update) {
-        updates.push({ id, update })
-        return { status: 'claimed' }
-      },
-    },
-  })
+function tempDir() {
+  return mkdtempSync(join(tmpdir(), 'afk-tapd-'))
+}
 
+function defaultStories() {
+  return [
+    { id: '1', name: '低优先级', owner: '彭云洁;', label: 'ready-for-agent', priority: '低', status: 'developing', description: '<p>正文</p>' },
+    { id: '2', name: '高优先级', owner: '彭云洁;', label: 'ready-for-agent', priority: '高', status: 'developing', description: '' },
+    { id: '3', name: '已认领', owner: '彭云洁;', label: 'ready-for-agent,afk-claimed', priority: '高', status: 'developing', description: '' },
+    { id: '4', name: '别人的需求', owner: '张远瞻;', label: 'ready-for-agent', priority: '高', status: 'developing', description: '' },
+    { id: '5', name: '交付待验收', owner: '彭云洁;', label: 'ready-for-agent,afk-delivered', priority: '高', status: 'developing', description: '' },
+  ]
+}
+
+/** 安装 fake tapd-cli，返回 { opts, state() }。 */
+function installFakeTapd(dir, stories = defaultStories(), extra = {}) {
+  const stateFile = join(dir, 'state.json')
+  const cli = join(dir, 'fake-tapd-cli.mjs')
+  writeFileSync(stateFile, JSON.stringify({ stories, calls: [], ...extra }), 'utf8')
+  writeFileSync(cli, FAKE_CLI, 'utf8')
+  process.env.AFK_FAKE_TAPD_STATE = stateFile
+  return {
+    opts: { command: process.execPath, commandPrefix: [cli], retries: 0, tapd: { assignee: '彭云洁' } },
+    state: () => JSON.parse(readFileSync(stateFile, 'utf8')),
+    labels: (id) => JSON.parse(readFileSync(stateFile, 'utf8')).stories.find((s) => s.id === id).label,
+  }
+}
+
+function withTempDir(body) {
+  const dir = tempDir()
+  try {
+    return body(dir)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('tapd factory is wired into createSource', () => {
+  const source = createSource('tapd', { tapd: { assignee: '彭云洁' } })
+  assert.equal(source.name, 'tapd')
   assert.equal(source.claimMode, 'best-effort')
-  assert.deepEqual(source.listReady(), [{ id: 's1', title: 'story', priority: 1 }])
-  assert.equal(seenMapping.statusField, 'v_status')
-  assert.equal(seenMapping.readyValue, '待处理')
-  assert.equal(Object.hasOwn(seenMapping, 'status'), false)
-  assert.equal(Object.hasOwn(seenMapping, 'owner'), false)
-  assert.deepEqual(source.tryClaim('s1'), { status: 'claimed', claimMode: 'best-effort' })
-  assert.deepEqual(updates[0].update.fields, {
-    v_status: '开发中',
-    current_owner: 'agent',
-    custom_field_9: 'afk',
-  })
-  assert.equal(Object.hasOwn(updates[0].update.fields, 'status'), false)
-  assert.equal(Object.hasOwn(updates[0].update.fields, 'owner'), false)
 })
 
-test('tapd explicit claimMode is reported without inventing fields', () => {
-  const source = createTapdSource({
-    tapd: { claimMode: 'atomic', statusField: 'cf_1', claimedValue: 'yes' },
+test('listReady keeps only the queue label and no machine label', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir)
+    const source = createTapdSource(fake.opts)
+    // id 4 不在本人名下（服务端过滤），id 3/5 带机器标签（本地排除）
+    assert.deepEqual(source.listReady(), [
+      { id: '2', title: '高优先级', priority: 0 },
+      { id: '1', title: '低优先级', priority: 2 },
+    ])
   })
-  assert.equal(source.claimMode, 'atomic')
-  assert.equal(source.tryClaim('s2').status, 'error')
+})
+
+test('listReady keeps a queue label even if the server drops the label filter', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir, [...defaultStories(), { id: '6', name: '无标签', owner: '彭云洁;', label: '', priority: '高', status: 'developing', description: '' }])
+    const source = createTapdSource(fake.opts)
+    const ids = source.listReady().map((row) => row.id)
+    assert.ok(!ids.includes('6'))
+  })
+})
+
+test('tryClaim writes the full label set including the claim label', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir)
+    const source = createTapdSource(fake.opts)
+    assert.deepEqual(source.tryClaim('1'), { status: 'claimed', claimMode: 'best-effort' })
+    assert.equal(fake.labels('1'), 'ready-for-agent,afk-claimed')
+  })
+})
+
+test('tryClaim preserves existing labels while claiming', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir, [
+      { id: '9', name: '带业务标签', owner: '彭云洁;', label: 'ready-for-agent,有风险', priority: '中', status: 'developing', description: '' },
+    ])
+    const source = createTapdSource(fake.opts)
+    assert.equal(source.tryClaim('9').status, 'claimed')
+    assert.equal(fake.labels('9'), 'ready-for-agent,有风险,afk-claimed')
+  })
+})
+
+test('tryClaim reports already-claimed for every machine label', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir, [
+      ...defaultStories(),
+      { id: '7', name: '失败待重跑', owner: '彭云洁;', label: 'ready-for-agent,afk-failed', priority: '中', status: 'developing', description: '' },
+    ])
+    const source = createTapdSource(fake.opts)
+    assert.match(source.tryClaim('3').message, /afk-claimed/)
+    assert.equal(source.tryClaim('5').status, 'already-claimed')
+    assert.match(source.tryClaim('5').message, /afk-delivered/)
+    assert.match(source.tryClaim('7').message, /afk-failed/)
+  })
+})
+
+test('tryClaim refuses a story that lost its queue label', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir, [
+      { id: '8', name: '没有队列标签', owner: '彭云洁;', label: '', priority: '中', status: 'developing', description: '' },
+    ])
+    const source = createTapdSource(fake.opts)
+    const result = source.tryClaim('8')
+    assert.equal(result.status, 'error')
+    assert.match(result.message, /ready-for-agent/)
+  })
+})
+
+test('markInProgress claims through tryClaim', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir)
+    const source = createTapdSource(fake.opts)
+    source.markInProgress('2')
+    assert.equal(fake.labels('2'), 'ready-for-agent,afk-claimed')
+  })
+})
+
+test('markDone swaps claimed for delivered and comments with the commit', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir)
+    const source = createTapdSource(fake.opts)
+    source.markDone('3', { status: 'done', summary: '按需求改好了', commit: 'abc1234de' })
+    assert.equal(fake.labels('3'), 'ready-for-agent,afk-delivered')
+    const comment = fake.state().calls.find((call) => call.entity === 'comment')
+    assert.equal(comment.params.entry_id, '3')
+    assert.equal(comment.params.entry_type, 'stories')
+    assert.match(comment.params.description, /\[AFK\] 开发完成/)
+    assert.match(comment.params.description, /提交：abc1234de/)
+    assert.match(comment.params.description, /按需求改好了/)
+  })
+})
+
+test('markFailed swaps claimed for failed and comments the reason', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir)
+    const source = createTapdSource(fake.opts)
+    source.markFailed('3', '单测没过')
+    assert.equal(fake.labels('3'), 'ready-for-agent,afk-failed')
+    const comment = fake.state().calls.find((call) => call.entity === 'comment')
+    assert.match(comment.params.description, /\[AFK\] 失败：单测没过/)
+  })
+})
+
+test('describeBlocked separates in-progress from re-arm-needed', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir)
+    const source = createTapdSource(fake.opts)
+    const described = source.describeBlocked()
+    assert.deepEqual(described.ready.map((row) => row.id), ['2', '1'])
+    assert.deepEqual(described.inProgress.map((row) => row.id), ['3'])
+    assert.deepEqual(described.blocked.map((row) => row.id), ['5'])
+    assert.match(described.blocked[0].reason, /afk-delivered/)
+  })
+})
+
+test('getDetail converts the HTML description to text', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir)
+    const source = createTapdSource(fake.opts)
+    const detail = source.getDetail('1')
+    assert.equal(detail.id, '1')
+    assert.equal(detail.title, '低优先级')
+    assert.equal(detail.body, '正文')
+    assert.equal(detail.requirements, '')
+  })
+})
+
+test('every tapd-cli parameter uses underscores', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir)
+    const source = createTapdSource(fake.opts)
+    source.listReady()
+    source.getDetail('1')
+    source.markDone('3', { summary: 'x' })
+    for (const call of fake.state().calls) {
+      for (const key of Object.keys(call.params)) {
+        assert.ok(!key.includes('-'), `参数名不能用连字符（tapd-cli 会静默丢弃）: ${key}`)
+      }
+    }
+  })
+})
+
+test('a missing assignee fails loudly', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir)
+    const source = createTapdSource({ ...fake.opts, tapd: {} })
+    assert.throws(() => source.listReady(), /assignee/)
+  })
+})
+
+test('a missing tapd-cli binary fails loudly instead of returning nothing', () => {
+  const source = createTapdSource({
+    command: 'afk-definitely-missing-tapd-cli',
+    retries: 0,
+    tapd: { assignee: '彭云洁' },
+  })
+  assert.throws(() => source.listReady(), /找不到 tapd-cli/)
+})
+
+test('a non-success tapd-cli payload is an error, not an empty list', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir, defaultStories(), { status: 0, info: 'invalid token' })
+    const source = createTapdSource(fake.opts)
+    assert.throws(() => source.listReady(), /invalid token/)
+  })
+})
+
+test('tapd helpers normalize labels, priority, and html', () => {
+  assert.deepEqual(labelList('a,b|c'), ['a', 'b', 'c'])
+  assert.deepEqual(labelList(''), [])
+  assert.ok(hasLabel(labelList('ready-for-agent,有风险'), '有风险'))
+  assert.equal(priorityValue('高'), 0)
+  assert.equal(priorityValue('中'), 1)
+  assert.equal(priorityValue('低'), 2)
+  assert.equal(priorityValue(''), 1)
+  assert.equal(normalizeTapdConfig({}).readyLabel, 'ready-for-agent')
+  assert.equal(
+    htmlToText('<div>第一行<br/>第二行<img src="/tfl/a.png" width="10"/></div>'),
+    '第一行\n第二行\n[图片](/tfl/a.png)',
+  )
 })

@@ -27,12 +27,12 @@
 | `task.retry` | `1` | 传给 afk-run |
 | `task.allowDirty` | `false` | 工作区不干净时仍启动 |
 | `task.stopFile` | `''` | 空则使用 `workdir/afk-stop` |
-| `task.tapd.claimMode` | `''` | 显式 `atomic` / `best-effort` / `unsupported`。空则按字段是否够认领来决定 |
-| `task.tapd.statusField` | `''` | 状态字段名，由工作区自己声明 |
-| `task.tapd.ownerField` | `''` | 负责人字段名。空表示不写负责人 |
-| `task.tapd.readyValue` / `claimedValue` / `doneValue` / `failedValue` | `''` | 上述字段对应的值 |
-| `task.tapd.ownerValue` | `''` | 认领时写入 owner 字段的值 |
-| `task.tapd.customFields` | `{}` | 额外要写入的字段，键就是 TAPD 字段名 |
+| `task.tapd.assignee` | `''` | **必填**。TAPD 处理人，就绪池只含这个人的需求 |
+| `task.tapd.readyLabel` | `ready-for-agent` | 队列标签。人类加，执行批次只读不改 |
+| `task.tapd.claimedLabel` | `afk-claimed` | 认领锁。批次写，出队靠它 |
+| `task.tapd.deliveredLabel` | `afk-delivered` | 交付标记。批次写，人撤销即为重跑 |
+| `task.tapd.failedLabel` | `afk-failed` | 失败标记。批次写，人撤销即为重跑 |
+| `task.tapd.commentAuthor` | `''` | 写评论时的 `author`。空则沿用 tapd-cli 的默认值 |
 
 ## `watch`
 

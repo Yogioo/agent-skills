@@ -75,9 +75,9 @@ disable-model-invocation: true
    > 请拍板两件事：①单子放在哪（GitHub / 本机文件夹 / TAPD）？②这份设置只管这个项目，还是你电脑上所有项目共用？
 
    - `gh`：确认时一并敲定 `--repo`（可给从地址推出的候选）
-   - `tapd`：确认后再收齐或留空 `--tapd-*` 字段
+   - `tapd`：确认时一并敲定 `--tapd-assignee`（**必填**，TAPD 处理人）；标签名 `--tapd-*-label` 有默认值，不动即可
 
-   完成标准：用户已明确认可的 `source` ∈ beads|gh|tapd，且 `scope` 已选定（及必要的 repo / tapd 映射）。
+   完成标准：用户已明确认可的 `source` ∈ beads|gh|tapd，且 `scope` 已选定（及必要的 repo / tapd 处理人）。
 
 4. **写入配置（禁止手写 JSON 替代脚本）**
 

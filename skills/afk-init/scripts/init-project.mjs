@@ -26,6 +26,12 @@ Options:
   --scope project|global   default project (requires --workdir)
   --label <name>           project folder label (default: workdir basename)
   --repo owner/name        GitHub repo (gh)
+  --tapd-assignee <name>   TAPD 处理人（tapd，必填）
+  --tapd-ready-label <l>   TAPD 队列标签（默认 ready-for-agent）
+  --tapd-claimed-label <l> TAPD 认领标签（默认 afk-claimed）
+  --tapd-delivered-label <l> TAPD 交付标签（默认 afk-delivered）
+  --tapd-failed-label <l>  TAPD 失败标签（默认 afk-failed）
+  --tapd-comment-author <name> TAPD 评论 author（默认沿用 tapd-cli）
   --force                  overwrite existing config.json
   --serve-open             serve.open = true
   --allow-dirty            task.allowDirty = true
@@ -90,36 +96,28 @@ function parseArgs(argv) {
       case '--dry-run':
         out.dryRun = true
         break
-      case '--tapd-claim-mode':
-        out.tapd.claimMode = next(i)
+      case '--tapd-assignee':
+        out.tapd.assignee = next(i)
         i++
         break
-      case '--tapd-status-field':
-        out.tapd.statusField = next(i)
+      case '--tapd-ready-label':
+        out.tapd.readyLabel = next(i)
         i++
         break
-      case '--tapd-owner-field':
-        out.tapd.ownerField = next(i)
+      case '--tapd-claimed-label':
+        out.tapd.claimedLabel = next(i)
         i++
         break
-      case '--tapd-ready-value':
-        out.tapd.readyValue = next(i)
+      case '--tapd-delivered-label':
+        out.tapd.deliveredLabel = next(i)
         i++
         break
-      case '--tapd-claimed-value':
-        out.tapd.claimedValue = next(i)
+      case '--tapd-failed-label':
+        out.tapd.failedLabel = next(i)
         i++
         break
-      case '--tapd-done-value':
-        out.tapd.doneValue = next(i)
-        i++
-        break
-      case '--tapd-failed-value':
-        out.tapd.failedValue = next(i)
-        i++
-        break
-      case '--tapd-owner-value':
-        out.tapd.ownerValue = next(i)
+      case '--tapd-comment-author':
+        out.tapd.commentAuthor = next(i)
         i++
         break
       default:
@@ -154,11 +152,14 @@ function buildConfig(base, opts) {
   task.allowDirty = Boolean(opts.allowDirty)
   if (opts.repo) task.repo = opts.repo
   if (opts.source === 'tapd') {
+    // 只覆盖显式传入的键；其余沿用 example 里的标签默认值。
     task.tapd = {
       ...(task.tapd || {}),
       ...Object.fromEntries(Object.entries(opts.tapd || {}).filter(([, v]) => v != null && v !== '')),
-      customFields: (task.tapd && task.tapd.customFields) || {},
     }
+  } else {
+    // 别的任务源不该带着一块空的 tapd 配置。
+    delete task.tapd
   }
 
   // requireAtomicClaim 只在 beads 为 true；gh/tapd 是 best-effort。

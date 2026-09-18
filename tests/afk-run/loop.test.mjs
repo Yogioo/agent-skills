@@ -612,7 +612,7 @@ test('loadConfig: ~/.afk/<label>_<uid>/config.json 覆盖 ~/.afk/config.json', (
     assert.equal(cfg.task.source, 'gh')
     assert.equal(cfg.task.repo, 'acme/app')
     assert.equal(cfg.task.maxTasks, 1)
-    assert.equal(cfg.task.tapd.claimMode, '')
+    assert.equal(cfg.task.tapd.assignee, '')
     assert.equal(cfg.run.hardTimeoutExtra, 42)
     assert.equal(cfg.execReview.timeout, 30)
 

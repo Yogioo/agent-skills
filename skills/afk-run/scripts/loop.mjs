@@ -365,6 +365,7 @@ export async function runLoop(deps) {
       await source.markDone(task.id, {
         status: result.outcome.status,
         summary: result.outcome.summary || '',
+        commit: (git.head() || '').slice(0, 9),
       })
       closedParents =
         typeof source.closeEligibleParents === 'function'
@@ -582,15 +583,12 @@ export function loadConfig({ configPath = '', workdir = '' } = {}) {
       allowDirty: false,
       stopFile: '',
       tapd: {
-        claimMode: '',
-        statusField: '',
-        ownerField: '',
-        readyValue: '',
-        claimedValue: '',
-        doneValue: '',
-        failedValue: '',
-        ownerValue: '',
-        customFields: {},
+        assignee: '',
+        readyLabel: '',
+        claimedLabel: '',
+        deliveredLabel: '',
+        failedLabel: '',
+        commentAuthor: '',
       },
     },
     run: {

@@ -370,7 +370,7 @@ test('launcher is ASCII and the CLI exposes watch, stop, and dry-run', () => {
     const dryBody = JSON.parse(dry.stdout)
     assert.equal(dryBody.dryRun, true)
     assert.equal(dryBody.source, 'tapd')
-    assert.equal(dryBody.claimMode, 'unsupported')
+    assert.equal(dryBody.claimMode, 'best-effort')
     assert.equal(dryBody.refusesWork, false)
 
     const refused = spawnSync(process.execPath, [
