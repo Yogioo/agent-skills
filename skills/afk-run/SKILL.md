@@ -25,7 +25,7 @@ node <技能根>/scripts/loop.mjs --workdir <目录> --timeout 600 --runner pi
 
 常用参数：`--source beads|gh`、`--repo owner/name`（gh 可选，默认从 workdir 的 git remote 推断）、`--max-tasks N`、`--max-failures N`、`--retry N`、`--stop-file <路径>`、`--allow-dirty`、`--dry-run`、`--no-serve`。提交身份默认用**用户全局 git**；需要机器人身份时加 `--use-bot-identity`（可配 `git.name` / `git.email` 或 `--git-name` / `--git-email`）。透传 exec-review：`--timeout`、`--runner`、`--executor-runner`、`--reviewer-runner`、`--executor-model`、`--reviewer-model`、`--executor-thinking`、`--reviewer-thinking`。
 
-优先级：**CLI > env > `~/.afk/<项目名_UID>/config.json` > `~/.afk/config.json` > 内置**（本项目读 `task` + `run` 分区）。详见 [references/config.md](references/config.md)。
+优先级：**CLI > env > `~/.afk/<项目名_UID>/config.json` > `~/.afk/config.json`**（本项目读 `task` + `run` 分区；两层都缺就报错，不做兜底）。详见 [references/config.md](references/config.md)。
 
 ## 行为契约（确定性轨道）
 

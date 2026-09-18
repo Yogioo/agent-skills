@@ -26,8 +26,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL = join(__dirname, '..', '..', 'skills', 'exec-review')
 const SERVE = join(SKILL, 'scripts', 'serve.mjs')
 const PROGRESS_HTTP = join(SKILL, 'scripts', 'progress-http.mjs')
-// 测试不读开发机的 ~/.afk：把 AFK_HOME 指到一个空目录
+// 测试不读开发机的 ~/.afk：自带一份最小配置（run-task 现在要求配置必须存在）
 const AFK_HOME = mkdtempSync(join(tmpdir(), 'er-afk-home-'))
+writeFileSync(join(AFK_HOME, 'config.json'), JSON.stringify({ execReview: { runner: 'codex' } }))
 
 // ---------- 1 & 2：静态渲染校验 ----------
 

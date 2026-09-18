@@ -45,7 +45,7 @@
     }
   },
   "execReview": {
-    "runner": "",
+    "runner": "pi",
     "sandbox": "danger-full-access",
     "approve": true,
     "gitCommit": true,

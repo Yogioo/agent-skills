@@ -1,5 +1,5 @@
 import { RUNNERS } from './runners/index.mjs'
-import { resolveAfkSections } from '../../afk-run/scripts/afk-home.mjs'
+import { requireAfkSections } from '../../afk-run/scripts/afk-home.mjs'
 
 const EMPTY_ROLE = {
   runner: '',
@@ -11,17 +11,16 @@ const EMPTY_ROLE = {
 
 /**
  * 读 `~/.afk/config.json` 的 `execReview` 分区（项目层覆盖全局层；`--config` 则只读该文件）。
- * 没有配置文件时返回空数据，由内置默认兜底。
+ * 配置必须存在，否则报错（不做兜底）。
  * @param {string} workdir
  * @param {string} [configPath]
- * @returns {{ path: string, files: string[], missing: boolean, data: object }}
+ * @returns {{ path: string, files: string[], data: object }}
  */
 export function loadExecReviewConfig(workdir, configPath = '') {
-  const { sections, files } = resolveAfkSections(workdir, ['execReview'], configPath)
+  const { sections, files } = requireAfkSections(workdir, ['execReview'], configPath)
   return {
     files,
-    path: files.length ? files[files.length - 1] : '',
-    missing: files.length === 0,
+    path: files[files.length - 1],
     data: sections.execReview || {},
   }
 }
@@ -74,7 +73,7 @@ export function resolveSettings(args, loaded) {
   const cfg = loaded?.data || {}
   const cfgExec = pickRole(cfg.executor)
   const cfgReview = pickRole(cfg.reviewer)
-  const topRunner = asString(cfg.runner).toLowerCase() || 'codex'
+  const topRunner = asString(cfg.runner).toLowerCase()
 
   const sharedRunnerCli = asString(args.runner).toLowerCase()
   const sharedModelCli = asString(args.model)
@@ -87,18 +86,22 @@ export function resolveSettings(args, loaded) {
     const envPrefix =
       role === 'executor' ? 'EXEC_REVIEW_EXECUTOR_' : 'EXEC_REVIEW_REVIEWER_'
 
-    const runner = assertRunner(
-      firstNonEmpty(
-        roleArgs.runner,
-        sharedRunnerCli,
-        process.env[`${envPrefix}RUNNER`],
-        process.env.EXEC_REVIEW_RUNNER,
-        cfgRole.runner,
-        topRunner,
-        'codex',
-      ),
-      role,
+    // runner 没有内置兜底：配置 / CLI / env 一处都不给就报错，避免静默跑错引擎
+    const runnerRaw = firstNonEmpty(
+      roleArgs.runner,
+      sharedRunnerCli,
+      process.env[`${envPrefix}RUNNER`],
+      process.env.EXEC_REVIEW_RUNNER,
+      cfgRole.runner,
+      topRunner,
     )
+    if (!runnerRaw) {
+      throw new Error(
+        `未指定 ${role} runner：在配置的 execReview.runner（或 execReview.${role}.runner）里写一个 ${RUNNERS.join(' / ')}，` +
+          '或用 --runner / --executor-runner 与环境变量指定。',
+      )
+    }
+    const runner = assertRunner(runnerRaw, role)
 
     const model = firstNonEmpty(
       roleArgs.model,

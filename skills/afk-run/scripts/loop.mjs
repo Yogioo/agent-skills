@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { createSource } from './task-sources/index.mjs'
 import * as gitModule from './git.mjs'
-import { deepMerge, resolveAfkConfigFiles, resolveAfkSections } from './afk-home.mjs'
+import { deepMerge, requireAfkSections, resolveAfkConfigFiles } from './afk-home.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const RUN_TASK_PATH = resolve(
@@ -564,7 +564,7 @@ function parseArgs(argv) {
 /**
  * 用户级配置：~/.afk/<项目名_UID>/config.json 覆盖 ~/.afk/config.json。
  * 本技能读两个分区：`task`（与 afk-watch 共用）+ `run`（自己的）；
- * `execReview` 只借 timeout 算硬超时，引擎字段由 exec-review 读同一分区。
+ * 配置必须存在（requireAfkSections），缺了就报错，不用内置兜底。
  */
 export function resolveRunConfigPath(workdir, configPath) {
   const { files } = resolveAfkConfigFiles(workdir, configPath)
@@ -611,7 +611,7 @@ export function loadConfig({ configPath = '', workdir = '' } = {}) {
       timeout: 600,
     },
   }
-  const { files, sections } = resolveAfkSections(
+  const { files, sections } = requireAfkSections(
     workdir,
     ['task', 'run', 'execReview'],
     configPath,
@@ -909,7 +909,13 @@ function main() {
     console.error(`workdir 不存在: ${workdir}`)
     process.exit(2)
   }
-  const { cfg } = loadConfig({ configPath: args.configPath, workdir })
+  let cfg
+  try {
+    ;({ cfg } = loadConfig({ configPath: args.configPath, workdir }))
+  } catch (err) {
+    console.error(err.message || String(err))
+    process.exit(2)
+  }
 
   const sourceName = args.source || cfg.task.source || 'beads'
   const repo = args.repo || cfg.task.repo || ''

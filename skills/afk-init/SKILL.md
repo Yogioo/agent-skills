@@ -1,7 +1,7 @@
 ---
 name: afk-init
 description: >-
-  为仓库写入 ~/.afk 下的 afk-watch/afk-run 配置（全局或 <名称>_<uid>）。
+  写入 ~/.afk/config.json（全局，或 <名称>_<uid> 项目覆盖）。AFK 三个技能都要求这份配置存在，缺了会直接报错。
   仅在用户明确要求加载 afk-init 时使用；不要因「配置 / 初始化」等泛化说法自动加载。
 disable-model-invocation: true
 ---
@@ -12,9 +12,10 @@ disable-model-invocation: true
 
 ## 完成标准 / 前置
 
-- `node` 可用；本技能与兄弟目录 `afk-run` / `afk-watch` 同级（含 `config.example.json`）
+- `node` 可用；本技能自带 `config.example.json`（四分区字段菜单），且兄弟目录 `afk-run` / `afk-watch` / `exec-review` 存在
 - 已知目标 `workdir`（默认当前任务仓库根）
-- 完成标准：流程说明已发出，用户随后明确认可 source 与 scope；目标目录下写出 `watch.json` + `run.json`；project 范围另有 `meta.json`；stdout 有 JSON 摘要
+- 本技能是 AFK 三个技能的**唯一配置入口**：`~/.afk/config.json` 缺失时，`afk-run` / `afk-watch` / `exec-review` 都会报错并指向这里（没有内置兜底）
+- 完成标准：流程说明已发出，用户随后明确认可 source 与 scope；目标目录下写出 `config.json`；project 范围另有 `meta.json`；stdout 有 JSON 摘要
 
 ## 步骤
 
@@ -42,7 +43,7 @@ disable-model-invocation: true
 
    **afk-init 卡在哪：**
 
-   watch 要去看单子，得先知道两件事：单子放在哪里、这份设置管多大范围。这两件事记在 `watch.json` / `run.json` 里——就是本技能这一步要写的东西。
+   watch 要去看单子，得先知道两件事：单子放在哪里、这份设置管多大范围。这两件事记在 `~/.afk/config.json` 里（单文件分区：`task` 共用，`watch` / `run` / `execReview` 各归其主）——就是本技能这一步要写的东西。这份文件是三个技能**唯一**的配置来源，缺了它们直接报错。
 
    完成标准：说明已发出，且覆盖「谁干嘛 / 单子的一生 / 设置里要填什么」。
 
@@ -86,7 +87,7 @@ node <技能根>/scripts/init-project.mjs --scope global --source beads
 node <技能根>/scripts/init-project.mjs --workdir <路径> --source gh --repo owner/name --force
 ```
 
-默认：`task.maxTasks=1`；`watch.requireAtomicClaim` 仅 `beads` 为 true；`execReview.sandbox=danger-full-access`（改回 `workspace-write` 会写不了 `.git`，提交全部 `blocked`）；`serve.open` / `task.allowDirty` 默认 false。
+默认：`task.maxTasks=1`；`watch.requireAtomicClaim` 仅 `beads` 为 true；`execReview.runner=pi`（**必填**——留空又不用 CLI/env 指定时，exec-review 直接报错）；`execReview.sandbox=danger-full-access`（改回 `workspace-write` 会写不了 `.git`，提交全部 `blocked`）；`serve.open` / `task.allowDirty` 默认 false。
 已有 `config.json` 需确认后加 `--force`。摘要里 `legacyFiles` 非空时说明该目录还有旧版 `run.json` / `watch.json`，它们已不再加载。
 完成标准：退出码 0，摘要含 `afkDir` / `files`。
 

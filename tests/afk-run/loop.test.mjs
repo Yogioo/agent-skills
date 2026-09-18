@@ -28,8 +28,9 @@ import { projectKeyFromWorkdir } from '../../skills/afk-run/scripts/afk-home.mjs
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LOOP = join(__dirname, '..', '..', 'skills', 'afk-run', 'scripts', 'loop.mjs')
-// 测试不读开发机的 ~/.afk
+// 测试不读开发机的 ~/.afk：自带一份最小配置（配置现在必须存在）
 const TEST_AFK_HOME = mkdtempSync(join(tmpdir(), 'afk-run-home-'))
+writeFileSync(join(TEST_AFK_HOME, 'config.json'), JSON.stringify({ task: { source: 'beads' } }))
 
 // ---------- 状态机纯函数 ----------
 

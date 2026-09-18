@@ -469,7 +469,13 @@ async function main() {
     process.exit(2)
   }
 
-  const loaded = loadExecReviewConfig(workdir, args.configPath || '')
+  let loaded
+  try {
+    loaded = loadExecReviewConfig(workdir, args.configPath || '')
+  } catch (err) {
+    console.error(String(err.message || err))
+    process.exit(2)
+  }
 
   let settings
   try {
@@ -515,7 +521,6 @@ async function main() {
     JSON.stringify(
       {
         configFiles: settings.configFiles,
-        configMissing: !!loaded.missing,
         sandbox: settings.sandbox,
         approve: settings.approve,
         gitCommit: settings.gitCommit,

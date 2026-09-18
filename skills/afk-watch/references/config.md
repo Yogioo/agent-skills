@@ -8,7 +8,9 @@
 
 **单文件分区**：同一字段只出现一次。`task` 由 afk-watch / afk-run 共用，`watch` / `run` / `execReview` 各归其主。本技能读 `task` + `watch`。
 
-项目层与全局层**递归**合并（项目覆盖全局，嵌套对象也合并）；都没有则用内置。
+项目层与全局层**递归**合并（项目覆盖全局，嵌套对象也合并）。
+
+**配置文件必须存在**——两层都没有就直接报错退出（提示跑 `afk-init` 或 `--config`），不做兜底；文件里**缺的键**才走内置默认。
 
 技能根没有配置文件。`~/.afk/config.json` 用 [`afk-init`](../../afk-init/SKILL.md) 的 `scripts/init-project.mjs` 生成（该技能 `disable-model-invocation`，需显式加载）；字段菜单见 [`../../afk-init/config.example.json`](../../afk-init/config.example.json)。
 

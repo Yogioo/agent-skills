@@ -1,6 +1,6 @@
 ---
 name: exec-review
-description: '对一段任务说明跑执行（可选再审查；可插 runner，默认 Codex，可选 pi / agent；exec/review 可分别配置；默认 `review: false` 只执行，`--review true` 开启审查）。审查端在同一工作区直接改进，无需执行端新开上下文回炉。git 仓库默认允许执行端提交，`gitCommit: false` 或非 git 场景由调用方提交。日志进缓存，标准输出只给摘要。用户给出任务文本或任务文件时加载。'
+description: '对一段任务说明跑执行（可选再审查；runner 必填——由 `~/.afk/config.json` 的 `execReview.runner` 或 CLI/env 指定，example 给 pi，可选 codex / pi / agent；exec/review 可分别配置；默认 `review: false` 只执行，`--review true` 开启审查）。审查端在同一工作区直接改进，无需执行端新开上下文回炉。git 仓库默认允许执行端提交，`gitCommit: false` 或非 git 场景由调用方提交。日志进缓存，标准输出只给摘要。用户给出任务文本或任务文件时加载。'
 ---
 
 # 执行审查（单次任务）
@@ -12,9 +12,9 @@ description: '对一段任务说明跑执行（可选再审查；可插 runner�
 
 **高度可复用：** 不假设目标目录是 git 仓库（改动检测用内容快照，跳过 `.git`/`node_modules`）。git 仓库默认允许执行端提交；`gitCommit: false` 或非 git 场景由调用方提交。让审查端直接改，是为了避免「审查端只报结论 → 执行端新开一次上下文处理」的低效往返。
 
-入口：本目录 `scripts/run-task.mjs`。
+入口：本目录 `scripts/run-task.mjs`。**需要先有 `~/.afk/config.json`**（否则启动即报错，见下）。
 
-- 默认配置：`~/.afk/config.json` 的 `execReview` 分区（内置默认 **codex**）— 详见 [references/config.md](references/config.md)
+- 配置：[`~/.afk/config.json`](references/config.md) 的 `execReview` 分区（`runner` 必填）— 详见 [references/config.md](references/config.md)
 - Runner 细节：[references/runners.md](references/runners.md)
 
 ## 开工前
@@ -57,7 +57,9 @@ node …/run-task.mjs --workdir <目录> --id 可选标签 --title "…" --body 
 
 进度相关：`--no-serve` / `--port` / `--return-level` / `--heartbeat-ms` / `--progress-file`（额外镜像一份进度流，不替换自身 `progress.jsonl`）。
 
-优先级：**CLI > 环境变量 > `execReview` 分区（项目层 → 全局层）> 内置**。`model` / `thinking` 留空则不传，使用各 CLI 默认。
+优先级：**CLI > 环境变量 > `execReview` 分区（项目层 → 全局层）> 分区内其余字段的内置默认**。`model` / `thinking` 留空则不传，使用各 CLI 默认。
+
+没有配置文件、或 `runner` 一处都没给，脚本直接 `exit 2` 并打印缺什么——不静默挑一个引擎。
 
 Shell 等待时间设长（常见数分钟到十余分钟）。同一工作区同一时间只跑一个本脚本。
 

@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isClean } from '../../afk-run/scripts/git.mjs'
-import { deepMerge, resolveAfkConfigFiles, resolveAfkSections } from '../../afk-run/scripts/afk-home.mjs'
+import { deepMerge, requireAfkSections, resolveAfkConfigFiles } from '../../afk-run/scripts/afk-home.mjs'
 import { loopRegistryPath } from '../../afk-run/scripts/loop.mjs'
 import { createSource } from '../../afk-run/scripts/task-sources/index.mjs'
 import {
@@ -420,6 +420,7 @@ function parseArgs(argv) {
 /**
  * 用户级配置：~/.afk/<项目名_UID>/config.json 覆盖 ~/.afk/config.json。
  * 本技能读两个分区：`task`（与 afk-run 共用）+ `watch`（自己的）。
+ * 配置必须存在（requireAfkSections），缺了就报错，不用内置兜底。
  */
 export function resolveWatchConfigPath(workdir, configPath) {
   const { files } = resolveAfkConfigFiles(workdir, configPath)
@@ -457,7 +458,7 @@ export function loadConfig({ configPath = '', workdir = '' } = {}) {
       serve: { enabled: true, port: 0, open: false },
     },
   }
-  const { files, sections } = resolveAfkSections(workdir, ['task', 'watch'], configPath)
+  const { files, sections } = requireAfkSections(workdir, ['task', 'watch'], configPath)
   return {
     cfg: {
       task: deepMerge(defaults.task, sections.task),
@@ -594,7 +595,13 @@ function main() {
     console.error(`workdir 不存在: ${workdir}`)
     process.exit(2)
   }
-  const { cfg } = loadConfig({ configPath: args.configPath, workdir })
+  let cfg
+  try {
+    ;({ cfg } = loadConfig({ configPath: args.configPath, workdir }))
+  } catch (err) {
+    console.error(err.message || String(err))
+    process.exit(2)
+  }
 
   const stopFile = resolve(args.stopFile || cfg.task.stopFile || join(workdir, DEFAULT_STOP_FILE))
   if (args.stop) {

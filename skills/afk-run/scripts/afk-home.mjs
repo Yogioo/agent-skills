@@ -122,12 +122,18 @@ export function resolveProjectConfigDir(workdir) {
   return { dir: defaultDir, projectKey: defaultKey, uid, label }
 }
 
+/** 读并解析 JSON；不存在或格式错误都抛错，由调用方决定怎么报。 */
 export function readJsonFile(file) {
+  let text
   try {
-    return JSON.parse(readFileSync(file, 'utf8'))
+    text = readFileSync(file, 'utf8')
   } catch (err) {
-    console.error(`无法解析配置 ${file}: ${err.message}`)
-    process.exit(2)
+    throw new Error(`配置文件不存在或不可读: ${file}（${err.code || err.message}）`)
+  }
+  try {
+    return JSON.parse(text)
+  } catch (err) {
+    throw new Error(`无法解析配置 ${file}: ${err.message}`)
   }
 }
 
@@ -193,6 +199,28 @@ export function sectionsFrom(layers, names) {
 export function resolveAfkSections(workdir, names, configPath = '') {
   const base = resolveAfkConfigFiles(workdir, configPath)
   return { ...base, sections: sectionsFrom(base.layers, names) }
+}
+
+/**
+ * 同 resolveAfkSections，但**没有配置文件就直接报错**（不做内置兜底）。
+ * AFK 系列一律要求先跑 afk-init（或显式 --config），避免静默地用错任务源 / runner。
+ */
+export function requireAfkSections(workdir, names, configPath = '') {
+  const resolved = resolveAfkSections(workdir, names, configPath)
+  if (resolved.files.length) return resolved
+  const home = afkHomeRoot()
+  const project = resolveProjectConfigDir(workdir)
+  const err = new Error(
+    [
+      '未找到 AFK 配置，已查：',
+      `  ${join(home, AFK_CONFIG_FILENAME)}`,
+      `  ${join(project.dir, AFK_CONFIG_FILENAME)}`,
+      '生成： node <afk-init>/scripts/init-project.mjs --workdir <目录> --source <beads|gh|tapd>',
+      '或指定： --config <一份 config.json>',
+    ].join('\n'),
+  )
+  err.code = 'AFK_CONFIG_MISSING'
+  throw err
 }
 
 function printCliHelp() {

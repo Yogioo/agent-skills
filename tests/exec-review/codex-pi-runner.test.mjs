@@ -6,7 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,8 +19,9 @@ import { createRunner } from '../../skills/exec-review/scripts/runners/index.mjs
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL = join(__dirname, '..', '..', 'skills', 'exec-review')
 const RUN = join(SKILL, 'scripts', 'run-task.mjs')
-// 测试不读开发机的 ~/.afk：把 AFK_HOME 指到一个空目录
+// 测试不读开发机的 ~/.afk：自带一份最小配置（run-task 现在要求配置必须存在）
 const AFK_HOME = mkdtempSync(join(tmpdir(), 'er-afk-home-'))
+writeFileSync(join(AFK_HOME, 'config.json'), JSON.stringify({ execReview: { runner: 'codex' } }))
 
 test('createCodexRunner dry-run 写 events 且 log 含 --json', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'er-codex-'))

@@ -34,6 +34,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const WATCH = join(__dirname, '..', '..', 'skills', 'afk-watch', 'scripts', 'watch.mjs')
 const BAT = join(__dirname, '..', '..', 'skills', 'afk-watch', 'start-watch.bat')
 
+// 测试不读开发机的 ~/.afk：自带一份最小配置（配置现在必须存在）
+const TEST_AFK_HOME = mkdtempSync(join(tmpdir(), 'afk-watch-home-'))
+writeFileSync(join(TEST_AFK_HOME, 'config.json'), JSON.stringify({ task: { source: 'beads' } }))
+const TEST_ENV = { ...process.env, AFK_HOME: TEST_AFK_HOME }
+
 function tempDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix))
 }
@@ -338,12 +343,12 @@ test('launcher is ASCII and the CLI exposes watch, stop, and dry-run', () => {
   assert.equal(src.includes('--add-label'), false)
   assert.equal(src.includes('ready-for-agent'), false)
 
-  const help = spawnSync(process.execPath, [WATCH, '--help'], { encoding: 'utf8' })
+  const help = spawnSync(process.execPath, [WATCH, '--help'], { encoding: 'utf8', env: TEST_ENV })
   assert.equal(help.status, 0)
   assert.match(help.stdout, /--require-atomic-claim/)
   assert.match(help.stdout, /--stop/)
 
-  const missing = spawnSync(process.execPath, [WATCH], { encoding: 'utf8' })
+  const missing = spawnSync(process.execPath, [WATCH], { encoding: 'utf8', env: TEST_ENV })
   assert.equal(missing.status, 2)
 
   const workdir = tempDir('afk-watch-cli-')
@@ -360,7 +365,7 @@ test('launcher is ASCII and the CLI exposes watch, stop, and dry-run', () => {
       'tapd',
       '--cache-dir',
       cache,
-    ], { encoding: 'utf8' })
+    ], { encoding: 'utf8', env: TEST_ENV })
     assert.equal(dry.status, 0, dry.stderr)
     const dryBody = JSON.parse(dry.stdout)
     assert.equal(dryBody.dryRun, true)
@@ -378,7 +383,7 @@ test('launcher is ASCII and the CLI exposes watch, stop, and dry-run', () => {
       'tapd',
       '--cache-dir',
       cache,
-    ], { encoding: 'utf8' })
+    ], { encoding: 'utf8', env: TEST_ENV })
     assert.equal(refused.status, 2, refused.stderr)
     assert.equal(JSON.parse(refused.stdout).reason, 'require-atomic-claim')
 
@@ -389,7 +394,7 @@ test('launcher is ASCII and the CLI exposes watch, stop, and dry-run', () => {
       workdir,
       '--stop-file',
       stopFile,
-    ], { encoding: 'utf8' })
+    ], { encoding: 'utf8', env: TEST_ENV })
     assert.equal(stop.status, 0, stop.stderr)
     assert.equal(JSON.parse(stop.stdout).reason, 'stop-requested')
     assert.match(readFileSync(stopFile, 'utf8'), /stop /)

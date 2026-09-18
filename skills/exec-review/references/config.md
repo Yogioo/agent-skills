@@ -1,21 +1,25 @@
 # 配置（`~/.afk/config.json` 的 `execReview` 分区）
 
-本技能不读技能根的任何配置文件。默认值来自 `~/.afk/config.json` 的 `execReview` 分区（项目层 `~/.afk/<项目名_UID>/config.json` 覆盖全局层）；文件不存在则用内置默认。内置 runner 为 **codex**。
+本技能不读技能根的任何配置文件。设置来自 `~/.afk/config.json` 的 `execReview` 分区（项目层 `~/.afk/<项目名_UID>/config.json` 覆盖全局层）。
 
-该文件由 [`afk-init`](../../afk-init/SKILL.md) 生成，字段菜单见 [`../../afk-init/config.example.json`](../../afk-init/config.example.json)。`workdir` 决定命中哪个项目层，必须由 `--workdir` 传入。
+**配置文件必须存在，`runner` 必须有来源**——两者缺一就直接报错退出，不猜引擎（内置只有一个错不了的 `runner` 默认值也没有）。
+
+该文件由 [`afk-init`](../../afk-init/SKILL.md) 生成，字段菜单见 [`../../afk-init/config.example.json`](../../afk-init/config.example.json)；`workdir` 决定命中哪个项目层，必须由 `--workdir` 传入。
 
 ## 优先级（高 → 低）
 
 1. CLI 参数（如 `--runner`、`--executor-model`、`--thinking`）
 2. 环境变量（如 `EXEC_REVIEW_RUNNER`、`EXEC_REVIEW_EXECUTOR_MODEL`）
 3. `execReview` 分区（项目层 → 全局层；角色段 → 顶层回落）
-4. 内置默认（`runner=codex`；`model` / `thinking` 不传，用各 CLI 自己的默认）
+4. 分区内其余字段的内置默认（`model` / `thinking` 留空 = 不传，用各 CLI 自己的默认）
+
+> `runner` 在第 1–3 层都没有时就报错：`未指定 executor runner：…`。所以 `execReview.runner` 留空、又不用 CLI / env 指定，是跑不起来的。
 
 ## 字段
 
 ```json
 {
-  "runner": "codex",
+  "runner": "pi",
   "sandbox": "danger-full-access",
   "approve": true,
   "gitCommit": true,
@@ -27,14 +31,14 @@
   "structuredContext": true,
   "streamPartialOutput": false,
   "executor": {
-    "runner": "codex",
+    "runner": "",
     "bin": "",
     "model": "",
     "provider": "",
     "thinking": ""
   },
   "reviewer": {
-    "runner": "codex",
+    "runner": "",
     "bin": "",
     "model": "",
     "provider": "",
@@ -45,7 +49,7 @@
 
 | 字段 | 含义 |
 |------|------|
-| `runner` | 顶层默认 CLI：`codex` \| `pi` \| `agent`；角色未写时回落这里 |
+| `runner` | 顶层默认 CLI：`codex` \| `pi` \| `agent`；**必填**（或由 CLI / env 给），角色未写时回落这里 |
 | `executor.*` / `reviewer.*` | 执行端 / 审查端各自覆盖 |
 | `bin` | 可执行文件；空 = `codex` / `pi` / `agent`（或对应环境变量） |
 | `model` | 模型 id；**空 = 不传，用 CLI 默认模型** |

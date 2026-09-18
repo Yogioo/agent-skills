@@ -6,7 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,8 +26,9 @@ import { resolveBin } from '../../skills/exec-review/scripts/runners/resolve-bin
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL = join(__dirname, '..', '..', 'skills', 'exec-review')
 const RUN = join(SKILL, 'scripts', 'run-task.mjs')
-// 测试不读开发机的 ~/.afk：把 AFK_HOME 指到一个空目录
+// 测试不读开发机的 ~/.afk：自带一份最小配置（run-task 现在要求配置必须存在）
 const AFK_HOME = mkdtempSync(join(tmpdir(), 'er-afk-home-'))
+writeFileSync(join(AFK_HOME, 'config.json'), JSON.stringify({ execReview: { runner: 'codex' } }))
 
 test('RUNNERS 包含 agent', () => {
   assert.ok(RUNNERS.includes('agent'))
@@ -145,11 +146,17 @@ test('resolveSettings 对 agent 默认 bin=agent', () => {
 })
 
 test('resolveSettings review 默认 false，可被 CLI/config 开启', () => {
-  assert.equal(resolveSettings({}, { path: 'x', data: {} }).review, false)
-  assert.equal(resolveSettings({}, { path: 'x', data: { review: true } }).review, true)
-  assert.equal(resolveSettings({ review: true }, { path: 'x', data: { review: false } }).review, true)
-  assert.equal(resolveSettings({ review: 'false' }, { path: 'x', data: { review: true } }).review, false)
-  assert.equal(resolveSettings({ review: 'true' }, { path: 'x', data: {} }).review, true)
+  const base = { path: 'x', data: { runner: 'codex' } }
+  assert.equal(resolveSettings({}, base).review, false)
+  assert.equal(resolveSettings({}, { path: 'x', data: { runner: 'codex', review: true } }).review, true)
+  assert.equal(resolveSettings({ review: true }, { path: 'x', data: { runner: 'codex', review: false } }).review, true)
+  assert.equal(resolveSettings({ review: 'false' }, { path: 'x', data: { runner: 'codex', review: true } }).review, false)
+  assert.equal(resolveSettings({ review: 'true' }, base).review, true)
+})
+
+test('resolveSettings 没有任何 runner 来源时直接报错', () => {
+  assert.throws(() => resolveSettings({}, { path: 'x', data: {} }), /未指定 executor runner/)
+  assert.throws(() => resolveSettings({}, { path: 'x', data: { executor: { runner: 'pi' } } }), /未指定 reviewer runner/)
 })
 
 test('resolveBin(agent) 在 Windows 上优先直连 cursor-agent index.js', () => {
