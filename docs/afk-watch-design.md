@@ -32,12 +32,13 @@ Planned files:
 ```text
 skills/afk-watch/
   SKILL.md
-  config.json
   references/config.md
   scripts/watch.mjs
   scripts/watch-state.mjs
   start-watch.bat
 ```
+
+Per-project config lives in the shared `~/.afk/config.json`, under the `task` and `watch` sections (project override: `~/.afk/<label>_<uid>/config.json`; created by afk-init `scripts/init-project.mjs`). UID is derived from the workdir absolute path.
 
 The watcher registry is separate from the existing `afk-run` registry and is keyed by workdir. It records the watcher PID, child PID, run directory, state, claim mode, and timestamps. A watcher stops only the child and dashboard processes it owns. Historical watcher events are append-only under a `watch-run-*` directory; execution-run reports remain owned by `afk-run`.
 

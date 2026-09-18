@@ -26,6 +26,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL = join(__dirname, '..', '..', 'skills', 'exec-review')
 const SERVE = join(SKILL, 'scripts', 'serve.mjs')
 const PROGRESS_HTTP = join(SKILL, 'scripts', 'progress-http.mjs')
+// 测试不读开发机的 ~/.afk：把 AFK_HOME 指到一个空目录
+const AFK_HOME = mkdtempSync(join(tmpdir(), 'er-afk-home-'))
 
 // ---------- 1 & 2：静态渲染校验 ----------
 
@@ -297,7 +299,7 @@ function makeGitRepo() {
 
 function runDryRun(workdir, cacheDir, extraArgs = []) {
   return new Promise((resolve, reject) => {
-    const env = { ...process.env }
+    const env = { ...process.env, AFK_HOME }
     delete env.EXEC_REVIEW_GIT_COMMIT
     const child = spawn(
       process.execPath,

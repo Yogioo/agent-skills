@@ -19,6 +19,8 @@ import { createRunner } from '../../skills/exec-review/scripts/runners/index.mjs
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL = join(__dirname, '..', '..', 'skills', 'exec-review')
 const RUN = join(SKILL, 'scripts', 'run-task.mjs')
+// 测试不读开发机的 ~/.afk：把 AFK_HOME 指到一个空目录
+const AFK_HOME = mkdtempSync(join(tmpdir(), 'er-afk-home-'))
 
 test('createCodexRunner dry-run 写 events 且 log 含 --json', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'er-codex-'))
@@ -98,7 +100,7 @@ function runDryRun(workdir, cacheDir, runner) {
         '--cache-dir',
         cacheDir,
       ],
-      { cwd: SKILL, stdio: ['ignore', 'pipe', 'pipe'] },
+      { cwd: SKILL, env: { ...process.env, AFK_HOME }, stdio: ['ignore', 'pipe', 'pipe'] },
     )
     let stdout = ''
     let stderr = ''

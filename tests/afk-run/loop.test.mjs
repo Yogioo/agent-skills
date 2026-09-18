@@ -17,15 +17,19 @@ import {
   claimLoopInstance,
   decide,
   isActiveLoopInstance,
+  loadConfig,
   loopRegistryPath,
   recoverAndRunLoop,
   releaseLoopInstance,
   runLoop,
   writeTaskMd,
 } from '../../skills/afk-run/scripts/loop.mjs'
+import { projectKeyFromWorkdir } from '../../skills/afk-run/scripts/afk-home.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LOOP = join(__dirname, '..', '..', 'skills', 'afk-run', 'scripts', 'loop.mjs')
+// 测试不读开发机的 ~/.afk
+const TEST_AFK_HOME = mkdtempSync(join(tmpdir(), 'afk-run-home-'))
 
 // ---------- 状态机纯函数 ----------
 
@@ -491,6 +495,7 @@ test('CLI: --no-serve 不输出 loop 看板 URL', () => {
   try {
     const stdout = execFileSync(process.execPath, [LOOP, '--workdir', dir, '--dry-run', '--no-serve', '--source', 'beads'], {
       cwd: dir,
+      env: { ...process.env, AFK_HOME: TEST_AFK_HOME },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -505,8 +510,8 @@ test('CLI: staleThresholdSec 可由 config 覆盖，缺省时按有效超时动�
   const configFile = join(dir, 'config.json')
   try {
     writeFileSync(configFile, JSON.stringify({
-      execReview: { timeout: 5, hardTimeoutExtra: 3 },
-      staleThresholdSec: 0,
+      execReview: { timeout: 5 },
+      run: { hardTimeoutExtra: 3, staleThresholdSec: 0 },
     }))
     const disabled = JSON.parse(execFileSync(process.execPath, [
       LOOP,
@@ -516,10 +521,10 @@ test('CLI: staleThresholdSec 可由 config 覆盖，缺省时按有效超时动�
       '--no-serve',
       '--config',
       configFile,
-    ], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
+    ], { cwd: dir, env: { ...process.env, AFK_HOME: TEST_AFK_HOME }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
     assert.equal(disabled.staleThresholdSec, 0)
 
-    writeFileSync(configFile, JSON.stringify({ execReview: { timeout: 5, hardTimeoutExtra: 3 } }))
+    writeFileSync(configFile, JSON.stringify({ execReview: { timeout: 5 }, run: { hardTimeoutExtra: 3 } }))
     const defaulted = JSON.parse(execFileSync(process.execPath, [
       LOOP,
       '--workdir',
@@ -528,7 +533,7 @@ test('CLI: staleThresholdSec 可由 config 覆盖，缺省时按有效超时动�
       '--no-serve',
       '--config',
       configFile,
-    ], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
+    ], { cwd: dir, env: { ...process.env, AFK_HOME: TEST_AFK_HOME }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
     assert.equal(defaulted.staleThresholdSec, 16)
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -582,4 +587,55 @@ test('runLoop: 同一 pinned id 只处理一次，不会被反复注入队列', 
   assert.equal(result.stats.attempted, 1)
   assert.deepEqual(calls.inProgress, ['abc'])
   rmSync(dir, { recursive: true, force: true })
+})
+
+test('loadConfig: ~/.afk/<label>_<uid>/config.json 覆盖 ~/.afk/config.json', () => {
+  const home = tmpDir()
+  const workdir = tmpDir()
+  const prev = process.env.AFK_HOME
+  process.env.AFK_HOME = home
+  try {
+    const projectKey = projectKeyFromWorkdir(workdir)
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      task: { source: 'beads', maxTasks: 1 },
+      run: { hardTimeoutExtra: 42 },
+      execReview: { timeout: 10 },
+    }))
+    mkdirSync(join(home, projectKey), { recursive: true })
+    writeFileSync(join(home, projectKey, 'config.json'), JSON.stringify({
+      task: { source: 'gh', repo: 'acme/app' },
+      execReview: { timeout: 30 },
+    }))
+    const { cfg, files } = loadConfig({ workdir })
+    assert.equal(files.length, 2)
+    assert.equal(cfg.task.source, 'gh')
+    assert.equal(cfg.task.repo, 'acme/app')
+    assert.equal(cfg.task.maxTasks, 1)
+    assert.equal(cfg.task.tapd.claimMode, '')
+    assert.equal(cfg.run.hardTimeoutExtra, 42)
+    assert.equal(cfg.execReview.timeout, 30)
+
+    const other = tmpDir()
+    const onlyGlobal = loadConfig({ workdir: other })
+    assert.equal(onlyGlobal.cfg.task.source, 'beads')
+    assert.equal(onlyGlobal.cfg.execReview.timeout, 10)
+    assert.equal(loadConfig({}).cfg.task.source, 'beads')
+
+    // 自定义 label 仍按 UID 命中
+    const customKey = projectKeyFromWorkdir(workdir, 'my-cool-app')
+    mkdirSync(join(home, customKey), { recursive: true })
+    writeFileSync(join(home, customKey, 'config.json'), JSON.stringify({ task: { source: 'tapd' } }))
+    // 默认键目录仍在时优先默认键；删掉后应命中自定义 label
+    rmSync(join(home, projectKey), { recursive: true, force: true })
+    const renamed = loadConfig({ workdir })
+    assert.equal(renamed.cfg.task.source, 'tapd')
+    assert.match(renamed.path.replace(/\\/g, '/'), new RegExp(`${customKey}/config\\.json$`))
+
+    rmSync(other, { recursive: true, force: true })
+  } finally {
+    if (prev === undefined) delete process.env.AFK_HOME
+    else process.env.AFK_HOME = prev
+    rmSync(home, { recursive: true, force: true })
+    rmSync(workdir, { recursive: true, force: true })
+  }
 })

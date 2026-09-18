@@ -1,10 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { RUNNERS } from './runners/index.mjs'
-
-const __dirname = dirname(fileURLToPath(import.meta.url))
-export const DEFAULT_CONFIG_PATH = resolve(__dirname, '..', 'config.json')
+import { resolveAfkSections } from '../../afk-run/scripts/afk-home.mjs'
 
 const EMPTY_ROLE = {
   runner: '',
@@ -15,23 +10,20 @@ const EMPTY_ROLE = {
 }
 
 /**
- * @param {string} [path]
+ * 读 `~/.afk/config.json` 的 `execReview` 分区（项目层覆盖全局层；`--config` 则只读该文件）。
+ * 没有配置文件时返回空数据，由内置默认兜底。
+ * @param {string} workdir
+ * @param {string} [configPath]
+ * @returns {{ path: string, files: string[], missing: boolean, data: object }}
  */
-export function loadConfigFile(path = DEFAULT_CONFIG_PATH) {
-  const file = resolve(path)
-  if (!existsSync(file)) {
-    return { path: file, missing: true, data: {} }
+export function loadExecReviewConfig(workdir, configPath = '') {
+  const { sections, files } = resolveAfkSections(workdir, ['execReview'], configPath)
+  return {
+    files,
+    path: files.length ? files[files.length - 1] : '',
+    missing: files.length === 0,
+    data: sections.execReview || {},
   }
-  let data
-  try {
-    data = JSON.parse(readFileSync(file, 'utf8'))
-  } catch (err) {
-    throw new Error(`无法解析配置 ${file}: ${err.message || err}`)
-  }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new Error(`配置必须是 JSON 对象: ${file}`)
-  }
-  return { path: file, missing: false, data }
 }
 
 function asString(v) {
@@ -168,7 +160,7 @@ export function resolveSettings(args, loaded) {
 
   const sandbox =
     firstNonEmpty(args.sandbox, process.env.EXEC_REVIEW_SANDBOX, cfg.sandbox) ||
-    'workspace-write'
+    'danger-full-access'
 
   const approve =
     args.approve === false
@@ -251,7 +243,7 @@ export function resolveSettings(args, loaded) {
   )
 
   return {
-    configPath: loaded?.path || DEFAULT_CONFIG_PATH,
+    configFiles: loaded?.files || [],
     sandbox,
     approve,
     gitCommit,
@@ -269,4 +261,4 @@ export function resolveSettings(args, loaded) {
   }
 }
 
-export { EMPTY_ROLE, DEFAULT_CONFIG_PATH as configPathFromSkill }
+export { EMPTY_ROLE }

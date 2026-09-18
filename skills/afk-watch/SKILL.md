@@ -27,7 +27,7 @@ node <技能根>/scripts/watch.mjs --stop --workdir <目录>
 
 Windows 也可用 `start-watch.bat`，它会把全部参数转给 `node scripts/watch.mjs`。
 
-常用参数：`--source`、`--repo`、`--max-tasks`、`--poll-interval`、`--require-atomic-claim`、`--stop-file`、`--allow-dirty`、`--no-serve`、`--dry-run`。字段见 [references/config.md](references/config.md)。任务源认领语义见 [../afk-run/references/task-sources.md](../afk-run/references/task-sources.md)。
+常用参数：`--source`、`--repo`、`--max-tasks`、`--poll-interval`、`--require-atomic-claim`、`--stop-file`、`--allow-dirty`、`--no-serve`、`--dry-run`。配置见 [`~/.afk/config.json`](references/config.md)（本项目读 `task` + `watch` 分区；技能根没有配置文件）。任务源认领语义见 [../afk-run/references/task-sources.md](../afk-run/references/task-sources.md)。
 
 ## 行为
 

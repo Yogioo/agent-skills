@@ -14,7 +14,7 @@ description: '对一段任务说明跑执行（可选再审查；可插 runner�
 
 入口：本目录 `scripts/run-task.mjs`。
 
-- 默认配置：[config.json](config.json)（默认 **codex**）— 详见 [references/config.md](references/config.md)
+- 默认配置：`~/.afk/config.json` 的 `execReview` 分区（内置默认 **codex**）— 详见 [references/config.md](references/config.md)
 - Runner 细节：[references/runners.md](references/runners.md)
 
 ## 开工前
@@ -57,7 +57,7 @@ node …/run-task.mjs --workdir <目录> --id 可选标签 --title "…" --body 
 
 进度相关：`--no-serve` / `--port` / `--return-level` / `--heartbeat-ms` / `--progress-file`（额外镜像一份进度流，不替换自身 `progress.jsonl`）。
 
-优先级：**CLI > 环境变量 > config.json > 内置**。`model` / `thinking` 留空则不传，使用各 CLI 默认。
+优先级：**CLI > 环境变量 > `execReview` 分区（项目层 → 全局层）> 内置**。`model` / `thinking` 留空则不传，使用各 CLI 默认。
 
 Shell 等待时间设长（常见数分钟到十余分钟）。同一工作区同一时间只跑一个本脚本。
 
@@ -105,7 +105,7 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 
 ## 目录
 
-- `config.json` — 默认 runner / 模型 / 思考等级（exec、review 可分开）+ `review` 开关 + gitCommit + serve / returnLevel / heartbeatMs
+- `~/.afk/config.json` 的 `execReview` 分区 — 默认 runner / 模型 / 思考等级（exec、review 可分开）+ `review` 开关 + gitCommit + sandbox + serve / returnLevel / heartbeatMs
 - `scripts/run-task.mjs` — 入口（默认只执行；`review: true` 时再审查；`gitCommit` 时注入通用 git 指引）
 - `scripts/commit-rules.mjs` — 仅 `gitCommit` 编排边界（何时 commit、BASE_HEAD、工作区干净）
 - `scripts/workspace.mjs` — 内容快照改动检测

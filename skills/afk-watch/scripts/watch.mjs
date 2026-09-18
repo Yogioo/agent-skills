@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isClean } from '../../afk-run/scripts/git.mjs'
+import { deepMerge, resolveAfkConfigFiles, resolveAfkSections } from '../../afk-run/scripts/afk-home.mjs'
 import { loopRegistryPath } from '../../afk-run/scripts/loop.mjs'
 import { createSource } from '../../afk-run/scripts/task-sources/index.mjs'
 import {
@@ -23,7 +24,6 @@ import {
 } from './watch-state.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const SKILL_ROOT = resolve(__dirname, '..')
 const LOOP_PATH = resolve(__dirname, '..', '..', 'afk-run', 'scripts', 'loop.mjs')
 const LOOP_SERVE_PATH = resolve(__dirname, '..', '..', 'afk-run', 'scripts', 'loop-serve.mjs')
 const DEFAULT_STOP_FILE = 'afk-stop'
@@ -76,6 +76,7 @@ export function buildExecutionArgs(options) {
     '--no-open',
   ]
   if (options.repo) args.push('--repo', options.repo)
+  if (options.configPath) args.push('--config', options.configPath)
   if (Number(options.maxTasks) > 0) args.push('--max-tasks', String(options.maxTasks))
   if (Number(options.maxFailures) > 0) args.push('--max-failures', String(options.maxFailures))
   if (Number(options.retry) > 0) args.push('--retry', String(options.retry))
@@ -273,7 +274,7 @@ function usage(code = 0) {
   const text = `用法:
   node watch.mjs --workdir <目录> [--source beads|gh|tapd] [--repo <仓库>]
     [--max-tasks <N>] [--poll-interval <毫秒>] [--require-atomic-claim]
-    [--stop-file <路径>] [--allow-dirty] [--cache-dir <目录>] [--config <config.json>]
+    [--stop-file <路径>] [--allow-dirty] [--cache-dir <目录>] [--config <~/.afk/config.json>]
     [--no-serve] [--port <端口>] [--dry-run]
   node watch.mjs --stop --workdir <目录> [--stop-file <路径>]
 
@@ -416,65 +417,55 @@ function parseArgs(argv) {
   return out
 }
 
-function loadConfig(configPath) {
+/**
+ * 用户级配置：~/.afk/<项目名_UID>/config.json 覆盖 ~/.afk/config.json。
+ * 本技能读两个分区：`task`（与 afk-run 共用）+ `watch`（自己的）。
+ */
+export function resolveWatchConfigPath(workdir, configPath) {
+  const { files } = resolveAfkConfigFiles(workdir, configPath)
+  return files.length ? files[files.length - 1] : null
+}
+
+export function loadConfig({ configPath = '', workdir = '' } = {}) {
   const defaults = {
-    source: 'beads',
-    maxTasks: 1,
-    maxFailures: 3,
-    retry: 1,
-    pollIntervalMs: 15000,
-    backoffInitialMs: 1000,
-    backoffMaxMs: 60000,
-    backoffFactor: 2,
-    requireAtomicClaim: false,
-    allowDirty: false,
-    stopFile: '',
-    serve: { enabled: true, port: 0, open: false },
-    execReview: {
-      timeout: 0,
-      runner: '',
-      executorRunner: '',
-      reviewerRunner: '',
-      executorModel: '',
-      reviewerModel: '',
-      executorThinking: '',
-      reviewerThinking: '',
-      hardTimeoutExtra: 0,
+    task: {
+      source: 'beads',
+      repo: '',
+      maxTasks: 1,
+      maxFailures: 3,
+      retry: 1,
+      allowDirty: false,
+      stopFile: '',
+      tapd: {
+        claimMode: '',
+        statusField: '',
+        ownerField: '',
+        readyValue: '',
+        claimedValue: '',
+        doneValue: '',
+        failedValue: '',
+        ownerValue: '',
+        customFields: {},
+      },
     },
-    tapd: {
-      claimMode: '',
-      statusField: '',
-      ownerField: '',
-      readyValue: '',
-      claimedValue: '',
-      doneValue: '',
-      failedValue: '',
-      ownerValue: '',
-      customFields: {},
+    watch: {
+      pollIntervalMs: 15000,
+      backoffInitialMs: 1000,
+      backoffMaxMs: 60000,
+      backoffFactor: 2,
+      requireAtomicClaim: false,
+      serve: { enabled: true, port: 0, open: false },
     },
   }
-  const file = resolve(configPath || join(SKILL_ROOT, 'config.json'))
-  let data = {}
-  if (existsSync(file)) {
-    try {
-      data = JSON.parse(readFileSync(file, 'utf8'))
-    } catch (err) {
-      console.error(`无法解析配置 ${file}: ${err.message}`)
-      process.exit(2)
-    }
-  }
-  const cfg = { ...defaults, ...data }
-  cfg.serve = { ...defaults.serve, ...(data.serve || {}) }
-  cfg.execReview = { ...defaults.execReview, ...(data.execReview || {}) }
-  cfg.tapd = {
-    ...defaults.tapd,
-    ...(data.tapd || {}),
-    customFields: {
-      ...defaults.tapd.customFields,
-      ...((data.tapd && data.tapd.customFields) || {}),
+  const { files, sections } = resolveAfkSections(workdir, ['task', 'watch'], configPath)
+  return {
+    cfg: {
+      task: deepMerge(defaults.task, sections.task),
+      watch: deepMerge(defaults.watch, sections.watch),
     },
+    files,
+    path: files.length ? files[files.length - 1] : null,
   }
-  return cfg
 }
 
 function hashStr(value) {
@@ -594,7 +585,6 @@ function createLiveSpawnRun({
 
 function main() {
   const args = parseArgs(process.argv.slice(2))
-  const cfg = loadConfig(args.configPath)
   if (!args.workdir) {
     console.error('workdir 必传：--workdir <目录>')
     process.exit(2)
@@ -604,8 +594,9 @@ function main() {
     console.error(`workdir 不存在: ${workdir}`)
     process.exit(2)
   }
+  const { cfg } = loadConfig({ configPath: args.configPath, workdir })
 
-  const stopFile = resolve(args.stopFile || cfg.stopFile || join(workdir, DEFAULT_STOP_FILE))
+  const stopFile = resolve(args.stopFile || cfg.task.stopFile || join(workdir, DEFAULT_STOP_FILE))
   if (args.stop) {
     mkdirSync(dirname(stopFile), { recursive: true })
     writeFileSync(stopFile, `stop ${new Date().toISOString()}\n`, 'utf8')
@@ -613,19 +604,20 @@ function main() {
     return
   }
 
-  const allowDirty = args.allowDirty || cfg.allowDirty
+  const allowDirty = args.allowDirty || cfg.task.allowDirty
   if (!workspaceIsClean(workdir) && !allowDirty) {
     console.error(`工作区有未提交改动（${workdir}）。请先提交/stash，或 --allow-dirty。`)
     process.exit(2)
   }
 
-  const sourceName = args.source || cfg.source || 'beads'
+  const sourceName = args.source || cfg.task.source || 'beads'
+  const repo = args.repo || cfg.task.repo || ''
   let source
   try {
     source = createSource(sourceName, {
       cwd: workdir,
-      ...(args.repo ? { repo: args.repo } : {}),
-      tapd: cfg.tapd,
+      ...(repo ? { repo } : {}),
+      tapd: cfg.task.tapd,
     })
   } catch (err) {
     console.error(err.message || String(err))
@@ -633,7 +625,7 @@ function main() {
   }
 
   const claimMode = source.claimMode || 'unsupported'
-  const requireAtomicClaim = args.requireAtomicClaim || cfg.requireAtomicClaim
+  const requireAtomicClaim = args.requireAtomicClaim || cfg.watch.requireAtomicClaim
   const summaryBase = {
     workdir,
     source: sourceName,
@@ -661,8 +653,8 @@ function main() {
     process.exit(2)
   }
 
-  const serveEnabled = args.serve ?? cfg.serve.enabled
-  const servePort = args.port || cfg.serve.port || 9700 + (hashStr(workdir) % 1000)
+  const serveEnabled = args.serve ?? cfg.watch.serve.enabled
+  const servePort = args.port || cfg.watch.serve.port || 9700 + (hashStr(workdir) % 1000)
   let owned = { childPid: null, dashboardPid: null, runDir: '' }
   let stopRequested = false
   const isStopRequested = () => stopRequested || existsSync(stopFile)
@@ -687,8 +679,8 @@ function main() {
   process.on('SIGINT', onSignal)
   process.on('SIGTERM', onSignal)
 
+  // 只透传 CLI 覆盖；配置文件里的引擎设置由 afk-run / exec-review 读同一分区
   const execReview = {
-    ...cfg.execReview,
     ...(args.timeout != null ? { timeout: args.timeout } : {}),
     ...(args.runner ? { runner: args.runner } : {}),
     ...(args.executorRunner ? { executorRunner: args.executorRunner } : {}),
@@ -701,13 +693,13 @@ function main() {
   }
   const runConfig = {
     requireAtomicClaim: Boolean(requireAtomicClaim),
-    pollIntervalMs: args.pollIntervalMs ?? cfg.pollIntervalMs,
-    backoffInitialMs: args.backoffInitialMs ?? cfg.backoffInitialMs,
-    backoffMaxMs: args.backoffMaxMs ?? cfg.backoffMaxMs,
-    backoffFactor: cfg.backoffFactor,
-    maxTasks: args.maxTasks ?? cfg.maxTasks,
-    maxFailures: args.maxFailures ?? cfg.maxFailures,
-    retry: args.retry ?? cfg.retry,
+    pollIntervalMs: args.pollIntervalMs ?? cfg.watch.pollIntervalMs,
+    backoffInitialMs: args.backoffInitialMs ?? cfg.watch.backoffInitialMs,
+    backoffMaxMs: args.backoffMaxMs ?? cfg.watch.backoffMaxMs,
+    backoffFactor: cfg.watch.backoffFactor,
+    maxTasks: args.maxTasks ?? cfg.task.maxTasks,
+    maxFailures: args.maxFailures ?? cfg.task.maxFailures,
+    retry: args.retry ?? cfg.task.retry,
   }
 
   appendWatchEvent(watchRunDir, { event: 'watch_start', ...summaryBase, watchRunDir })
@@ -716,16 +708,17 @@ function main() {
   const spawnRun = createLiveSpawnRun({
     execCache,
     workdir,
-    serve: { enabled: serveEnabled !== false, port: servePort, open: cfg.serve.open },
+    serve: { enabled: serveEnabled !== false, port: servePort, open: cfg.watch.serve.open },
     isStopRequested,
     onOwned,
     argsFor: (pinnedIds) => buildExecutionArgs({
       workdir,
       source: sourceName,
-      repo: args.repo,
+      repo,
       cacheDir: execCache,
       stopFile,
       allowDirty,
+      configPath: args.configPath,
       maxTasks: runConfig.maxTasks,
       maxFailures: runConfig.maxFailures,
       retry: runConfig.retry,

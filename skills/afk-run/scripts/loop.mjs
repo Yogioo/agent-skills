@@ -26,9 +26,9 @@ import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { createSource } from './task-sources/index.mjs'
 import * as gitModule from './git.mjs'
+import { deepMerge, resolveAfkConfigFiles, resolveAfkSections } from './afk-home.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const SKILL_ROOT = resolve(__dirname, '..')
 const RUN_TASK_PATH = resolve(
   __dirname,
   '..',
@@ -412,7 +412,7 @@ function usage(code = 1) {
     [--stop-file <路径>] [--allow-dirty] [--pinned-id <id>]
     [--use-bot-identity] [--no-bot-identity]
     [--git-name <名>] [--git-email <邮箱>]
-    [--config <config.json>] [--cache-dir <目录>] [--dry-run]
+    [--config <~/.afk/config.json>] [--cache-dir <目录>] [--dry-run]
     [--no-serve] [--no-open] [--port <端口>]
     透传 exec-review: [--timeout <秒>] [--runner <codex|pi>]
     [--executor-runner <…>] [--reviewer-runner <…>]
@@ -420,7 +420,7 @@ function usage(code = 1) {
     [--executor-thinking <…>] [--reviewer-thinking <…>]
     [--hard-timeout-extra <秒>]
 
---workdir 必传（由调用方/Agent 传入）；其余默认来自技能根 config.json。
+--workdir 必传（由调用方/Agent 传入）；其余默认来自 ~/.afk/<项目名_UID>/config.json（回落 ~/.afk/config.json）的 task / run / execReview 分区与内置。
 优先级：CLI > env > config > 内置。`
   console.error(text)
   process.exit(code)
@@ -561,62 +561,69 @@ function parseArgs(argv) {
   return out
 }
 
-function loadConfig(path) {
+/**
+ * 用户级配置：~/.afk/<项目名_UID>/config.json 覆盖 ~/.afk/config.json。
+ * 本技能读两个分区：`task`（与 afk-watch 共用）+ `run`（自己的）；
+ * `execReview` 只借 timeout 算硬超时，引擎字段由 exec-review 读同一分区。
+ */
+export function resolveRunConfigPath(workdir, configPath) {
+  const { files } = resolveAfkConfigFiles(workdir, configPath)
+  return files.length ? files[files.length - 1] : null
+}
+
+export function loadConfig({ configPath = '', workdir = '' } = {}) {
   const defaults = {
-    source: 'beads',
-    maxTasks: 0,
-    maxFailures: 3,
-    retry: 1,
-    allowDirty: false,
-    stopFile: '',
-    serve: {
-      enabled: true,
-      port: 0,
-      open: false,
+    task: {
+      source: 'beads',
+      repo: '',
+      maxTasks: 0,
+      maxFailures: 3,
+      retry: 1,
+      allowDirty: false,
+      stopFile: '',
+      tapd: {
+        claimMode: '',
+        statusField: '',
+        ownerField: '',
+        readyValue: '',
+        claimedValue: '',
+        doneValue: '',
+        failedValue: '',
+        ownerValue: '',
+        customFields: {},
+      },
     },
-    git: {
-      useBotIdentity: false,
-      name: 'AFK Bot',
-      email: 'afk@local',
+    run: {
+      hardTimeoutExtra: 120,
+      git: {
+        useBotIdentity: false,
+        name: 'AFK Bot',
+        email: 'afk@local',
+      },
+      serve: {
+        enabled: true,
+        port: 0,
+        open: false,
+      },
+      // staleThresholdSec 故意不在此处：缺省时由 timeout 推导（见 main）
     },
     execReview: {
       timeout: 600,
-      runner: '',
-      executorRunner: '',
-      reviewerRunner: '',
-      executorModel: '',
-      reviewerModel: '',
-      executorThinking: '',
-      reviewerThinking: '',
-      hardTimeoutExtra: 120,
     },
   }
-  const file = resolve(path || join(SKILL_ROOT, 'config.json'))
-  let data = {}
-  if (existsSync(file)) {
-    try {
-      data = JSON.parse(readFileSync(file, 'utf8'))
-    } catch (err) {
-      console.error(`无法解析配置 ${file}: ${err.message}`)
-      process.exit(2)
-    }
-  }
-  const cfg = { ...defaults, ...data }
-  cfg.serve = { ...defaults.serve, ...(data.serve || {}) }
-  cfg.git = { ...defaults.git, ...(data.git || {}) }
-  cfg.execReview = { ...defaults.execReview, ...(data.execReview || {}) }
-  return { cfg, path: file }
-}
-
-/** 合并 workdir 下的 `.afk-run.json`（execReview 等局部覆盖） */
-function loadWorkdirConfig(workdir) {
-  const file = join(workdir, '.afk-run.json')
-  if (!existsSync(file)) return {}
-  try {
-    return JSON.parse(readFileSync(file, 'utf8'))
-  } catch (err) {
-    console.error(`无法解析 ${file}: ${err.message}`)
-    process.exit(2)
+  const { files, sections } = resolveAfkSections(
+    workdir,
+    ['task', 'run', 'execReview'],
+    configPath,
+  )
+  return {
+    cfg: {
+      task: deepMerge(defaults.task, sections.task),
+      run: deepMerge(defaults.run, sections.run),
+      execReview: deepMerge(defaults.execReview, sections.execReview),
+    },
+    files,
+    path: files.length ? files[files.length - 1] : null,
   }
 }
 
@@ -893,10 +900,6 @@ function writeReport(runDir, result, startedAt, workdir) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2))
-  const { cfg } = loadConfig(args.configPath)
-  const workdirCfg = args.workdir ? loadWorkdirConfig(resolve(args.workdir)) : {}
-  if (workdirCfg.execReview) cfg.execReview = { ...cfg.execReview, ...workdirCfg.execReview }
-
   if (!args.workdir) {
     console.error('workdir 必传：--workdir <目录>（由调用方/Agent 传入，不支持配置默认）')
     process.exit(2)
@@ -906,39 +909,42 @@ function main() {
     console.error(`workdir 不存在: ${workdir}`)
     process.exit(2)
   }
+  const { cfg } = loadConfig({ configPath: args.configPath, workdir })
 
-  const sourceName = args.source || cfg.source || 'beads'
-  const stopFile = resolve(args.stopFile || cfg.stopFile || join(workdir, DEFAULT_STOP_FILE))
+  const sourceName = args.source || cfg.task.source || 'beads'
+  const repo = args.repo || cfg.task.repo || ''
+  const stopFile = resolve(args.stopFile || cfg.task.stopFile || join(workdir, DEFAULT_STOP_FILE))
   const useBotIdentity =
     args.useBotIdentity ??
-    cfg.git.useBotIdentity ??
+    cfg.run.git.useBotIdentity ??
     false
   const gitIdentity = {
     useBotIdentity,
-    name: args.gitName || cfg.git.name || 'AFK Bot',
-    email: args.gitEmail || cfg.git.email || 'afk@local',
+    name: args.gitName || cfg.run.git.name || 'AFK Bot',
+    email: args.gitEmail || cfg.run.git.email || 'afk@local',
   }
+  // CLI 覆盖照旧透传给 exec-review；配置文件里的引擎设置由 exec-review 自己读同一分区
   const execCfg = {
+    runner: args.runner,
+    executorRunner: args.executorRunner,
+    reviewerRunner: args.reviewerRunner,
+    executorModel: args.executorModel,
+    reviewerModel: args.reviewerModel,
+    executorThinking: args.executorThinking,
+    reviewerThinking: args.reviewerThinking,
     timeout: args.timeout || cfg.execReview.timeout || 0,
-    runner: args.runner || cfg.execReview.runner,
-    executorRunner: args.executorRunner || cfg.execReview.executorRunner,
-    reviewerRunner: args.reviewerRunner || cfg.execReview.reviewerRunner,
-    executorModel: args.executorModel || cfg.execReview.executorModel,
-    reviewerModel: args.reviewerModel || cfg.execReview.reviewerModel,
-    executorThinking: args.executorThinking || cfg.execReview.executorThinking,
-    reviewerThinking: args.reviewerThinking || cfg.execReview.reviewerThinking,
-    hardTimeoutExtra: args.hardTimeoutExtra || cfg.execReview.hardTimeoutExtra || 120,
+    hardTimeoutExtra: args.hardTimeoutExtra || cfg.run.hardTimeoutExtra || 120,
   }
-  const configuredStaleThreshold = Number(cfg.staleThresholdSec)
+  const configuredStaleThreshold = Number(cfg.run.staleThresholdSec)
   const staleThresholdSec = Number.isFinite(configuredStaleThreshold)
     ? Math.max(0, configuredStaleThreshold)
     : Number(execCfg.timeout) > 0
       ? 2 * (Number(execCfg.timeout) + Number(execCfg.hardTimeoutExtra))
       : 0
-  const allowDirty = args.allowDirty || cfg.allowDirty || false
-  const serveEnabled = args.serve ?? cfg.serve.enabled
-  const servePort = args.port || cfg.serve.port || 8700 + (hashStr(workdir) % 1000)
-  const serveOpen = args.open ?? cfg.serve.open
+  const allowDirty = args.allowDirty || cfg.task.allowDirty || false
+  const serveEnabled = args.serve ?? cfg.run.serve.enabled
+  const servePort = args.port || cfg.run.serve.port || 8700 + (hashStr(workdir) % 1000)
+  const serveOpen = args.open ?? cfg.run.serve.open
 
   const cacheRoot = resolve(args.cacheDir || join(tmpdir(), 'afk-run'))
   const runDir = join(cacheRoot, uniqueDir(cacheRoot, `run-${localTimestamp()}`))
@@ -952,7 +958,8 @@ function main() {
   }
   const source = createSource(sourceName, {
     cwd: workdir,
-    ...(args.repo ? { repo: args.repo } : {}),
+    ...(repo ? { repo } : {}),
+    ...(cfg.task.tapd ? { tapd: cfg.task.tapd } : {}),
   })
   const execReview = createExecReview(workdir, execCfg)
   const loopProgressFile = join(runDir, 'loop-progress.jsonl')
@@ -969,9 +976,9 @@ function main() {
   }
   const config = {
     stopFile,
-    maxTasks: args.maxTasks || cfg.maxTasks || 0,
-    maxFailures: args.maxFailures || cfg.maxFailures || 0,
-    retry: args.retry || cfg.retry || 0,
+    maxTasks: args.maxTasks || cfg.task.maxTasks || 0,
+    maxFailures: args.maxFailures || cfg.task.maxFailures || 0,
+    retry: args.retry || cfg.task.retry || 0,
     staleThresholdSec,
     pinnedIds: args.pinnedIds,
   }

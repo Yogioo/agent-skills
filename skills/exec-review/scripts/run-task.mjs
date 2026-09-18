@@ -22,7 +22,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { createRunner } from './runners/index.mjs'
-import { loadConfigFile, resolveSettings } from './load-config.mjs'
+import { loadExecReviewConfig, resolveSettings } from './load-config.mjs'
 import { buildExecutorCommitRule, buildReviewerGitContext } from './commit-rules.mjs'
 import { ProgressWriter } from './progress.mjs'
 import { snapshot, diff } from './workspace.mjs'
@@ -98,11 +98,12 @@ function parseArgs(argv) {
     review: null,
     serve: null,
     open: null,
-    port: 0,
-    returnLevel: 0,
-    heartbeatMs: 0,
+    port: null,
+    returnLevel: null,
+    heartbeatMs: null,
     progressFile: '',
-    timeout: 0,
+    // null = 未传，否则 CLI 的 0 会盖掉配置文件里的值（见 load-config 的 firstNonEmpty 守卫）
+    timeout: null,
     dryRun: false,
     structuredContext: null,
     streamPartialOutput: null,
@@ -468,13 +469,7 @@ async function main() {
     process.exit(2)
   }
 
-  let loaded
-  try {
-    loaded = loadConfigFile(args.configPath || undefined)
-  } catch (err) {
-    console.error(String(err.message || err))
-    process.exit(2)
-  }
+  const loaded = loadExecReviewConfig(workdir, args.configPath || '')
 
   let settings
   try {
@@ -519,7 +514,7 @@ async function main() {
     join(runDir, 'settings.json'),
     JSON.stringify(
       {
-        configPath: settings.configPath,
+        configFiles: settings.configFiles,
         configMissing: !!loaded.missing,
         sandbox: settings.sandbox,
         approve: settings.approve,
@@ -628,7 +623,7 @@ async function main() {
     : 'off'
   logMain(
     mainLogPath,
-    `start config=${settings.configPath} executor=${settings.executor.runner}/${settings.executor.bin} reviewer=${reviewerLabel} review=${settings.review} id=${task.id || '-'} title=${JSON.stringify(task.title)} workdir=${workdir} cache=${runDir}`,
+    `start config=${settings.configFiles.join(',') || '(defaults)'} executor=${settings.executor.runner}/${settings.executor.bin} reviewer=${reviewerLabel} review=${settings.review} id=${task.id || '-'} title=${JSON.stringify(task.title)} workdir=${workdir} cache=${runDir}`,
   )
 
   // 执行前快照与 git 上下文：快照检测改动，git 查询只读

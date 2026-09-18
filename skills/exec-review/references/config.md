@@ -1,12 +1,14 @@
-# 配置（`config.json`）
+# 配置（`~/.afk/config.json` 的 `execReview` 分区）
 
-技能根目录的 [`config.json`](../config.json) 声明**默认**执行引擎与模型相关选项。默认 runner 为 **codex**。
+本技能不读技能根的任何配置文件。默认值来自 `~/.afk/config.json` 的 `execReview` 分区（项目层 `~/.afk/<项目名_UID>/config.json` 覆盖全局层）；文件不存在则用内置默认。内置 runner 为 **codex**。
+
+该文件由 [`afk-init`](../../afk-init/SKILL.md) 生成，字段菜单见 [`../../afk-init/config.example.json`](../../afk-init/config.example.json)。`workdir` 决定命中哪个项目层，必须由 `--workdir` 传入。
 
 ## 优先级（高 → 低）
 
 1. CLI 参数（如 `--runner`、`--executor-model`、`--thinking`）
 2. 环境变量（如 `EXEC_REVIEW_RUNNER`、`EXEC_REVIEW_EXECUTOR_MODEL`）
-3. `config.json`（角色段 → 顶层回落）
+3. `execReview` 分区（项目层 → 全局层；角色段 → 顶层回落）
 4. 内置默认（`runner=codex`；`model` / `thinking` 不传，用各 CLI 自己的默认）
 
 ## 字段
@@ -14,7 +16,7 @@
 ```json
 {
   "runner": "codex",
-  "sandbox": "workspace-write",
+  "sandbox": "danger-full-access",
   "approve": true,
   "gitCommit": true,
   "review": false,
@@ -22,6 +24,8 @@
   "port": 0,
   "returnLevel": 0,
   "heartbeatMs": 10000,
+  "structuredContext": true,
+  "streamPartialOutput": false,
   "executor": {
     "runner": "codex",
     "bin": "",
@@ -63,6 +67,8 @@
 
 ## 示例
 
+以下是 `execReview` **分区的内容**（写进 `~/.afk/config.json` 时放在 `"execReview": { … }` 里）。
+
 两边都用 Codex，审查用更高思考、不改模型（跟 Codex 配置默认）：
 
 ```json
@@ -94,7 +100,7 @@
 
 ## CLI 覆盖（常用）
 
-- `--config <path>`：改用另一份配置文件
+- `--config <path>`：改用另一份完整 config.json（**只读它**，忽略 `~/.afk` 的两层）
 - `--runner`：同时覆盖两端 runner（仍可被更细的角色参数盖住）
 - `--executor-runner` / `--reviewer-runner`
 - `--model` / `--executor-model` / `--reviewer-model`

@@ -1,0 +1,75 @@
+{
+  "task": {
+    "source": "beads",
+    "repo": "",
+    "maxTasks": 1,
+    "maxFailures": 3,
+    "retry": 1,
+    "allowDirty": false,
+    "stopFile": "",
+    "tapd": {
+      "claimMode": "",
+      "statusField": "",
+      "ownerField": "",
+      "readyValue": "",
+      "claimedValue": "",
+      "doneValue": "",
+      "failedValue": "",
+      "ownerValue": "",
+      "customFields": {}
+    }
+  },
+  "watch": {
+    "pollIntervalMs": 15000,
+    "backoffInitialMs": 1000,
+    "backoffMaxMs": 60000,
+    "backoffFactor": 2,
+    "requireAtomicClaim": false,
+    "serve": {
+      "enabled": true,
+      "port": 0,
+      "open": false
+    }
+  },
+  "run": {
+    "hardTimeoutExtra": 120,
+    "git": {
+      "useBotIdentity": false,
+      "name": "AFK Bot",
+      "email": "afk@local"
+    },
+    "serve": {
+      "enabled": true,
+      "port": 0,
+      "open": false
+    }
+  },
+  "execReview": {
+    "runner": "",
+    "sandbox": "danger-full-access",
+    "approve": true,
+    "gitCommit": true,
+    "review": false,
+    "timeout": 600,
+    "serve": true,
+    "port": 0,
+    "returnLevel": 0,
+    "heartbeatMs": 10000,
+    "structuredContext": true,
+    "streamPartialOutput": false,
+    "executor": {
+      "runner": "",
+      "bin": "",
+      "model": "",
+      "provider": "",
+      "thinking": ""
+    },
+    "reviewer": {
+      "runner": "",
+      "bin": "",
+      "model": "",
+      "provider": "",
+      "thinking": ""
+    }
+  }
+}

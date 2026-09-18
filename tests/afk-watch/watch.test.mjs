@@ -8,16 +8,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loopRegistryPath } from '../../skills/afk-run/scripts/loop.mjs'
 import {
   buildExecutionArgs,
+  loadConfig,
   runWatcher,
   superviseExecutionRun,
 } from '../../skills/afk-watch/scripts/watch.mjs'
+import { projectKeyFromWorkdir } from '../../skills/afk-run/scripts/afk-home.mjs'
 import {
   appendWatchEvent,
   claimWatcherInstance,
@@ -394,6 +396,37 @@ test('launcher is ASCII and the CLI exposes watch, stop, and dry-run', () => {
   } finally {
     rmSync(workdir, { recursive: true, force: true })
     rmSync(cache, { recursive: true, force: true })
+  }
+})
+
+test('loadConfig reads ~/.afk/<label>_<uid>/config.json over ~/.afk/config.json', () => {
+  const home = tempDir('afk-home-')
+  const workdir = tempDir('my-app-')
+  const prev = process.env.AFK_HOME
+  process.env.AFK_HOME = home
+  try {
+    const projectKey = projectKeyFromWorkdir(workdir)
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      task: { source: 'beads', maxTasks: 9 },
+      watch: { requireAtomicClaim: false },
+    }))
+    mkdirSync(join(home, projectKey), { recursive: true })
+    writeFileSync(join(home, projectKey, 'config.json'), JSON.stringify({
+      task: { source: 'gh', repo: 'acme/demo' },
+      watch: { requireAtomicClaim: true },
+    }))
+    const { cfg } = loadConfig({ workdir })
+    assert.equal(cfg.task.source, 'gh')
+    assert.equal(cfg.task.repo, 'acme/demo')
+    assert.equal(cfg.task.maxTasks, 9)
+    assert.equal(cfg.watch.requireAtomicClaim, true)
+    assert.equal(loadConfig({}).cfg.task.source, 'beads')
+    assert.match(projectKey, /_[\da-f]{8}$/)
+  } finally {
+    if (prev === undefined) delete process.env.AFK_HOME
+    else process.env.AFK_HOME = prev
+    rmSync(home, { recursive: true, force: true })
+    rmSync(workdir, { recursive: true, force: true })
   }
 })
 
