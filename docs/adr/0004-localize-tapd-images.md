@@ -15,4 +15,5 @@ Images embedded in a TAPD description or comment are downloaded into `<system te
 - `getDetail` writes files and is therefore async. It stays idempotent: a re-run reuses files that are already on disk and skips the `get-image` call.
 - Images must not land in the work directory. `afk-run` requires a clean worktree, and its failure rollback runs `git clean -fd`, which would delete them.
 - A failed download degrades to `[图片下载失败: <path>]` in the body. One unreachable image must not block the story.
+- The rendered path uses forward slashes even on Windows. Backslash is an escape character in markdown, and the dashboard renders the task body as markdown, so `![图片](C:\Users\...)` would show a broken image.
 - Nothing cleans the image directory; treat `<temp>/afk-tapd/<story id>/` as a cache.

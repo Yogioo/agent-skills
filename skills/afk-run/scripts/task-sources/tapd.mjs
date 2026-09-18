@@ -242,6 +242,14 @@ export function safeImageName(path) {
 }
 
 /**
+ * 写进 markdown 链接的本地路径统一用正斜杠：反斜杠在 markdown 里是转义字符，
+ * `![图片](C:\Users\…)` 送到渲染器会变成坏图（Windows 的 fs 认正斜杠）。
+ */
+export function toLinkPath(value) {
+  return String(value).replace(/\\/g, '/')
+}
+
+/**
  * @param {{ cwd?: string, tapd?: object, command?: string, commandPrefix?: string[], retries?: number, retryDelayMs?: number }} [opts]
  */
 export function createTapdSource(opts = {}) {
@@ -406,7 +414,7 @@ export function createTapdSource(opts = {}) {
     for (const imagePath of extractImagePaths(body)) {
       let replacement = `[图片下载失败: ${imagePath}]`
       try {
-        replacement = `![图片](${await ensureImage(story, imagePath)})`
+        replacement = `![图片](${toLinkPath(await ensureImage(story, imagePath))})`
       } catch {
         // 交付一个可开工的正文，比因为一张图卡死整条需求重要
       }

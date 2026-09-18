@@ -26,6 +26,7 @@ import {
   renderTaskBody,
   replaceImagePath,
   safeImageName,
+  toLinkPath,
 } from '../../skills/afk-run/scripts/task-sources/tapd.mjs'
 import { createSource } from '../../skills/afk-run/scripts/task-sources/index.mjs'
 
@@ -405,10 +406,11 @@ test('getDetail downloads embedded images and points the body at local files', a
       )
       const source = createTapdSource(fake.opts)
       const body = (await source.getDetail('20')).body
-      const local = join(dir, '20', 'pic.png')
+      const local = toLinkPath(join(dir, '20', 'pic.png'))
 
       assert.ok(body.includes(`![图片](${local})`), `正文应指向本地文件，实际:\n${body}`)
       assert.ok(!body.includes('/tfl/captures/2026-09/pic.png'), '原始路径应被替换掉')
+      assert.ok(!body.includes('\\'), 'markdown 链接里不应出现反斜杠')
       assert.deepEqual(readFileSync(local), PNG_BYTES)
 
       // 重跑：文件已在，不再调 get-image
@@ -458,6 +460,7 @@ test('image path helpers dedupe, rewrite links, and keep file names safe', () =>
   assert.equal(safeImageName('/tfl/captures/a.png'), 'a.png')
   assert.equal(safeImageName('/tfl/../..//etc/passwd'), 'passwd')
   assert.equal(safeImageName('/tfl/a b?.png'), 'a_b_.png')
+  assert.equal(toLinkPath('C:\\Users\\EDY\\tmp\\a.png'), 'C:/Users/EDY/tmp/a.png')
 })
 
 test('tapd helpers normalize labels, priority, and html', () => {
