@@ -56,12 +56,15 @@ if (state.status !== undefined && state.status !== 1) {
     ? state.stories.filter((s) => s.id === params.id)
     : state.stories.filter((s) =>
         (!params.owner || String(s.owner || '').indexOf(params.owner) >= 0) &&
-        (!params.label || String(s.label || '').split(',').indexOf(params.label) >= 0))
+        (!params.label || String(s.label || '').split('|').indexOf(params.label) >= 0))
   save()
   out({ status: 1, data: rows.map((s) => ({ Story: s })) })
 } else if (entity === 'story' && sub === 'update') {
   const story = state.stories.find((s) => s.id === params.id)
-  if (story && params.label !== undefined) story.label = params.label
+  if (story && params.label !== undefined) {
+    // mangleLabels 模拟 TAPD 的行为：不认识的值被当成**一个新标签名**存下来
+    story.label = state.mangleLabels ? params.label.split('|').join(',') : params.label
+  }
   save()
   out({ status: 1, data: { Story: story || {} } })
 } else if (entity === 'attachment' && sub === 'get-image') {
@@ -88,9 +91,9 @@ function defaultStories() {
   return [
     { id: '1', name: '低优先级', owner: '彭云洁;', label: 'ready-for-agent', priority: '低', status: 'developing', description: '<p>正文</p>' },
     { id: '2', name: '高优先级', owner: '彭云洁;', label: 'ready-for-agent', priority: '高', status: 'developing', description: '<p>高优先级正文</p>' },
-    { id: '3', name: '已认领', owner: '彭云洁;', label: 'ready-for-agent,afk-claimed', priority: '高', status: 'developing', description: '' },
+    { id: '3', name: '已认领', owner: '彭云洁;', label: 'ready-for-agent|afk-claimed', priority: '高', status: 'developing', description: '' },
     { id: '4', name: '别人的需求', owner: '张远瞻;', label: 'ready-for-agent', priority: '高', status: 'developing', description: '' },
-    { id: '5', name: '交付待验收', owner: '彭云洁;', label: 'ready-for-agent,afk-delivered', priority: '高', status: 'developing', description: '' },
+    { id: '5', name: '交付待验收', owner: '彭云洁;', label: 'ready-for-agent|afk-delivered', priority: '高', status: 'developing', description: '' },
   ]
 }
 
@@ -169,23 +172,35 @@ test('listReady keeps a queue label even if the server drops the label filter', 
   })
 })
 
+test('a label write that TAPD stored as one name is rejected, not accepted', () => {
+  withTempDir((dir) => {
+    // 真实事故：用逗号拼标签，TAPD 不报错，只新建了一个名字带逗号的标签。
+    const fake = installFakeTapd(dir, undefined, { mangleLabels: true })
+    const source = createTapdSource(fake.opts)
+    const result = source.tryClaim('1')
+    assert.equal(result.status, 'error')
+    assert.match(result.message, /标签写入未被接受/)
+    assert.match(result.message, /多选分隔符必须是/)
+  })
+})
+
 test('tryClaim writes the full label set including the claim label', () => {
   withTempDir((dir) => {
     const fake = installFakeTapd(dir)
     const source = createTapdSource(fake.opts)
     assert.deepEqual(source.tryClaim('1'), { status: 'claimed', claimMode: 'best-effort' })
-    assert.equal(fake.labels('1'), 'ready-for-agent,afk-claimed')
+    assert.equal(fake.labels('1'), 'ready-for-agent|afk-claimed')
   })
 })
 
 test('tryClaim preserves existing labels while claiming', () => {
   withTempDir((dir) => {
     const fake = installFakeTapd(dir, [
-      { id: '9', name: '带业务标签', owner: '彭云洁;', label: 'ready-for-agent,有风险', priority: '中', status: 'developing', description: '<p>正文</p>' },
+      { id: '9', name: '带业务标签', owner: '彭云洁;', label: 'ready-for-agent|有风险', priority: '中', status: 'developing', description: '<p>正文</p>' },
     ])
     const source = createTapdSource(fake.opts)
     assert.equal(source.tryClaim('9').status, 'claimed')
-    assert.equal(fake.labels('9'), 'ready-for-agent,有风险,afk-claimed')
+    assert.equal(fake.labels('9'), 'ready-for-agent|有风险|afk-claimed')
   })
 })
 
@@ -193,7 +208,7 @@ test('tryClaim reports already-claimed for every machine label', () => {
   withTempDir((dir) => {
     const fake = installFakeTapd(dir, [
       ...defaultStories(),
-      { id: '7', name: '失败待重跑', owner: '彭云洁;', label: 'ready-for-agent,afk-failed', priority: '中', status: 'developing', description: '' },
+      { id: '7', name: '失败待重跑', owner: '彭云洁;', label: 'ready-for-agent|afk-failed', priority: '中', status: 'developing', description: '' },
     ])
     const source = createTapdSource(fake.opts)
     assert.match(source.tryClaim('3').message, /afk-claimed/)
@@ -220,7 +235,7 @@ test('markInProgress claims through tryClaim', () => {
     const fake = installFakeTapd(dir)
     const source = createTapdSource(fake.opts)
     source.markInProgress('2')
-    assert.equal(fake.labels('2'), 'ready-for-agent,afk-claimed')
+    assert.equal(fake.labels('2'), 'ready-for-agent|afk-claimed')
   })
 })
 
@@ -229,7 +244,7 @@ test('markDone swaps claimed for delivered and comments with the commit', () => 
     const fake = installFakeTapd(dir)
     const source = createTapdSource(fake.opts)
     source.markDone('3', { status: 'done', summary: '按需求改好了', commit: 'abc1234de' })
-    assert.equal(fake.labels('3'), 'ready-for-agent,afk-delivered')
+    assert.equal(fake.labels('3'), 'ready-for-agent|afk-delivered')
     const comment = fake.state().calls.find((call) => call.entity === 'comment' && call.sub === 'add')
     assert.equal(comment.params.entry_id, '3')
     assert.equal(comment.params.entry_type, 'stories')
@@ -244,7 +259,7 @@ test('markFailed swaps claimed for failed and comments the reason', () => {
     const fake = installFakeTapd(dir)
     const source = createTapdSource(fake.opts)
     source.markFailed('3', '单测没过')
-    assert.equal(fake.labels('3'), 'ready-for-agent,afk-failed')
+    assert.equal(fake.labels('3'), 'ready-for-agent|afk-failed')
     const comment = fake.state().calls.find((call) => call.entity === 'comment' && call.sub === 'add')
     assert.match(comment.params.description, /\[AFK\] 失败：单测没过/)
   })
@@ -356,7 +371,7 @@ test('a story with no description and no comments is refused, not guessed', () =
     const result = source.tryClaim('11')
     assert.equal(result.status, 'error')
     assert.match(result.message, /描述与评论都为空/)
-    assert.equal(fake.labels('11'), 'ready-for-agent,afk-failed')
+    assert.equal(fake.labels('11'), 'ready-for-agent|afk-failed')
     const comment = fake.state().calls.find((call) => call.entity === 'comment' && call.sub === 'add')
     assert.match(comment.params.description, /无法开工/)
   })
@@ -371,7 +386,7 @@ test('a story with an empty description but a spec in the comments is claimable'
     )
     const source = createTapdSource(fake.opts)
     assert.equal(source.tryClaim('12').status, 'claimed')
-    assert.equal(fake.labels('12'), 'ready-for-agent,afk-claimed')
+    assert.equal(fake.labels('12'), 'ready-for-agent|afk-claimed')
   })
 })
 
@@ -464,9 +479,10 @@ test('image path helpers dedupe, rewrite links, and keep file names safe', () =>
 })
 
 test('tapd helpers normalize labels, priority, and html', () => {
-  assert.deepEqual(labelList('a,b|c'), ['a', 'b', 'c'])
+  assert.deepEqual(labelList('a|b|c'), ['a', 'b', 'c'])
+  assert.deepEqual(labelList('a,b'), ['a,b'])
   assert.deepEqual(labelList(''), [])
-  assert.ok(hasLabel(labelList('ready-for-agent,有风险'), '有风险'))
+  assert.ok(hasLabel(labelList('ready-for-agent|有风险'), '有风险'))
   assert.equal(priorityValue('高'), 0)
   assert.equal(priorityValue('中'), 1)
   assert.equal(priorityValue('低'), 2)

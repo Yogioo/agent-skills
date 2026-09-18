@@ -19,6 +19,13 @@ export const DEFAULT_CLAIMED_LABEL = 'afk-claimed'
 export const DEFAULT_DELIVERED_LABEL = 'afk-delivered'
 export const DEFAULT_FAILED_LABEL = 'afk-failed'
 
+/**
+ * TAPD 的 `label` 是多选字段，多个值用**竖线**分隔。
+ * 用逗号写不会报错，TAPD 会把整串当成**一个新标签名**静默新建一个标签——
+ * 写入后必须回读校验（见 writeLabels），否则会安静地在项目里留一堆垃圾标签。
+ */
+export const LABEL_SEPARATOR = '|'
+
 const PAGE_SIZE = 200
 const MAX_PAGES = 20
 const DEFAULT_RETRIES = 2
@@ -116,10 +123,10 @@ export function storyRows(payload) {
   return rows.map((row) => (row && row.Story) || row).filter((row) => row && row.id)
 }
 
-/** 标签读回来是 `a,b` 或 `a|b`；空字符串是「无标签」。 */
+/** 标签读回来是 `a|b`；逗号是标签名本身的一部分，不能当分隔符。 */
 export function labelList(raw) {
   return String(raw ?? '')
-    .split(/[|,]/)
+    .split(LABEL_SEPARATOR)
     .map((value) => value.trim())
     .filter(Boolean)
 }
@@ -311,13 +318,26 @@ export function createTapdSource(opts = {}) {
 
   const describeStory = (story) => ({ id: story.id, title: story.title, priority: story.priority })
 
+  function sameLabels(a, b) {
+    const left = [...new Set(a)].sort()
+    const right = [...new Set(b)].sort()
+    return left.length === right.length && left.every((value, index) => value === right[index])
+  }
+
   /**
    * 写标签是**全量替换**，所以先读当前集合再写回目标集合。
-   * 读与写之间有窗口；与人类同时改标签时以本写入为准。
+   * 写完必须回读校验：TAPD 会把不认识的值当成新标签名静默新建，
+   * 只有回读才能发现「我以为是两个标签，实际存成了一个名字」。
    */
   function writeLabels(id, labels) {
     const unique = [...new Set(labels.filter(Boolean))]
-    request(['story', 'update', `id=${id}`, `label=${unique.join(',')}`])
+    request(['story', 'update', `id=${id}`, `label=${unique.join(LABEL_SEPARATOR)}`])
+    const stored = fetchStory(id).labels
+    if (!sameLabels(stored, unique)) {
+      throw new Error(
+        `TAPD 标签写入未被接受：期望 [${unique.join(', ')}]，回读得到 [${stored.join(', ')}]（多选分隔符必须是 ${LABEL_SEPARATOR}）`,
+      )
+    }
     return unique
   }
 

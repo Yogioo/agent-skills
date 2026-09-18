@@ -38,6 +38,7 @@ afk-run 通过 adapter 消费任务源。**怎么写工单才能被正确消费*
 - **执行批次不写状态，也不写处理人**：TAPD 的状态与处理人属于人和策划的流程，验收流转由人做。见 [ADR-0002](../../../docs/adr/0002-tapd-transport-is-the-cli.md) / [ADR-0003](../../../docs/adr/0003-labels-are-the-tapd-queue.md)。
 - **重跑**：撤销 `afk-delivered` 或 `afk-failed` 即可。`ready-for-agent` 一直挂着，需求自动重新入队。
 - **多开安全**：同一项目的两份拷贝各自跑 watcher 时不会同时接单——谁先加上 `afk-claimed`，需求就从另一个环境的就绪池里消失。
+- **标签分隔符是 `|`**：TAPD 的 `label` 是多选字段，多个值用**竖线**分隔（`label=ready-for-agent|afk-claimed`）。用逗号写**不报错**——TAPD 会把整串当成**一个新标签名**，自动在项目里新建那个标签。所以适配器每次写完标签都会回读校验，发现不一致就报错而不是默默接受。
 - **命令细节**：所有 tapd-cli 参数必须用**下划线**（`entry_id` 而非 `entry-id`）；连字符形式会被静默丢弃，把带过滤的查询变成不带过滤的查询。在 Git Bash 里手测时，`image_path=/tfl/…` 这类以 `/` 开头的值会被 MSYS 做路径转换（返回里的 `value` 变成 `C:/Program Files/Git/tfl/…`），加 `MSYS_NO_PATHCONV=1`——适配器走 `execFileSync` 不经 shell，不受影响。
 
 ## 通用语义
