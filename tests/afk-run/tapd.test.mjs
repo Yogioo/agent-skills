@@ -239,6 +239,18 @@ test('markInProgress claims through tryClaim', () => {
   })
 })
 
+test('markInProgress tolerates the claim the watcher already made', () => {
+  withTempDir((dir) => {
+    const fake = installFakeTapd(dir)
+    const source = createTapdSource(fake.opts)
+    // id 3 已带 afk-claimed：watcher 先认领、再把 id pin 给本批次，这是正常路径
+    assert.doesNotThrow(() => source.markInProgress('3'))
+    assert.equal(fake.labels('3'), 'ready-for-agent|afk-claimed')
+    // 交付/失败标签意味着上一轮已经结束，不该被当成“可以开工”
+    assert.throws(() => source.markInProgress('5'), /afk-delivered/)
+  })
+})
+
 test('markDone swaps claimed for delivered and comments with the commit', () => {
   withTempDir((dir) => {
     const fake = installFakeTapd(dir)

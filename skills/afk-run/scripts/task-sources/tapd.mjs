@@ -390,7 +390,12 @@ export function createTapdSource(opts = {}) {
     }
     const machine = machineLabelOf(story.labels, config)
     if (machine) {
-      return { status: 'already-claimed', claimMode, message: `TAPD 需求已带 ${machine} 标签，先由人撤销再重跑: ${id}` }
+      return {
+        status: 'already-claimed',
+        claimMode,
+        machineLabel: machine,
+        message: `TAPD 需求已带 ${machine} 标签，先由人撤销再重跑: ${id}`,
+      }
     }
     // 描述与评论都为空时拒单，并贴上失败标签：故事就此离开就绪池，不会卡住后面的工单。
     let comments
@@ -483,6 +488,9 @@ export function createTapdSource(opts = {}) {
     markInProgress(id) {
       const result = attemptClaim(id)
       if (result.status === 'claimed') return
+      // watcher 会先认领，再把该 id 作为 --pinned-id 交给本批次；
+      // 所以这里读到 afk-claimed 是预期路径，不是“被别人抢了”。
+      if (result.status === 'already-claimed' && result.machineLabel === config.claimedLabel) return
       throw new Error(result.message || `TAPD 认领失败: ${id}`)
     },
 
