@@ -72,11 +72,11 @@ TAPD's 需求 entity. The only TAPD work-item kind this context automates.
 _Avoid_: ticket (TAPD has three entity kinds), issue
 
 **Label queue**:
-A ready-item rule that derives eligibility from labels instead of a status: a story is ready when it carries the queue label and no machine label. Humans own the queue label; execution runs own the machine labels.
+A ready-item rule that derives eligibility from labels instead of a status: a story is ready when it carries the queue label and no machine label. The requirement assistant owns the queue label; execution runs own the machine labels.
 _Avoid_: status queue (TAPD workflows commonly have no "not started" status to reserve)
 
 **Queue label**:
-The label `ready-for-agent`. A human adds it to hand a story to an agent, and removes it when the story leaves the agent's hands.
+The label `ready-for-agent`. The requirement assistant adds it to hand a story to an execution environment, and removes it when the story leaves the agent's hands.
 _Avoid_: ready status
 
 **Machine label**:
@@ -84,5 +84,19 @@ One of `afk-claimed`, `afk-delivered`, `afk-failed`. Written by an execution run
 _Avoid_: afk label (three distinct labels), flag
 
 **Acceptance flow**:
-The human transition that moves a story to its next workflow stage and reassigns it. Outside this context: no skill performs it.
+The transition that moves a story to its next workflow stage and reassigns it, performed by the requirement assistant once the developer accepts the result. Validation stays local (ADR-0003), so the assistant performs the transition while the developer's part is the accept-or-reject decision.
 _Avoid_: handoff, ticket transition
+
+## Requirement lifecycle
+
+**Requirement assistant**:
+The long-lived session that manages one requirement end to end: clarification, spec, tickets, execution handoff, and delivery bookkeeping. It schedules other skills and CLIs, and implements no code.
+_Avoid_: project manager (it does not own scope), orchestrator (it is one requirement's session, not a scheduler)
+
+**Two steps**:
+The developer's whole share of a requirement: state it, and accept the result. Everything between the two belongs to the requirement assistant (ADR-0006).
+_Avoid_: laziness contract (a heading, not a term), phase gate
+
+**Stop-and-ask**:
+The closed list of conditions on which the requirement assistant interrupts the developer instead of acting. An action that reaches the developer from outside that list is a bug in the list.
+_Avoid_: approval (the assistant does not request approval), confirmation flow

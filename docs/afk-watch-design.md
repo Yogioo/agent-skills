@@ -35,6 +35,7 @@ skills/afk-watch/
   references/config.md
   scripts/watch.mjs
   scripts/watch-state.mjs
+  scripts/start-background.mjs
   start-watch.bat
 ```
 
@@ -53,7 +54,7 @@ The watcher registry is separate from the existing `afk-run` registry and is key
 7. Reset the idle backoff after a successful source query or completed run; exponentially back off source errors up to the configured maximum.
 8. On `Ctrl+C`, stop file, or explicit stop command, terminate the owned child, stop the owned dashboard, write a final event, and release the watcher registry.
 
-The first implementation is a foreground process. Windows users can run `start-watch.bat`; the BAT file is ASCII-only and forwards all arguments to `node scripts/watch.mjs`.
+`scripts/start-background.mjs` is the default entry: it spawns `watch.mjs` detached (`stdio` → `<cacheDir>/watch-<hash>.log`) and prints one JSON line for start, `--status`, and `--stop`, so no terminal has to stay open. `watch.mjs` remains the foreground equivalent for debugging; Windows users can also run `start-watch.bat`, which is ASCII-only and forwards all arguments to `node scripts/watch.mjs`.
 
 ## Open implementation dependencies
 

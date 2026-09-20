@@ -14,18 +14,32 @@ disable-model-invocation: true
 - 目标 workdir 存在；是 git 仓库时工作区要干净，除非 `--allow-dirty`
 - 同目录的 afk-run 技能在 `../afk-run`
 
-完成标准：进程停在前台，停止后注册表被释放，且只清理本次登记的子进程和看板。
+完成标准：后台启动后 `--status` 报 `running: true`；停止后注册表被释放，且只清理本次登记的子进程和看板。
 
 ## 调用
 
+默认**后台启动**，watcher 不占人的终端；三种模式都只输出单行 JSON：
+
+```powershell
+node <技能根>/scripts/start-background.mjs --workdir <目录> [watcher 参数...]
+node <技能根>/scripts/start-background.mjs --status --workdir <目录>
+node <技能根>/scripts/start-background.mjs --stop   --workdir <目录>
+```
+
+- `--status` 回答「在不在跑、卡在哪一阶段、看板在哪、队列还剩什么」；退出码 `0` 在跑、`4` 没在跑。
+- `--stop` 写停止文件，watcher 下个轮询周期退出并释放注册表。
+- `3` 表示已有 watcher 在跑：复用输出里的 `pid`，不要另起一个；`1` 表示刚启动就退出，读输出的 `logTail` 排障。
+- 其余退出码与字段清单是 `start-background.mjs --help` 的活，脚本自身权威。
+
+要盯着控制台行或调试时用前台等价入口：
+
 ```powershell
 node <技能根>/scripts/watch.mjs --workdir <目录>
-node <技能根>/scripts/watch.mjs --workdir <目录> --source gh --repo owner/name --require-atomic-claim
 <技能根>/start-watch.bat --workdir <目录>
 node <技能根>/scripts/watch.mjs --stop --workdir <目录>
 ```
 
-Windows 也可用 `start-watch.bat`，它会把全部参数转给 `node scripts/watch.mjs`。
+前台入口与后台启动器共用同一套语义（单实例注册表、停止文件、看板归属）；`start-watch.bat` 把全部参数转给 `node scripts/watch.mjs`。
 
 常用参数：`--source`、`--repo`、`--max-tasks`、`--poll-interval`、`--require-atomic-claim`、`--stop-file`、`--allow-dirty`、`--no-serve`、`--dry-run`。配置见 [`~/.afk/config.json`](references/config.md)（本项目读 `task` + `watch` 分区；技能根没有配置文件；两层都缺就报错，不做兜底）。任务源认领语义见 [../afk-run/references/task-sources.md](../afk-run/references/task-sources.md)。
 

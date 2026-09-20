@@ -20,8 +20,17 @@ function hashStr(value) {
   return hash
 }
 
+function watcherKey(workdir) {
+  return `watch-${hashStr(workdir)}`
+}
+
 export function watcherRegistryPath(cacheRoot, workdir) {
-  return join(cacheRoot, `watch-${hashStr(workdir)}.json`)
+  return join(cacheRoot, `${watcherKey(workdir)}.json`)
+}
+
+/** 后台 watcher 的 stdout/stderr 落盘位置（start-background.mjs 写，排障读）。 */
+export function watcherLogPath(cacheRoot, workdir) {
+  return join(cacheRoot, `${watcherKey(workdir)}.log`)
 }
 
 export function readWatcherRegistry(cacheRoot, workdir) {
