@@ -47,6 +47,8 @@ Then commit/push as usual. Other machines still use `npx skills add/update` (ins
 
 | Skill | Description |
 |-------|-------------|
+| [afk-requirement-assistant](./skills/afk-requirement-assistant/SKILL.md) | 用长期需求 session 管理需求澄清、规格、工单和测试反馈 |
 | [exec-review](./skills/exec-review/SKILL.md) | Run a single execute → review pass for one task via Codex with a live progress view; the reviewer directly refines the workspace in the same run (no rework loop; the agents edit files, the caller commits) |
 | [afk-watch](./skills/afk-watch/SKILL.md) | Poll a task source and start one serialized afk-run batch when ready work exists |
+| [to-questionnaire-web](./skills/to-questionnaire-web/SKILL.md) | 将 questionnaire Markdown 暴露为可填写的局域网页并等待提交结果 |
 | [xlsx-cell-diff](./skills/xlsx-cell-diff/SKILL.md) | xlsx 显示值 diff 与 overlay 合并（源配置表格比对、提交配置变更、三路冲突） |
