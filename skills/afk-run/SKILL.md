@@ -27,6 +27,8 @@ node <技能根>/scripts/loop.mjs --workdir <目录> --timeout 600 --runner pi
 
 优先级：**CLI > env > `~/.afk/<项目名_UID>/config.json` > `~/.afk/config.json`**（本项目读 `task` + `run` 分区；两层都缺就报错，不做兜底）。详见 [references/config.md](references/config.md)。
 
+执行端 / 审查端的提示词由 `exec-review` 从 AFK home 的覆盖文件装配（`standards.md` / `*.append.md` / `*.prompt.md`）：loop 只传 workdir 与配置，不读也不透传提示词覆盖（见 [../exec-review/SKILL.md](../exec-review/SKILL.md)）。
+
 ## 行为契约（确定性轨道）
 
 - **任务选择**：`bd ready`（无未完成前置阻塞的工单）→ 过滤 **仅 `ready-for-agent` 标签** + **排除仍有 open 子 ticket 的 parent 容器** → `priority` 升序 + `id` 升序

@@ -15,7 +15,7 @@ disable-model-invocation: true
 - `node` 可用；本技能自带 `config.example.json`（四分区字段菜单），且兄弟目录 `afk-run` / `afk-watch` / `exec-review` 存在
 - 已知目标 `workdir`（默认当前任务仓库根）
 - 本技能是 AFK 三个技能的**唯一配置入口**：`~/.afk/config.json` 缺失时，`afk-run` / `afk-watch` / `exec-review` 都会报错并指向这里（没有内置兜底）
-- 完成标准：流程说明已发出，用户随后明确认可 source 与 scope；目标目录下写出 `config.json`；project 范围另有 `meta.json`；stdout 有 JSON 摘要
+- 完成标准：流程说明已发出，用户随后明确认可 source 与 scope；目标目录下写出 `config.json`；project 范围另有 `meta.json`；同层刷新 `README.md`；stdout 有 JSON 摘要
 
 ## 步骤
 
@@ -89,12 +89,15 @@ node <技能根>/scripts/init-project.mjs --workdir <路径> --source gh --repo 
 
 默认：`task.maxTasks=1`；`watch.requireAtomicClaim` 仅 `beads` 为 true；`execReview.runner=pi`（**必填**——留空又不用 CLI/env 指定时，exec-review 直接报错）；`execReview.sandbox=danger-full-access`（改回 `workspace-write` 会写不了 `.git`，提交全部 `blocked`）；`serve.open` / `task.allowDirty` 默认 false。
 已有 `config.json` 需确认后加 `--force`。摘要里 `legacyFiles` 非空时说明该目录还有旧版 `run.json` / `watch.json`，它们已不再加载。
-完成标准：退出码 0，摘要含 `afkDir` / `files`。
+脚本同时在**同一目录**写/刷新 `README.md`（模板 `readme.template.md`）：记录四个配置分区与常用字段、提示词覆盖文件名与堆叠顺序、常用命令；`files.readme` 是它的路径。
+完成标准：退出码 0，摘要含 `afkDir` / `files`（`config` / `meta` / `readme`）。
 
 5. **向用户汇报**
    - 写出的路径：`~/.afk/config.json`（project 范围是 `~/.afk/<项目名_UID>/config.json`）
+   - 同层的 `README.md`：配置分区、提示词覆盖文件名与堆叠顺序都写在里面
    - `source`、`requireAtomicClaim`
    - 「其余字段（runner / sandbox / 模型）直接编辑这份 `config.json`」——它是机器本地文件，不入库
+   - 需要按环境定制执行端/审查端提示词时，在同层新建 `standards.md` / `executor.append.md` / `reviewer.append.md` / `executor.prompt.md` / `reviewer.prompt.md`（脚本只写 README，**不建这些空壳**）；装配规则见 `../exec-review/SKILL.md` 的「提示词覆盖」
    - 启动：`node <afk-watch>/scripts/watch.mjs --workdir <路径>`
    完成标准：用户知道配置在哪、怎么开 watch、改哪个字段该编辑哪个分区。
 
@@ -103,12 +106,14 @@ node <技能根>/scripts/init-project.mjs --workdir <路径> --source gh --repo 
 - 不要在流程说明之前提问，也不要跳过说明直接抛问题
 - 不要未确认就按推断写入 source
 - 不要为「每批几单」「是否原子认领」再访谈
+- 不要创建空的提示词覆盖文件（`standards.md` / `*.append.md` / `*.prompt.md` 只写进 README，让操作者按需自建）
 - 不要写仓库内 `.afk/`（只写 `~/.afk` / `$AFK_HOME`）
 - 不要在 gh/tapd 上把 `requireAtomicClaim` 写成 true
 
 ## 参考
 
 - 字段菜单：`config.example.json`（本技能目录，四分区模板，永不自动加载）
+- README 模板：`readme.template.md`（写入目标 AFK 目录，字段与覆盖约定都来自这里）
 - 键算法与分区解析：`../afk-run/scripts/afk-home.mjs`
 - 各分区字段：`../afk-watch/references/config.md`、`../afk-run/references/config.md`、`../exec-review/references/config.md`
 - 流程细节：`../afk-run/SKILL.md`、`../afk-watch/SKILL.md`

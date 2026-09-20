@@ -51,6 +51,20 @@ _Avoid_: queue (the execution-run page already uses that word for its own column
 The local work directory and its associated `afk-watch` or `afk-run` processes that perform agent work.
 _Avoid_: machine (the same machine may host multiple environments)
 
+## 提示词定制
+
+**AFK home**：
+某个执行环境对应的 AFK 文件目录：全局根（`~/.afk`，可用 `AFK_HOME` 覆盖）或项目目录（`<label>_<uid>`）。
+_Avoid_：skill root（所有执行环境共用）
+
+**Prompt overlay**：
+AFK home 里固定文件名的 markdown——`standards.md`、`<role>.append.md` 或 `<role>.prompt.md`——由 `exec-review` 组装进该环境的执行端 / 审查端提示词。由操作者按需自建；init 从不写空的覆盖文件。
+_Avoid_：prompt config（覆盖不是 `config.json` 字段）、prompt template（技能内置基座，可被 `<role>.prompt.md` 整段替换）
+
+**Role**：
+exec-review 的两个提示词目标之一：`executor` 或 `reviewer`；覆盖文件名固定为这两个角色名。
+_Avoid_：agent name（runner 选型是另一回事）
+
 ## TAPD task source
 
 **Story**:

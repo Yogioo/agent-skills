@@ -63,6 +63,21 @@ node …/run-task.mjs --workdir <目录> --id 可选标签 --title "…" --body 
 
 Shell 等待时间设长（常见数分钟到十余分钟）。同一工作区同一时间只跑一个本脚本。
 
+## 提示词覆盖（AFK home）
+
+每个执行环境可在 AFK home（全局 `~/.afk/`，项目 `~/.afk/<名称>_<uid>/`）放**固定名字**的 markdown 定制角色提示词，由 `scripts/prompt-overlays.mjs` 装配（无配置键，约定优于配置）：
+
+| 文件 | 作用 |
+|---|---|
+| `standards.md` | 非空时注入**两个角色**（全局 → 项目） |
+| `executor.append.md` / `reviewer.append.md` | 追加到对应角色（全局 → 项目） |
+| `executor.prompt.md` / `reviewer.prompt.md` | **整段替换**该角色基础模板（项目 → 全局 → 内置） |
+| 缺失 / 空白 | 视为「没有」，跳过该层，不产生空段 |
+
+每角色组装顺序：**base → standards → append → 渲染任务变量 → 强制 footer**。强制 footer（结论 JSON 契约 + git 分工）由代码追加，**整段替换也省略不掉** outcome / review 协议。
+
+装配只在 exec-review 里做：`afk-watch` / `afk-run` 不感知提示词，也不需要额外参数（见 [ADR-0001](../../docs/adr/0001-separate-watcher-from-execution-run.md)）。审计本次实际收到的提示词：看 run cache 的 `executor.prompt.md` / `reviewer.prompt.md`，`main.log` 里另有一行 `prompt: ...` 记录 base 与用到的覆盖文件。
+
 ## 通信格式（简洁、清晰）
 
 两端都返回**一个简单 JSON 对象**：
@@ -116,6 +131,7 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 - `scripts/normalize-event.mjs` — 三 runner JSONL → NormalizedEvent（统一入口）
 - `scripts/serve.mjs` — 独立实时进度服务（SSE → HTML，两阶段视图）
 - `scripts/runners/` — `codex` / `pi` / `agent` adapters
-- `prompts/executor.md`、`prompts/reviewer.md`（审查端直接改）
+- `scripts/prompt-overlays.mjs` — AFK home 提示词覆盖（standards / append / 整段替换 + 强制 footer）
+- `prompts/executor.md`、`prompts/reviewer.md`（角色主体；结论契约与 git 分工在 `prompt-overlays.mjs` 的强制 footer 里）
 - `schemas/outcome.schema.json`、`schemas/review.schema.json`
 - `references/config.md`、`references/runners.md`、`references/task-format.md`

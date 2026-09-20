@@ -209,6 +209,8 @@ test('serve：无 eventsFile 时仍回放 log 上下文', async () => {
 const RUN = join(SKILL, 'scripts', 'run-task.mjs')
 const EXEC_PROMPT = join(SKILL, 'prompts', 'executor.md')
 const REVIEW_PROMPT = join(SKILL, 'prompts', 'reviewer.md')
+const PROMPT_OVERLAYS = join(SKILL, 'scripts', 'prompt-overlays.mjs')
+const COMMIT_RULES = join(SKILL, 'scripts', 'commit-rules.mjs')
 const REVIEW_SCHEMA = join(SKILL, 'schemas', 'review.schema.json')
 
 function read(p) {
@@ -245,20 +247,26 @@ test('run-task 保持单次 执行→审查 两阶段（executor_start / reviewe
 
 test('提示词模板使用动态提交规则和 git 上下文占位符', () => {
   const ex = read(EXEC_PROMPT)
-  const rv = read(REVIEW_PROMPT)
-  assert.match(ex, /{{COMMIT_RULE}}/, '执行端应有动态提交规则占位符')
+  const ov = read(PROMPT_OVERLAYS)
   assert.match(ex, /{{GIT_LOG}}/, '执行端应有 git log 占位符')
-  assert.match(rv, /{{GIT_REVIEW_CONTEXT}}/, '审查端应有 git 上下文占位符')
+  assert.match(ov, /{{COMMIT_RULE}}/, '强制 footer 应有动态提交规则占位符')
+  assert.match(ov, /{{GIT_REVIEW_CONTEXT}}/, '强制 footer 应有 git 上下文占位符')
+  assert.match(ov, /done\|no_change\|blocked\|empty/, '强制 footer 应含执行端结论契约')
 })
 
-test('审查端提示词要求直接修改、seal 与 git diff 上下文', () => {
-  const md = read(REVIEW_PROMPT)
-  assert.match(md, /直接/, '审查端应被要求直接修改')
-  assert.match(md, /clean\|refined/, '审查端输出应为 clean|refined')
-  assert.match(md, /{{GIT_REVIEW_CONTEXT}}/, '审查端应有条件 git diff 上下文')
-  assert.match(md, /# Seal/, '审查端应有 seal 步骤')
-  assert.match(md, /amend/, '审查端应 amend 执行端 commit')
-  assert.ok(!md.includes('REVISE'), '审查端不应再输出 REVISE 交回执行端')
+test('审查端提示词与强制 footer 要求直接修改、seal 与 git diff 上下文', () => {
+  const rv = read(REVIEW_PROMPT)
+  const ov = read(PROMPT_OVERLAYS)
+  const rules = read(COMMIT_RULES)
+  assert.match(rv, /直接/, '审查端应被要求直接修改')
+  assert.match(ov, /clean\|refined/, '审查端输出应为 clean|refined')
+  assert.match(ov, /{{GIT_REVIEW_CONTEXT}}/, '强制 footer 应注入 git 上下文')
+  assert.match(rules, /# Seal/, 'git 上下文应含 seal 步骤')
+  assert.match(rules, /amend/, '审查端应 amend 执行端 commit')
+  assert.ok(
+    !rv.includes('REVISE') && !ov.includes('REVISE'),
+    '审查端不应再输出 REVISE 交回执行端',
+  )
 })
 
 test('审查 schema 为 clean|refined（非 APPROVE/REVISE）', () => {

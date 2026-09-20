@@ -29,6 +29,8 @@ Windows 也可用 `start-watch.bat`，它会把全部参数转给 `node scripts/
 
 常用参数：`--source`、`--repo`、`--max-tasks`、`--poll-interval`、`--require-atomic-claim`、`--stop-file`、`--allow-dirty`、`--no-serve`、`--dry-run`。配置见 [`~/.afk/config.json`](references/config.md)（本项目读 `task` + `watch` 分区；技能根没有配置文件；两层都缺就报错，不做兜底）。任务源认领语义见 [../afk-run/references/task-sources.md](../afk-run/references/task-sources.md)。
 
+执行端 / 审查端的提示词可由操作者按执行环境定制：放在 AFK home 同层的 `standards.md` / `*.append.md` / `*.prompt.md`，由 `exec-review` 装配——watcher 不感知提示词，也不需要额外参数（见 [../exec-review/SKILL.md](../exec-review/SKILL.md) 的「提示词覆盖」与 [ADR-0001](../../docs/adr/0001-separate-watcher-from-execution-run.md)）。
+
 ## 行为
 
 1. 校验 workdir。不干净且未放行则退出。完成标准：未启动轮询。

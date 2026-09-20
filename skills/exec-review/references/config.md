@@ -113,6 +113,18 @@
 - `--git-commit <true|false>`：覆盖 `gitCommit`（环境变量为 `EXEC_REVIEW_GIT_COMMIT`）
 - `--review <true|false>` / `--no-review`：覆盖 `review`（环境变量为 `EXEC_REVIEW_REVIEW`）
 
+## 提示词覆盖（不在 `config.json` 里）
+
+执行端 / 审查端的提示词按执行环境定制：固定名字的 markdown 放在 AFK home 同层（无配置键）。
+
+| 文件 | 作用 |
+|---|---|
+| `standards.md` | 非空时注入两个角色（全局 → 项目） |
+| `executor.append.md` / `reviewer.append.md` | 追加到对应角色（全局 → 项目） |
+| `executor.prompt.md` / `reviewer.prompt.md` | 整段替换该角色基础模板（项目 → 全局 → 内置） |
+
+组装顺序与强制 footer（结论 JSON 契约 + git 分工）见 [SKILL.md 的「提示词覆盖」](../SKILL.md)。
+
 ## 实时可视化（`serve`）
 
 loop 运行时会启动一个**独立进程**（`scripts/serve.mjs`），把单条进度事件流 `progress.jsonl` 经 SSE 推给浏览器，渲染成**实时进度页**（进度条、阶段（执行/审查）、阶段时间线、存活心跳、实时日志）。

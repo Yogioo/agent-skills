@@ -16,6 +16,8 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SKILL_ROOT = resolve(__dirname, '..')
 const EXAMPLE = resolve(SKILL_ROOT, 'config.example.json')
+const README_TEMPLATE = resolve(SKILL_ROOT, 'readme.template.md')
+const README_FILENAME = 'README.md'
 
 function usage(code = 0) {
   process.stdout.write(`Usage:
@@ -136,6 +138,13 @@ function writeJson(path, data) {
   writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`, 'utf8')
 }
 
+/** 用 `{{KEY}}` 渲染 README 模板；未知键替换成空串。 */
+function renderReadme(vars) {
+  return readFileSync(README_TEMPLATE, 'utf8').replace(/\{\{(\w+)\}\}/g, (_, key) =>
+    Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : '',
+  )
+}
+
 function requireAtomicForSource(source) {
   return source === 'beads'
 }
@@ -187,6 +196,10 @@ function main() {
     console.error('找不到 afk-init/config.example.json')
     process.exit(2)
   }
+  if (!existsSync(README_TEMPLATE)) {
+    console.error('找不到 afk-init/readme.template.md')
+    process.exit(2)
+  }
 
   const home = afkHomeRoot()
   let afkDir = home
@@ -214,6 +227,7 @@ function main() {
 
   const configOut = join(afkDir, 'config.json')
   const metaOut = join(afkDir, 'meta.json')
+  const readmeOut = join(afkDir, README_FILENAME)
 
   if (!args.dryRun && !args.force && existsSync(configOut)) {
     console.error(`已有配置: ${configOut}（加 --force 覆盖）`)
@@ -244,7 +258,11 @@ function main() {
     projectKey,
     uid,
     workdir: workdir || null,
-    files: { config: configOut, meta: args.scope === 'project' ? metaOut : null },
+    files: {
+      config: configOut,
+      meta: args.scope === 'project' ? metaOut : null,
+      readme: readmeOut,
+    },
     legacyFiles,
   }
 
@@ -256,6 +274,20 @@ function main() {
   mkdirSync(afkDir, { recursive: true })
   writeJson(configOut, config)
   if (args.scope === 'project') writeJson(metaOut, meta)
+  // README 与 config.json 同层刷新；覆盖文件仍由操作者按需创建（不写空壳）
+  writeFileSync(
+    readmeOut,
+    renderReadme({
+      SCOPE: args.scope,
+      SOURCE: args.source,
+      GENERATED_AT: new Date().toISOString(),
+      AFK_HOME: home,
+      AFK_DIR: afkDir,
+      PROJECT_KEY: projectKey,
+      WORKDIR: workdir || '<workdir>',
+    }),
+    'utf8',
+  )
 
   if (legacyFiles.length) {
     console.error(`注意：${afkDir} 下的 ${legacyFiles.join(' / ')} 已不再加载，请确认后删除。`)

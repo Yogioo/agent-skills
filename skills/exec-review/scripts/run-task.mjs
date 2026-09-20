@@ -24,6 +24,11 @@ import { tmpdir } from 'node:os'
 import { createRunner } from './runners/index.mjs'
 import { loadExecReviewConfig, resolveSettings } from './load-config.mjs'
 import { buildExecutorCommitRule, buildReviewerGitContext } from './commit-rules.mjs'
+import {
+  assembleRolePrompt,
+  loadPromptOverlays,
+  overlaySources,
+} from './prompt-overlays.mjs'
 import { ProgressWriter } from './progress.mjs'
 import { snapshot, diff } from './workspace.mjs'
 import { extractJsonFromEventsFile, extractJsonFromText } from './normalize-agent.mjs'
@@ -411,12 +416,6 @@ function parseTaskMarkdown(raw, fallback = {}) {
   }
 }
 
-function renderTemplate(template, vars) {
-  return template.replace(/\{\{(\w+)\}\}/g, (_, key) =>
-    Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : '',
-  )
-}
-
 function gitOutput(workdir, args) {
   try {
     return execFileSync('git', args, {
@@ -651,19 +650,28 @@ async function main() {
     : ''
 
   // ---- 执行阶段：实现 ----
-  const executorPrompt = renderTemplate(executorTpl, {
-    TASK_ID: task.id || task.title,
-    TASK_TITLE: task.title,
-    TASK_BODY: task.body,
-    TASK_REQUIREMENTS: task.requirements,
-    COMMIT_RULE: commitRule,
-    GIT_LOG: gitLog,
+  const overlays = loadPromptOverlays(workdir)
+  const executorPrompt = assembleRolePrompt('executor', {
+    builtin: executorTpl,
+    vars: {
+      TASK_ID: task.id || task.title,
+      TASK_TITLE: task.title,
+      TASK_BODY: task.body,
+      TASK_REQUIREMENTS: task.requirements,
+      COMMIT_RULE: commitRule,
+      GIT_LOG: gitLog,
+    },
+    overlays,
   })
   const executorPromptPath = join(runDir, 'executor.prompt.md')
   const executorOut = join(runDir, 'executor.out.md')
   const executorLog = join(runDir, 'executor.log')
   const executorEvents = join(runDir, 'executor.events.jsonl')
-  writeFileSync(executorPromptPath, executorPrompt, 'utf8')
+  writeFileSync(executorPromptPath, executorPrompt.text, 'utf8')
+  logMain(
+    mainLogPath,
+    `prompt: executor base=${executorPrompt.base} overlays=${overlaySources(overlays).join(', ') || '(none)'}`,
+  )
 
   logMain(mainLogPath, 'execute: 执行端开始')
   progress.setStage('executing')
@@ -679,7 +687,7 @@ async function main() {
   const execRun = await executorRunner.runTurn({
     role: 'executor',
     workdir,
-    prompt: executorPrompt,
+    prompt: executorPrompt.text,
     promptFile: executorPromptPath,
     outFile: executorOut,
     logFile: executorLog,
@@ -804,19 +812,23 @@ async function main() {
   }
 
   // ---- 审查阶段：审查端直接改进 ----
-  const reviewerPrompt = renderTemplate(reviewerTpl, {
-    TASK_ID: task.id || task.title,
-    TASK_TITLE: task.title,
-    TASK_BODY: task.body,
-    TASK_REQUIREMENTS: task.requirements,
-    CHANGED_FILES: changedFiles.length ? changedFiles.join('\n') : '（执行端未报告改动文件）',
-    GIT_REVIEW_CONTEXT: gitReviewContext,
+  const reviewerPrompt = assembleRolePrompt('reviewer', {
+    builtin: reviewerTpl,
+    vars: {
+      TASK_ID: task.id || task.title,
+      TASK_TITLE: task.title,
+      TASK_BODY: task.body,
+      TASK_REQUIREMENTS: task.requirements,
+      CHANGED_FILES: changedFiles.length ? changedFiles.join('\n') : '（执行端未报告改动文件）',
+      GIT_REVIEW_CONTEXT: gitReviewContext,
+    },
+    overlays,
   })
   const reviewerPromptPath = join(runDir, 'reviewer.prompt.md')
   const reviewerOut = join(runDir, 'reviewer.out.md')
   const reviewerLog = join(runDir, 'reviewer.log')
   const reviewerEvents = join(runDir, 'reviewer.events.jsonl')
-  writeFileSync(reviewerPromptPath, reviewerPrompt, 'utf8')
+  writeFileSync(reviewerPromptPath, reviewerPrompt.text, 'utf8')
 
   logMain(mainLogPath, `review: 审查端开始（改动文件 ${changedFiles.length} 个）`)
   progress.setStage('reviewing')
@@ -832,7 +844,7 @@ async function main() {
   const reviewerRun = await reviewerRunner.runTurn({
     role: 'reviewer',
     workdir,
-    prompt: reviewerPrompt,
+    prompt: reviewerPrompt.text,
     promptFile: reviewerPromptPath,
     outFile: reviewerOut,
     logFile: reviewerLog,
