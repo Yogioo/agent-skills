@@ -34,9 +34,10 @@ Windows 也可用 `start-watch.bat`，它会把全部参数转给 `node scripts/
 1. 校验 workdir。不干净且未放行则退出。完成标准：未启动轮询。
 2. 读取任务源的 `claimMode`。`--require-atomic-claim` 且不是 `atomic` 时，在启动执行批次之前退出。完成标准：没有 afk-run 子进程。
 3. 占用本 workdir 的 watcher 注册表。另一个活着的 watcher 已占用时退出。完成标准：注册表 pid 是当前进程。
-4. `listReady()` 为空则等待 `pollIntervalMs`。远程 in-progress 不作为本地锁。完成标准：仍有其它就绪工单时会启动执行批次。
+4. 轮询 Work-item pool（优先 `describeBlocked()`，否则 `listReady()`）。ready 为空则等待 `pollIntervalMs`。远程 in-progress 不作为本地锁。完成标准：仍有其它就绪工单时会启动执行批次。
 5. 有就绪工单则 `tryClaim`。`already-claimed` 跳过这一轮，下次轮询继续。`claimed` 后启动一次 afk-run，并把该工单作为 pinned id 传入。完成标准：同一时刻只有一个执行批次。
 6. 任务源查询或认领出错时按有上限的指数退避等待。成功查询或批次结束后退避回到初始值。完成标准：等待不超过 `backoffMaxMs`。
-7. Ctrl+C、停止文件或 `--stop`：终止登记的子进程和看板，写最终事件，释放注册表。完成标准：注册表文件消失，未登记的 pid 不被杀掉。
+7. Watcher 启动时拉起常驻看板（`--no-serve` 除外），打印 URL；阶段变化打控制台行。批次切换不重启页面。完成标准：空闲时页面仍可打开。
+8. Ctrl+C、停止文件或 `--stop`：终止登记的子进程和看板，写最终事件，释放注册表。完成标准：注册表文件消失，未登记的 pid 不被杀掉。
 
-事件写在缓存目录的 `watch-run-*` / `events.jsonl`。执行报告仍在 afk-run 的 run 目录。
+事件与 `pool.json` 写在缓存目录的 `watch-run-*`（Watch session）。执行报告仍在 afk-run 的 run 目录。页面归属见仓库 [`docs/adr/0005-watcher-owns-the-status-page.md`](../../docs/adr/0005-watcher-owns-the-status-page.md)。

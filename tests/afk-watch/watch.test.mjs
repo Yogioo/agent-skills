@@ -48,9 +48,6 @@ function readySource(overrides = {}) {
     claimMode: 'atomic',
     listReady: async () => [{ id: 'a', title: 'A', priority: 1 }],
     tryClaim: async () => ({ status: 'claimed', claimMode: 'atomic' }),
-    describeBlocked: () => {
-      throw new Error('remote in-progress must not be consulted')
-    },
     ...overrides,
   }
 }
@@ -151,7 +148,14 @@ test('remote in-progress does not block a run when other work is ready', async (
   const result = await runWatcher({
     config: { pollIntervalMs: 1 },
     source: readySource({
-      inProgress: [{ id: 'remote', title: 'other env', priority: 0 }],
+      listReady: async () => {
+        throw new Error('should use describeBlocked')
+      },
+      describeBlocked: async () => ({
+        ready: [{ id: 'a', title: 'A', priority: 1 }],
+        inProgress: [{ id: 'remote', title: 'other env', priority: 0 }],
+        blocked: [],
+      }),
     }),
     spawnRun: async () => {
       spawned = true
@@ -162,6 +166,92 @@ test('remote in-progress does not block a run when other work is ready', async (
   })
   assert.equal(spawned, true)
   assert.equal(result.runs, 1)
+})
+
+test('describeBlocked pool is written via onPool and only ready starts a run', async () => {
+  const pools = []
+  const events = []
+  let stop = false
+  await runWatcher({
+    config: { pollIntervalMs: 1 },
+    source: readySource({
+      describeBlocked: async () => ({
+        ready: [],
+        inProgress: [{ id: 'busy', title: 'Busy', priority: 1 }],
+        blocked: [{ id: 'blocked', title: 'Blocked', priority: 2, reason: 'label' }],
+      }),
+    }),
+    spawnRun: async () => {
+      throw new Error('must not start')
+    },
+    onPool: (pool) => pools.push(pool),
+    onEvent: (event) => {
+      events.push(event)
+      if (event.event === 'idle') stop = true
+    },
+    sleep: async () => {},
+    isStopRequested: () => stop,
+  })
+  assert.equal(pools.length, 1)
+  assert.deepEqual(pools[0].inProgress.map((row) => row.id), ['busy'])
+  assert.deepEqual(pools[0].blocked.map((row) => row.id), ['blocked'])
+  assert.equal(events.some((event) => event.event === 'idle'), true)
+})
+
+test('run_end records execRunDir from spawnRun', async () => {
+  const events = []
+  let stop = false
+  await runWatcher({
+    config: { pollIntervalMs: 1 },
+    source: readySource(),
+    spawnRun: async () => {
+      stop = true
+      return { code: 0, runDir: 'C:/cache/exec/run-1' }
+    },
+    onEvent: (event) => events.push(event),
+    sleep: async () => {},
+    isStopRequested: () => stop,
+  })
+  const end = events.find((event) => event.event === 'run_end')
+  assert.equal(end.execRunDir, 'C:/cache/exec/run-1')
+  assert.equal(end.code, 0)
+})
+
+test('dry-run prints dashboard URL and port', () => {
+  const workdir = tempDir('afk-watch-dry-')
+  try {
+    writeFileSync(join(workdir, 'README'), 'x')
+    const result = spawnSync(
+      process.execPath,
+      [WATCH, '--workdir', workdir, '--dry-run', '--no-serve'],
+      { encoding: 'utf8', env: TEST_ENV },
+    )
+    assert.equal(result.status, 0, result.stderr)
+    const payload = JSON.parse(result.stdout.trim())
+    assert.equal(payload.dryRun, true)
+    assert.equal(payload.servePort, 0)
+    assert.equal(payload.dashboardUrl, '')
+  } finally {
+    rmSync(workdir, { recursive: true, force: true })
+  }
+})
+
+test('dry-run with serve includes dashboardUrl', () => {
+  const workdir = tempDir('afk-watch-dry-serve-')
+  try {
+    writeFileSync(join(workdir, 'README'), 'x')
+    const result = spawnSync(
+      process.execPath,
+      [WATCH, '--workdir', workdir, '--dry-run', '--port', '9123'],
+      { encoding: 'utf8', env: TEST_ENV },
+    )
+    assert.equal(result.status, 0, result.stderr)
+    const payload = JSON.parse(result.stdout.trim())
+    assert.equal(payload.servePort, 9123)
+    assert.equal(payload.dashboardUrl, 'http://127.0.0.1:9123/')
+  } finally {
+    rmSync(workdir, { recursive: true, force: true })
+  }
 })
 
 test('already-claimed skips the execution run', async () => {

@@ -43,9 +43,11 @@
 | `watch.backoffMaxMs` | `60000` | 退避上限 |
 | `watch.backoffFactor` | `2` | 每次源错误后的倍数，直到上限。成功查询或执行批次结束后回到初始值 |
 | `watch.requireAtomicClaim` | `false` | 为 true 且 `claimMode !== atomic` 时，在启动执行批次之前退出 |
-| `watch.serve.enabled` | `true` | watcher 自己拉起看板。执行批次始终 `--no-serve`，避免和执行批次抢看板进程 |
-| `watch.serve.port` | `0` | `0` 时按 workdir 派生，基数 9700 |
+| `watch.serve.enabled` | `true` | watcher 启动时拉起**常驻**看板（活到 watcher 退出）。执行批次始终 `--no-serve`，避免抢端口 |
+| `watch.serve.port` | `0` | `0` 时按 workdir 派生，基数 9700；占用则递增探测，启动日志打印最终 URL |
 | `watch.serve.open` | `false` | 看板起来后是否打开浏览器 |
+
+`--no-serve` 关闭页面，但控制台仍打印阶段变化（`polling` / `backing-off` / `run_start` 等）。
 
 ## 本技能不读的分区
 

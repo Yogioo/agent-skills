@@ -223,13 +223,141 @@ export function findTaskRecord(state, taskId) {
   return null
 }
 
+/** CLI：经典 `runDir [port]`，或 `--watch-registry` / `--watch-session` / `--port`。 */
+export function parseServeArgs(argv = []) {
+  const out = { runDir: '', port: 0, watchRegistry: '', watchSession: '' }
+  const positional = []
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--watch-registry') {
+      out.watchRegistry = resolve(argv[++i] || '')
+      continue
+    }
+    if (arg === '--watch-session') {
+      out.watchSession = resolve(argv[++i] || '')
+      continue
+    }
+    if (arg === '--port') {
+      out.port = Number(argv[++i]) || 0
+      continue
+    }
+    if (String(arg).startsWith('-')) continue
+    positional.push(arg)
+  }
+  if (positional[0]) out.runDir = resolve(positional[0])
+  if (positional[1] != null && !out.port) out.port = Number(positional[1]) || 0
+  if (!out.port) out.port = out.watchRegistry ? 9700 : 8700
+  if (!out.runDir && !out.watchRegistry) out.runDir = resolve(process.cwd())
+  return out
+}
+
+function readJsonFile(path) {
+  if (!path || !existsSync(path)) return null
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Watcher 侧 overlay：phase、pool、倒计时、最近事件。
+ * 不查任务源；只读注册表 / pool.json / events.jsonl。
+ */
+export function projectWatchOverlay(registry, pool, events = [], now = Date.now()) {
+  const phase = registry?.state || 'polling'
+  const phaseStartedAt = registry?.phaseStartedAt || registry?.updatedAt || registry?.startedAt || 0
+  const pollIntervalMs = Number(registry?.pollIntervalMs) > 0 ? Number(registry.pollIntervalMs) : 15000
+  const lastPollAt = Number(pool?.updatedAt) || Number(registry?.lastPollAt) || 0
+  const backoffWaitMs = Number(registry?.backoffWaitMs) || 0
+  const nextPollAt =
+    phase === 'backing-off'
+      ? (phaseStartedAt || now) + backoffWaitMs
+      : lastPollAt
+        ? lastPollAt + pollIntervalMs
+        : 0
+  const recent = Array.isArray(events) ? events.slice(-40).reverse() : []
+  return {
+    phase,
+    phaseStartedAt,
+    phaseAgeMs: phaseStartedAt ? Math.max(0, now - phaseStartedAt) : 0,
+    workdir: registry?.workdir || '',
+    claimMode: registry?.claimMode || '',
+    pid: registry?.pid || null,
+    childPid: registry?.childPid || null,
+    dashboardPid: registry?.dashboardPid || null,
+    execRunDir: registry?.execRunDir || '',
+    sessionDir: registry?.runDir || '',
+    pollIntervalMs,
+    lastPollAt,
+    nextPollAt,
+    backoffWaitMs,
+    pool: {
+      updatedAt: Number(pool?.updatedAt) || 0,
+      ready: Array.isArray(pool?.ready) ? pool.ready : [],
+      inProgress: Array.isArray(pool?.inProgress) ? pool.inProgress : [],
+      blocked: Array.isArray(pool?.blocked) ? pool.blocked : [],
+    },
+    recentEvents: recent,
+  }
+}
+
+function emptyLoopState() {
+  return {
+    events: [],
+    config: {},
+    ready: [],
+    active: [],
+    blocked: [],
+    done: [],
+    failed: [],
+    current: null,
+    reason: '',
+    reportFile: '',
+    stopFile: '',
+    runDir: '',
+    startedAt: 0,
+    lastEventAt: 0,
+  }
+}
+
+function listenWithPortFallback(server, startPort, maxTries = 40) {
+  let port = Math.max(1, Number(startPort) || 8700)
+  const last = port + maxTries
+  return new Promise((resolvePromise, reject) => {
+    const tryListen = () => {
+      const onError = (err) => {
+        server.removeListener('listening', onListening)
+        if (err?.code === 'EADDRINUSE' && port + 1 <= last) {
+          port += 1
+          try {
+            server.close(() => setImmediate(tryListen))
+          } catch {
+            setImmediate(tryListen)
+          }
+          return
+        }
+        reject(err)
+      }
+      const onListening = () => {
+        server.removeListener('error', onError)
+        resolvePromise(port)
+      }
+      server.once('error', onError)
+      server.once('listening', onListening)
+      server.listen(port, '127.0.0.1')
+    }
+    tryListen()
+  })
+}
+
 const HTML = `
 <!doctype html>
 <html lang="zh">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>afk-run · 实时看板</title>
+<title>afk · 实时看板</title>
 <style>
   :root { --bg:#0c1016; --panel:#151b24; --line:#2a3442; --text:#e8edf3; --muted:#95a2b2; --dim:#687587; --blue:#5ca7f7; --green:#4bc47b; --amber:#d8a23a; --red:#e06767; --purple:#a78bfa; --mono:ui-monospace,SFMono-Regular,Consolas,monospace; }
   * { box-sizing:border-box; margin:0; }
@@ -247,6 +375,16 @@ const HTML = `
   .pill.active b { color:var(--blue); } .pill.ok b { color:var(--green); } .pill.bad b { color:var(--red); } .pill.warn b { color:var(--amber); }
   section { margin-top:20px; }
   h2 { color:var(--dim); font-size:12px; letter-spacing:.08em; text-transform:uppercase; margin-bottom:10px; }
+  .watchgrid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+  .watchcard { border:1px solid var(--line); background:var(--panel); padding:12px 14px; border-radius:6px; }
+  .watchcard .label { color:var(--dim); font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
+  .watchcard .value { font:600 16px var(--mono); margin-top:6px; overflow-wrap:anywhere; }
+  .watchcard .hint { color:var(--muted); font-size:12px; margin-top:4px; }
+  .events { border:1px solid var(--line); background:var(--panel); border-radius:6px; padding:10px 14px; max-height:220px; overflow:auto; font:12px var(--mono); }
+  .eventrow { border-top:1px solid var(--line); padding:6px 0; color:var(--muted); }
+  .eventrow:first-child { border-top:0; padding-top:0; }
+  .eventrow b { color:var(--text); }
+  .hidden { display:none !important; }
   .queues { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
   .queue { min-height:138px; border:1px solid var(--line); background:var(--panel); padding:13px; border-radius:6px; }
   .queue h3 { color:var(--muted); font-size:12px; font-weight:600; margin-bottom:10px; }
@@ -285,12 +423,12 @@ const HTML = `
   .stat b { color:var(--text); font:600 13px var(--mono); }
   .footer { border-top:1px solid var(--line); color:var(--muted); margin-top:22px; padding-top:14px; font-size:12px; overflow-wrap:anywhere; }
   .footer a { color:var(--blue); }
-  @media (max-width:1100px) { .queues { grid-template-columns:repeat(2,minmax(0,1fr)); } .current { grid-template-columns:1fr; } }
-  @media (max-width:560px) { .queues { grid-template-columns:1fr; } body { padding-top:18px; } }
+  @media (max-width:1100px) { .queues { grid-template-columns:repeat(2,minmax(0,1fr)); } .current { grid-template-columns:1fr; } .watchgrid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  @media (max-width:560px) { .queues { grid-template-columns:1fr; } .watchgrid { grid-template-columns:1fr; } body { padding-top:18px; } }
 </style>
 </head>
 <body>
-  <div class="grip">afk-run · 实时聚合进度</div>
+  <div class="grip" id="grip">afk-run · 实时聚合进度</div>
   <h1 id="title">AFK 运行看板</h1>
   <div class="sub" id="meta">等待 loop 开始...</div>
   <div class="badge" id="status">连接中</div>
@@ -309,8 +447,19 @@ const HTML = `
     <span>上次事件 <b id="lastupdate">-</b></span>
   </div>
 
+  <section id="watchsection" class="hidden">
+    <h2>Watcher</h2>
+    <div class="watchgrid">
+      <div class="watchcard"><div class="label">阶段</div><div class="value" id="watchphase">-</div><div class="hint" id="watchphaseage">-</div></div>
+      <div class="watchcard"><div class="label">下次轮询</div><div class="value" id="watchnextpoll">-</div><div class="hint" id="watchlastpoll">-</div></div>
+      <div class="watchcard"><div class="label">claim mode</div><div class="value" id="watchclaim">-</div><div class="hint" id="watchpids">-</div></div>
+      <div class="watchcard"><div class="label">pool 快照</div><div class="value" id="watchpoolage">-</div><div class="hint" id="watchexec">-</div></div>
+    </div>
+    <div class="events" id="watchevents" style="margin-top:12px"></div>
+  </section>
+
   <section>
-    <h2>任务队列</h2>
+    <h2 id="queueheading">任务队列</h2>
     <div class="queues">
       <div class="queue"><h3>就绪 <span class="count" id="readycount">0</span></h3><div id="ready"></div></div>
       <div class="queue"><h3>进行中 <span class="count" id="activecount">0</span></h3><div id="active"></div></div>
@@ -397,20 +546,45 @@ const HTML = `
   function render() {
     if (!state) return;
     const cfg = state.config || {};
-    $('meta').textContent = (cfg.workdir || state.runDir || '等待运行...') +
+    const watch = state.watch;
+    if (watch) {
+      $('grip').textContent = 'afk-watch · watcher 状态';
+      $('title').textContent = 'AFK Watcher 看板';
+      $('watchsection').classList.remove('hidden');
+      $('watchphase').textContent = watch.phase || '-';
+      $('watchphaseage').textContent = watch.phaseStartedAt ? ('已持续 '+dur(Date.now() - watch.phaseStartedAt)) : '-';
+      const until = watch.nextPollAt ? Math.max(0, watch.nextPollAt - Date.now()) : 0;
+      $('watchnextpoll').textContent = watch.phase === 'running' ? '批次进行中' : (watch.nextPollAt ? dur(until) : '-');
+      $('watchlastpoll').textContent = watch.lastPollAt ? ('上次 '+ts(watch.lastPollAt)) : '尚无成功轮询';
+      $('watchclaim').textContent = watch.claimMode || '-';
+      $('watchpids').textContent = 'pid '+(watch.pid || '-')+' · child '+(watch.childPid || '-');
+      $('watchpoolage').textContent = watch.pool && watch.pool.updatedAt ? ts(watch.pool.updatedAt) : '-';
+      $('watchexec').textContent = watch.execRunDir ? ('exec '+String(watch.execRunDir).split(/[/\\\\]/).pop()) : '无执行批次';
+      const events = Array.isArray(watch.recentEvents) ? watch.recentEvents : [];
+      $('watchevents').innerHTML = events.length
+        ? events.map((ev) => '<div class="eventrow"><b>'+esc(ev.event || '?')+'</b> · '+esc(ts(ev.t))+(ev.id ? ' · '+esc(ev.id) : '')+(ev.message ? ' · '+esc(ev.message) : '')+(ev.waitMs != null ? ' · '+esc(ev.waitMs)+'ms' : '')+(ev.code != null ? ' · code='+esc(ev.code) : '')+'</div>').join('')
+        : '<div class="empty">暂无事件</div>';
+      $('queueheading').textContent = (watch.phase === 'running' && state.runDir) ? '当前 Execution run 队列' : 'Work-item pool';
+    } else {
+      $('watchsection').classList.add('hidden');
+    }
+    $('meta').textContent = (watch && watch.workdir ? watch.workdir : (cfg.workdir || state.runDir || '等待运行...')) +
       (state.runDir ? ' · run ' + String(state.runDir).split(/[/\\\\]/).pop() : '');
     $('source').textContent = cfg.source || '-';
-    $('started').textContent = ts(state.startedAt);
+    $('started').textContent = ts(state.startedAt || (watch && watch.phaseStartedAt));
     $('stopfile').textContent = state.stopFile || '-';
     $('stopsummary').textContent = state.stopFile || '-';
-    $('rundir').textContent = state.runDir || '-';
+    $('rundir').textContent = state.runDir || (watch && watch.execRunDir) || '-';
     queue('ready', state.ready || []); queue('active', state.active || []); queue('blocked', state.blocked || [], blockedTask); queue('finished', state.done || []); queue('failed', state.failed || []);
     const current = state.current;
     const last = current ? current.lastEventAt : state.lastEventAt;
     const age = last ? Date.now() - last : 0;
     $('lastupdate').textContent = last ? (age > 25000 ? dur(age)+' 前' : '刚刚') : '-';
     const badge = $('status');
-    if (state.reason) { badge.textContent = '已结束 · '+state.reason; badge.className = 'badge done'; }
+    if (watch && watch.phase) {
+      badge.textContent = watch.phase;
+      badge.className = 'badge'+(watch.phase === 'backing-off' || watch.phase === 'stopping' ? ' stale' : watch.phase === 'stopped' ? ' done' : '');
+    } else if (state.reason) { badge.textContent = '已结束 · '+state.reason; badge.className = 'badge done'; }
     else if (age > 25000) { badge.textContent = '无新事件'; badge.className = 'badge stale'; }
     else { badge.textContent = current ? '运行中' : '等待任务'; badge.className = 'badge'; }
     const panel = $('currentpanel');
@@ -419,7 +593,7 @@ const HTML = `
     const bar = $('bar');
     if (!current) {
       dot.className = 'dot'+(age > 25000 ? ' stale' : '');
-      $('stage').textContent = state.reason ? '本轮已结束' : '等待任务...';
+      $('stage').textContent = state.reason ? '本轮已结束' : (watch && watch.phase !== 'running' ? '无执行批次' : '等待任务...');
       $('taskname').textContent = '-';
       $('stagehint').textContent = state.reason ? ('停止原因：'+state.reason) : '-';
       bar.style.width = '0%';
@@ -470,12 +644,16 @@ function parseTaskRoute(url) {
 }
 
 function main() {
-  const runDir = resolve(process.argv[2] || process.cwd())
-  const port = Number(process.argv[3]) || 8700
-  const loopProgressFile = `${runDir}/loop-progress.jsonl`
+  const args = parseServeArgs(process.argv.slice(2))
+  const fixedRunDir = args.runDir || ''
+  const watchRegistryPath = args.watchRegistry || ''
+  const watchSessionDir = args.watchSession || ''
+  const watchMode = Boolean(watchRegistryPath || watchSessionDir)
   const clients = new Set()
   let previous = ''
+  let watchedExecDir = ''
   const progressWatchers = new Map()
+  const dirWatchers = new Map()
 
   function getProgressWatcher(progressFile) {
     if (!progressWatchers.has(progressFile)) {
@@ -484,11 +662,64 @@ function main() {
     return progressWatchers.get(progressFile)
   }
 
-  function readState() {
+  function ensureDirWatch(dir) {
+    if (!dir || dirWatchers.has(dir) || !existsSync(dir)) return
+    try {
+      const handle = watch(dir, { recursive: false }, () => broadcast())
+      dirWatchers.set(dir, handle)
+    } catch {
+      // 轮询兜底。
+    }
+  }
+
+  function readLoopFrom(runDir) {
+    if (!runDir) return emptyLoopState()
+    const loopProgressFile = join(runDir, 'loop-progress.jsonl')
+    if (!existsSync(loopProgressFile)) return { ...emptyLoopState(), runDir }
     const loopEvents = loadEvents(loopProgressFile)
     const initial = projectLoopState(loopEvents)
     const progressEvents = initial.current?.progressFile ? loadEvents(initial.current.progressFile) : []
-    return projectLoopState(loopEvents, progressEvents)
+    const state = projectLoopState(loopEvents, progressEvents)
+    return { ...state, runDir: state.runDir || runDir }
+  }
+
+  function readState() {
+    const now = Date.now()
+    let watch = null
+    if (watchMode) {
+      const registry = readJsonFile(watchRegistryPath)
+      const pool = readJsonFile(watchSessionDir ? join(watchSessionDir, 'pool.json') : '')
+      const events = watchSessionDir ? loadEvents(join(watchSessionDir, 'events.jsonl')) : []
+      watch = projectWatchOverlay(registry, pool, events, now)
+      ensureDirWatch(watchSessionDir)
+      if (watchRegistryPath) ensureDirWatch(dirname(watchRegistryPath))
+    }
+
+    const execRunDir = (watch && watch.execRunDir) || fixedRunDir || ''
+    if (execRunDir && execRunDir !== watchedExecDir) {
+      watchedExecDir = execRunDir
+      ensureDirWatch(execRunDir)
+    }
+
+    let loop = readLoopFrom(execRunDir)
+    const usePool =
+      watch &&
+      watch.phase !== 'running' &&
+      Array.isArray(watch.pool?.ready)
+    if (usePool) {
+      loop = {
+        ...loop,
+        ready: (watch.pool.ready || []).map((task) => ({ ...task, state: 'ready' })),
+        active: (watch.pool.inProgress || []).map((task) => ({ ...task, state: 'in_progress' })),
+        blocked: (watch.pool.blocked || []).map((task) => ({ ...task, state: 'blocked' })),
+        done: loop.done || [],
+        failed: loop.failed || [],
+        current: null,
+        reason: '',
+      }
+    }
+
+    return { ...loop, watch }
   }
 
   function broadcast(force = false) {
@@ -500,11 +731,8 @@ function main() {
     }
   }
 
-  try {
-    if (existsSync(runDir)) watch(runDir, { recursive: false }, () => broadcast())
-  } catch {
-    // 轮询保证 Windows 与网络目录也能刷新。
-  }
+  if (fixedRunDir) ensureDirWatch(fixedRunDir)
+  if (watchSessionDir) ensureDirWatch(watchSessionDir)
   setInterval(() => broadcast(), 1000)
 
   const server = createServer((request, response) => {
@@ -553,9 +781,22 @@ function main() {
     response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     response.end('not found')
   })
-  server.listen(port, '127.0.0.1', () => console.error(`afk-run 实时看板: http://127.0.0.1:${port}/`))
+
+  listenWithPortFallback(server, args.port)
+    .then((port) => {
+      const label = watchMode ? 'afk-watch' : 'afk-run'
+      console.error(`${label} 实时看板: http://127.0.0.1:${port}/`)
+    })
+    .catch((err) => {
+      console.error(err.stack || err.message || String(err))
+      process.exit(1)
+    })
+
   process.on('SIGINT', () => {
     for (const watcher of progressWatchers.values()) watcher.close()
+    for (const handle of dirWatchers.values()) {
+      try { handle.close() } catch { /* ignore */ }
+    }
     server.close(() => process.exit(0))
   })
 }

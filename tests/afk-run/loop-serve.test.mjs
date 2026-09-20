@@ -2,7 +2,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
@@ -63,7 +63,7 @@ test('loop-serve 页面提供看板所需区块，且不提供写停止文件入
   const used = [...new Set([...script[1].matchAll(/\$\(['"]([a-zA-Z]+)['"]\)/g)].map((m) => m[1]))]
   const defined = new Set([...html.matchAll(/id="([a-zA-Z]+)"/g)].map((m) => m[1]))
   assert.deepEqual(used.filter((id) => !defined.has(id)), [], '脚本引用的 id 都必须存在')
-  for (const id of ['ready', 'active', 'finished', 'failed', 'stage', 'heartbeat', 'stopfile', 'rundir', 'report', 'pipeline', 'currentpanel', 'detailstat', 'pillready']) {
+  for (const id of ['ready', 'active', 'finished', 'failed', 'stage', 'heartbeat', 'stopfile', 'rundir', 'report', 'pipeline', 'currentpanel', 'detailstat', 'pillready', 'watchphase', 'watchsection', 'watchevents']) {
     assert.ok(defined.has(id), `页面应有 #${id}`)
   }
   assert.doesNotMatch(html, /<button/i, '看板必须只读')
@@ -223,5 +223,71 @@ test('loop-serve 通过 SSE 推送当前任务的聚合阶段', async () => {
   } finally {
     child.kill()
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('watch 模式空闲时 SSE 带 polling 与 pool，不读执行批次', async () => {
+  const { projectWatchOverlay, parseServeArgs } = await import('../../skills/afk-run/scripts/loop-serve.mjs')
+  const parsed = parseServeArgs(['--watch-registry', 'C:/r.json', '--watch-session', 'C:/s', '--port', '9911'])
+  assert.equal(parsed.port, 9911)
+  assert.match(parsed.watchRegistry, /r\.json$/)
+
+  const overlay = projectWatchOverlay(
+    {
+      state: 'polling',
+      workdir: 'C:/work',
+      claimMode: 'atomic',
+      pid: 11,
+      pollIntervalMs: 15000,
+      phaseStartedAt: 1000,
+      lastPollAt: 1000,
+    },
+    {
+      updatedAt: 1000,
+      ready: [],
+      inProgress: [{ id: 'x', title: 'X', priority: 1 }],
+      blocked: [],
+    },
+    [{ t: 1, event: 'idle' }],
+    5000,
+  )
+  assert.equal(overlay.phase, 'polling')
+  assert.equal(overlay.nextPollAt, 16000)
+  assert.deepEqual(overlay.pool.inProgress.map((row) => row.id), ['x'])
+
+  const cache = mkdtempSync(join(tmpdir(), 'afk-watch-serve-'))
+  const session = join(cache, 'watch-run-1')
+  const registry = join(cache, 'watch-reg.json')
+  mkdirSync(session, { recursive: true })
+  writeFileSync(registry, JSON.stringify({
+    state: 'polling',
+    workdir: cache,
+    claimMode: 'best-effort',
+    pid: 42,
+    pollIntervalMs: 1000,
+    phaseStartedAt: Date.now(),
+    lastPollAt: Date.now(),
+  }) + '\n')
+  writeFileSync(join(session, 'pool.json'), JSON.stringify({
+    updatedAt: Date.now(),
+    ready: [],
+    inProgress: [],
+    blocked: [{ id: 'b1', title: 'Blocked', priority: 2, reason: 'afk-failed' }],
+  }) + '\n')
+  writeFileSync(join(session, 'events.jsonl'), JSON.stringify({ t: Date.now(), event: 'idle' }) + '\n')
+  const port = 21000 + Math.floor(Math.random() * 1000)
+  const child = spawn(
+    process.execPath,
+    [SERVE, '--watch-registry', registry, '--watch-session', session, '--port', String(port)],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  )
+  try {
+    const state = await waitFor(() => readSseState(port))
+    assert.equal(state.watch.phase, 'polling')
+    assert.equal(state.blocked[0].id, 'b1')
+    assert.equal(state.current, null)
+  } finally {
+    child.kill()
+    rmSync(cache, { recursive: true, force: true })
   }
 })

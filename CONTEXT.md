@@ -16,6 +16,14 @@ _Avoid_: watcher, daemon
 A long-lived process that polls a task source and starts execution runs when work is available.
 _Avoid_: loop (too broad), daemon (describes process lifetime rather than its role)
 
+**Watch session**:
+One watcher process from start to stop, together with the execution runs that process started.
+_Avoid_: watch run, batch (批次), loop
+
+**Watcher phase**:
+The watcher's current situation: `polling`, `backing-off`, `running`, `stopping`, or `stopped`.
+_Avoid_: idle (an event: the poll returned no ready work item), claiming
+
 **Claim**:
 The task-source operation that reserves a work item for one execution environment before agent work begins.
 _Avoid_: lock (a local process lock is a different concept)
@@ -26,6 +34,18 @@ The guarantee offered by a task source when reserving a work item: `atomic`, `be
 **Ready work item**:
 A work item that satisfies the task source's eligibility and dependency rules and may be claimed.
 _Avoid_: available issue (not all sources use issues)
+
+**In-progress work item**:
+A work item the task source has reserved with a claim, so it is no longer ready. It does not by itself stop the watcher from starting an execution run.
+_Avoid_: remote lock
+
+**Blocked work item**:
+A work item that is not ready and not in progress. The reason is source-specific: an unfinished dependency, or a label a human must clear before it can be claimed again.
+_Avoid_: exec-review blocked status (the executor could not finish)
+
+**Work-item pool**:
+The watcher's last successful poll of ready, in-progress, and blocked work items for one execution environment.
+_Avoid_: queue (the execution-run page already uses that word for its own columns), backlog
 
 **Execution environment**:
 The local work directory and its associated `afk-watch` or `afk-run` processes that perform agent work.

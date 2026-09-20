@@ -21,6 +21,8 @@ import {
   releaseWatcherInstance,
   stopOwnedProcesses,
   updateWatcherRegistry,
+  watcherRegistryPath,
+  writeWatchPool,
 } from './watch-state.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -103,7 +105,9 @@ export function buildExecutionArgs(options) {
 }
 
 /**
- * 监督一次执行批次：子进程活着就等，停止信号只杀掉本次登记的子进程和看板。
+ * 监督一次执行批次：子进程活着就等。
+ * 停止信号只杀本次子进程；看板若由本函数 startDashboard 拉起才一并收掉。
+ * 常驻看板模式下不传 startDashboard，避免批次切换杀掉页面。
  */
 export async function superviseExecutionRun(opts) {
   const child = opts.startChild()
@@ -111,8 +115,8 @@ export async function superviseExecutionRun(opts) {
   const sleep = opts.sleep || sleepWithStop
   const isStopRequested = opts.isStopRequested || (() => false)
   let dashboardPid = null
-  const owned = { childPid: child.pid, dashboardPid: null, runDir: '' }
-  if (typeof opts.onOwned === 'function') opts.onOwned(owned)
+  const owned = { childPid: child.pid, runDir: '' }
+  if (typeof opts.onOwned === 'function') opts.onOwned({ ...owned })
 
   while (!child.done) {
     if (isStopRequested()) {
@@ -132,8 +136,11 @@ export async function superviseExecutionRun(opts) {
         owned.runDir = runDir
         if (!dashboardPid && typeof opts.startDashboard === 'function') {
           dashboardPid = opts.startDashboard(runDir) || null
-          owned.dashboardPid = dashboardPid
-          if (typeof opts.onOwned === 'function') opts.onOwned({ ...owned })
+          if (typeof opts.onOwned === 'function') {
+            opts.onOwned({ ...owned, dashboardPid })
+          }
+        } else if (typeof opts.onOwned === 'function') {
+          opts.onOwned({ ...owned })
         }
       }
     }
@@ -150,7 +157,57 @@ export async function superviseExecutionRun(opts) {
 }
 
 /**
- * 轮询循环。远程 in-progress 不参与判断；只看 listReady 和本进程的停止信号。
+ * 一轮 Work-item pool。有 describeBlocked 则只调它（用 ready 决定是否开工）；
+ * 否则回退 listReady，进行中/阻塞为空。
+ */
+export async function pollWorkItemPool(source) {
+  if (typeof source?.describeBlocked === 'function') {
+    const described = await source.describeBlocked()
+    if (Array.isArray(described)) {
+      return { ready: [], blocked: described, inProgress: [] }
+    }
+    return {
+      ready: Array.isArray(described?.ready) ? described.ready : [],
+      blocked: Array.isArray(described?.blocked) ? described.blocked : [],
+      inProgress: Array.isArray(described?.inProgress) ? described.inProgress : [],
+    }
+  }
+  let ready = []
+  if (typeof source?.listReady === 'function') {
+    ready = await source.listReady()
+  }
+  return {
+    ready: Array.isArray(ready) ? ready : [],
+    blocked: [],
+    inProgress: [],
+  }
+}
+
+export function formatWatchPhaseLog(event) {
+  if (!event || !event.event) return ''
+  switch (event.event) {
+    case 'idle':
+      return `idle(ready=${event.readyCount ?? 0})`
+    case 'claim_skipped':
+      return `claim_skipped ${event.id || ''}`.trim()
+    case 'run_start':
+      return `run_start ${event.id || ''}`.trim()
+    case 'run_end':
+      return `run_end ${event.id || ''} code=${event.code ?? 0}`.trim()
+    case 'source_error':
+      return `backoff ${event.waitMs ?? '?'}ms ${event.message || ''}`.trim()
+    case 'watch_stop':
+    case 'watch_end':
+      return `stop ${event.reason || ''}`.trim()
+    case 'watch_start':
+      return 'watch_start'
+    default:
+      return event.event
+  }
+}
+
+/**
+ * 轮询循环。远程 in-progress 不参与是否开工的判断；只看 ready 与本进程停止信号。
  */
 export async function runWatcher(deps) {
   const config = deps.config || {}
@@ -158,6 +215,7 @@ export async function runWatcher(deps) {
   const sleep = deps.sleep || sleepWithStop
   const isStopRequested = deps.isStopRequested || (() => false)
   const onEvent = deps.onEvent || (() => {})
+  const onPool = deps.onPool || (() => {})
   const spawnRun = deps.spawnRun
   const stopOwned = deps.stopOwned || (() => {})
   const claimMode = source?.claimMode || 'unsupported'
@@ -167,6 +225,7 @@ export async function runWatcher(deps) {
   const pollIntervalMs = numberOr(config.pollIntervalMs, 15000)
   let delay = initialDelay
   let runs = 0
+  let lastExecRunDir = ''
 
   const finish = (reason) => {
     onEvent({ event: 'watch_end', reason, claimMode })
@@ -195,18 +254,19 @@ export async function runWatcher(deps) {
       return finish('stop')
     }
 
-    let ready = []
+    let pool
     try {
-      ready = await source.listReady()
-      if (!Array.isArray(ready)) ready = []
+      pool = await pollWorkItemPool(source)
+      onPool(pool)
     } catch (err) {
       if (await backoff(err?.message || err)) return finish('stop')
       continue
     }
 
+    const ready = Array.isArray(pool.ready) ? pool.ready : []
     if (ready.length === 0) {
       delay = initialDelay
-      onEvent({ event: 'idle', claimMode })
+      onEvent({ event: 'idle', claimMode, readyCount: 0 })
       if (await wait(pollIntervalMs)) return finish('stop')
       continue
     }
@@ -244,9 +304,10 @@ export async function runWatcher(deps) {
       claimStatus: claim.status,
       claimMode: claim.claimMode || claimMode,
       pinnedIds,
+      execRunDir: lastExecRunDir || '',
     })
 
-    let childResult = { code: 0 }
+    let childResult = { code: 0, runDir: '' }
     try {
       childResult = await spawnRun({
         pinnedIds,
@@ -260,9 +321,15 @@ export async function runWatcher(deps) {
       continue
     }
 
+    lastExecRunDir = childResult?.runDir || lastExecRunDir || ''
     runs += 1
     delay = initialDelay
-    onEvent({ event: 'run_end', id: String(ready[0].id), code: childResult?.code ?? 0 })
+    onEvent({
+      event: 'run_end',
+      id: String(ready[0].id),
+      code: childResult?.code ?? 0,
+      execRunDir: childResult?.runDir || '',
+    })
     if (isStopRequested()) {
       stopOwned()
       return finish('stop')
@@ -514,16 +581,10 @@ function createLiveSpawnRun({
   argsFor,
   execCache,
   workdir,
-  serve,
   isStopRequested,
   onOwned,
 }) {
-  let dashboardPid = null
   return async function spawnRun({ pinnedIds }) {
-    if (dashboardPid) {
-      killOwnedProcess(dashboardPid, { tree: false })
-      dashboardPid = null
-    }
     const child = spawn(process.execPath, argsFor(pinnedIds), {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -536,7 +597,7 @@ function createLiveSpawnRun({
       done = true
       code = exitCode ?? 1
     })
-    const result = await superviseExecutionRun({
+    return superviseExecutionRun({
       startChild: () => ({
         pid: child.pid,
         get done() {
@@ -557,28 +618,48 @@ function createLiveSpawnRun({
         },
       }),
       readRunDir: () => readChildRunDir(execCache, workdir, child.pid),
-      startDashboard: serve.enabled
-        ? (runDir) => {
-            const dash = spawn(process.execPath, [LOOP_SERVE_PATH, runDir, String(serve.port)], {
-              detached: true,
-              stdio: 'ignore',
-              windowsHide: true,
-            })
-            dash.unref()
-            dashboardPid = dash.pid
-            if (serve.open) setTimeout(() => openUrl(`http://127.0.0.1:${serve.port}/`), 600)
-            return dash.pid
-          }
-        : null,
+      // 常驻看板由 main 拉起；此处不按批次起停页面。
+      startDashboard: null,
       isStopRequested,
       onOwned,
       kill: killOwnedProcess,
       sleep: sleepWithStop,
       pollMs: 200,
     })
-    dashboardPid = result.dashboardPid || dashboardPid
-    return result
   }
+}
+
+function startResidentDashboard({ registryPath, watchSession, port, open }) {
+  const args = [
+    LOOP_SERVE_PATH,
+    '--watch-registry',
+    registryPath,
+    '--watch-session',
+    watchSession,
+    '--port',
+    String(port),
+  ]
+  const dash = spawn(process.execPath, args, {
+    detached: true,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    windowsHide: true,
+  })
+  let announced = false
+  const onChunk = (chunk) => {
+    const text = String(chunk)
+    process.stderr.write(text)
+    if (!announced) {
+      const match = text.match(/https?:\/\/127\.0\.0\.1:\d+\//)
+      if (match) {
+        announced = true
+        console.error(`afk-watch 看板: ${match[0]}`)
+        if (open) setTimeout(() => openUrl(match[0]), 600)
+      }
+    }
+  }
+  if (dash.stderr) dash.stderr.on('data', onChunk)
+  dash.unref()
+  return dash.pid
 }
 
 function main() {
@@ -638,10 +719,14 @@ function main() {
     stopFile,
   }
   if (args.dryRun) {
+    const previewPort = args.port || cfg.watch.serve.port || 9700 + (hashStr(workdir) % 1000)
+    const serveOn = (args.serve ?? cfg.watch.serve.enabled) !== false
     process.stdout.write(JSON.stringify({
       dryRun: true,
       ...summaryBase,
       refusesWork: Boolean(requireAtomicClaim) && claimMode !== 'atomic',
+      servePort: serveOn ? previewPort : 0,
+      dashboardUrl: serveOn ? `http://127.0.0.1:${previewPort}/` : '',
     }) + '\n')
     return
   }
@@ -659,22 +744,28 @@ function main() {
 
   const serveEnabled = args.serve ?? cfg.watch.serve.enabled
   const servePort = args.port || cfg.watch.serve.port || 9700 + (hashStr(workdir) % 1000)
+  const registryPath = watcherRegistryPath(cacheRoot, workdir)
   let owned = { childPid: null, dashboardPid: null, runDir: '' }
   let stopRequested = false
   const isStopRequested = () => stopRequested || existsSync(stopFile)
   const onOwned = (next) => {
-    owned = { ...owned, ...next }
+    owned = {
+      ...owned,
+      ...next,
+      dashboardPid: next.dashboardPid != null ? next.dashboardPid : owned.dashboardPid,
+    }
     updateWatcherRegistry(cacheRoot, workdir, {
       childPid: owned.childPid,
       dashboardPid: owned.dashboardPid,
       execRunDir: owned.runDir || '',
       state: 'running',
       claimMode,
+      phaseStartedAt: Date.now(),
     })
   }
   const stopOwned = () => {
     stopOwnedProcesses(owned, killOwnedProcess)
-    updateWatcherRegistry(cacheRoot, workdir, { state: 'stopping', claimMode })
+    updateWatcherRegistry(cacheRoot, workdir, { state: 'stopping', claimMode, phaseStartedAt: Date.now() })
   }
   const onSignal = () => {
     stopRequested = true
@@ -707,12 +798,31 @@ function main() {
   }
 
   appendWatchEvent(watchRunDir, { event: 'watch_start', ...summaryBase, watchRunDir })
-  updateWatcherRegistry(cacheRoot, workdir, { state: 'polling', claimMode, runDir: watchRunDir })
+  console.error(`afk-watch ${formatWatchPhaseLog({ event: 'watch_start' })}`)
+  updateWatcherRegistry(cacheRoot, workdir, {
+    state: 'polling',
+    claimMode,
+    runDir: watchRunDir,
+    phaseStartedAt: Date.now(),
+    pollIntervalMs: runConfig.pollIntervalMs,
+  })
+
+  if (serveEnabled !== false) {
+    const dashboardPid = startResidentDashboard({
+      registryPath,
+      watchSession: watchRunDir,
+      port: servePort,
+      open: cfg.watch.serve.open,
+    })
+    owned.dashboardPid = dashboardPid
+    updateWatcherRegistry(cacheRoot, workdir, { dashboardPid, claimMode })
+  } else {
+    console.error('afk-watch 看板: --no-serve（仅控制台留痕）')
+  }
 
   const spawnRun = createLiveSpawnRun({
     execCache,
     workdir,
-    serve: { enabled: serveEnabled !== false, port: servePort, open: cfg.watch.serve.open },
     isStopRequested,
     onOwned,
     argsFor: (pinnedIds) => buildExecutionArgs({
@@ -731,21 +841,57 @@ function main() {
     }),
   })
 
+  const applyPhase = (event) => {
+    const line = formatWatchPhaseLog(event)
+    if (line) console.error(`afk-watch ${line}`)
+    if (event.event === 'idle' || event.event === 'claim_skipped' || event.event === 'run_end') {
+      updateWatcherRegistry(cacheRoot, workdir, {
+        state: 'polling',
+        claimMode,
+        childPid: null,
+        execRunDir: '',
+        phaseStartedAt: Date.now(),
+      })
+      owned.childPid = null
+      owned.runDir = ''
+    } else if (event.event === 'source_error') {
+      updateWatcherRegistry(cacheRoot, workdir, {
+        state: 'backing-off',
+        claimMode,
+        backoffWaitMs: event.waitMs || 0,
+        phaseStartedAt: Date.now(),
+      })
+    } else if (event.event === 'run_start') {
+      updateWatcherRegistry(cacheRoot, workdir, {
+        state: 'running',
+        claimMode,
+        phaseStartedAt: Date.now(),
+      })
+    }
+  }
+
   runWatcher({
     config: runConfig,
     source,
     spawnRun,
     isStopRequested,
     stopOwned,
+    onPool: (pool) => {
+      writeWatchPool(watchRunDir, pool)
+      updateWatcherRegistry(cacheRoot, workdir, {
+        lastPollAt: Date.now(),
+        claimMode,
+      })
+    },
     onEvent: (event) => {
       appendWatchEvent(watchRunDir, event)
-      if (event.event === 'idle') {
-        updateWatcherRegistry(cacheRoot, workdir, { state: 'idle', claimMode, childPid: null })
-      }
+      applyPhase(event)
     },
   })
     .then((result) => {
       appendWatchEvent(watchRunDir, { event: 'watch_stop', reason: result.reason })
+      console.error(`afk-watch ${formatWatchPhaseLog({ event: 'watch_stop', reason: result.reason })}`)
+      stopOwnedProcesses(owned, killOwnedProcess)
       updateWatcherRegistry(cacheRoot, workdir, { state: 'stopped', childPid: null, claimMode })
       releaseWatcherInstance(cacheRoot, workdir, process.pid)
       process.stdout.write(JSON.stringify({

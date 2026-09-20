@@ -177,3 +177,26 @@ export function appendWatchEvent(runDir, event) {
     'utf8',
   )
 }
+
+/** 上次成功轮询的 Work-item pool；页面只读此文件，不查任务源。 */
+export function writeWatchPool(sessionDir, pool = {}) {
+  mkdirSync(sessionDir, { recursive: true })
+  const payload = {
+    updatedAt: Date.now(),
+    ready: Array.isArray(pool.ready) ? pool.ready : [],
+    blocked: Array.isArray(pool.blocked) ? pool.blocked : [],
+    inProgress: Array.isArray(pool.inProgress) ? pool.inProgress : [],
+  }
+  writeFileSync(join(sessionDir, 'pool.json'), JSON.stringify(payload) + '\n', 'utf8')
+  return payload
+}
+
+export function readWatchPool(sessionDir) {
+  const file = join(sessionDir, 'pool.json')
+  if (!existsSync(file)) return null
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
