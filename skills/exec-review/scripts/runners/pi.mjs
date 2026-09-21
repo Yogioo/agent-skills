@@ -21,6 +21,8 @@ export function createPiRunner(opts = {}) {
   return {
     name: 'pi',
     bin,
+    /** pi 的 `--session-id` 有就续、没有就建，所以是最完整的一级。 */
+    sessionMode: 'create-or-resume',
     /**
      * @param {object} turn
      * @param {string} turn.workdir
@@ -28,6 +30,7 @@ export function createPiRunner(opts = {}) {
      * @param {string} turn.promptFile path to the already-written prompt file
      * @param {string} turn.outFile
      * @param {string} turn.logFile
+     * @param {string} [turn.session] session reference；给了就续这个 session，不给就是一次性无痕 turn
      * @param {string} [turn.eventsFile]
      * @param {string} [turn.schemaFile] ignored (pi has no output-schema); prompts already demand JSON
      * @param {string} [turn.sandbox]
@@ -43,7 +46,10 @@ export function createPiRunner(opts = {}) {
       const model = turn.model || defaultModel
       const provider = turn.provider || defaultProvider
       const thinking = turn.thinking || defaultThinking
-      const args = ['-p', '--no-session', '--mode', 'json']
+      // 续会话时不能带 --no-session，否则那一轮不会落进原 session
+      const args = turn.session
+        ? ['-p', '--session-id', String(turn.session), '--mode', 'json']
+        : ['-p', '--no-session', '--mode', 'json']
 
       if (approve) args.push('--approve')
       else args.push('--no-approve')

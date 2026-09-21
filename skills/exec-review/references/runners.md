@@ -6,13 +6,35 @@
 
 ## 选择
 
-| runner | 二进制默认 | 说明 |
-|--------|------------|------|
-| `codex`（默认） | `codex` / `$CODEX_BIN` | `codex exec --json`；`-o` / `--output-schema` 写最终消息；stdout JSONL → normalized events；`thinking` → `-c model_reasoning_effort=…` |
-| `pi` | `pi` / `$PI_BIN` | `pi -p --no-session --mode json`；用 `@promptFile` 喂入；stdout JSONL → normalized events；`thinking` → `--thinking` |
-| `agent` | `agent` / `$AGENT_BIN` / `$CURSOR_AGENT_BIN` | Cursor CLI `agent -p --output-format stream-json`；用 prompt 文件指针喂入；`thinking` → 折进 `--model …[effort=…]` |
+| runner | 二进制默认 | 续会话 | 说明 |
+|--------|------------|--------|------|
+| `codex`（默认） | `codex` / `$CODEX_BIN` | `resume` | `codex exec --json`；`-o` / `--output-schema` 写最终消息；stdout JSONL → normalized events；`thinking` → `-c model_reasoning_effort=…` |
+| `pi` | `pi` / `$PI_BIN` | `create-or-resume` | `pi -p --no-session --mode json`；用 `@promptFile` 喂入；stdout JSONL → normalized events；`thinking` → `--thinking` |
+| `agent` | `agent` / `$AGENT_BIN` / `$CURSOR_AGENT_BIN` | `none` | Cursor CLI `agent -p --output-format stream-json`；用 prompt 文件指针喂入；`thinking` → 折进 `--model …[effort=…]` |
 
 执行端与审查端可以不同 runner（`executor.runner` / `reviewer.runner`，或 `--executor-runner` / `--reviewer-runner`）。
+
+## 续会话
+
+默认每个 turn 都是**无痕**的（pi 带 `--no-session`，其它 runner 各自等价）。想让一个 turn 接在**已有的对话**后面，给 turn 加一个 `session`（见 `CONTEXT.md` 的 **Session reference**）：
+
+```js
+runner.runTurn({ workdir, prompt, outFile, logFile, eventsFile, session: '<reference>' })
+```
+
+`session` 对调用方**不透明**：原样传进去，不由调用方拼装。三个 runner 的支持程度不一样，调用方必须按能力降级，不能假设「接上了」：
+
+| 能力 | 含义 | 做法 |
+|------|------|------|
+| `create-or-resume` | 有就续，没有就建 | pi：`--session-id <reference>`（替掉 `--no-session`） |
+| `resume` | **只能续已有的**，不能建 | codex：`exec resume <reference>` |
+| `none` | 没有已验证的接口 | agent：传了 `session` 就**报错**，不静默忽略 |
+
+问能力用 `runnerSessionMode(name)`（`runners/index.mjs`），不用先造 turn。
+
+**codex 续会话时能力会缩水**：`exec resume` 不接受 `-C` / `-s` / `--color`。工作目录由 spawn 的 `cwd` 负责；**续会话路径上没有沙箱开关**，要沙箱就用普通 `exec`，或者带 `--dangerously-bypass-approvals-and-sandbox`。
+
+**降级规则**：`resume` 遇到不存在的 session、`none` 被要求续会话时，**不要假装接上了**。调用方应当把上下文重新喂一遍（比如带上需求本子的路径，让它先读再动）——连续性丢了，内容不丢。
 
 ## 模型与思考
 
@@ -24,6 +46,7 @@
 ## 其它参数
 
 - `--bin` / 角色级 `--executor-bin`：覆盖可执行文件
+- `session`（不是 CLI 参数，是 turn 字段）：给一个 session reference 就续会话；见上方「续会话」
 - `--sandbox …`：
   - Codex：原样传给 `-s`
   - pi：在 `read-only` 或 `role=reviewer` 时 `--exclude-tools write,edit`

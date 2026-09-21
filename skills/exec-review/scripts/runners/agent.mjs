@@ -110,12 +110,18 @@ export function createAgentRunner(opts = {}) {
     name: 'agent',
     bin,
     /**
+     * 没有已验证的续会话接口（Cursor CLI 未安装，无法核对）。
+     * 调用方要续会话时应当自己降级成「拿需求本子重建上下文」，而不是以为接着聊了。
+     */
+    sessionMode: 'none',
+    /**
      * @param {object} turn
      * @param {string} turn.workdir
      * @param {string} turn.prompt
      * @param {string} [turn.promptFile]
      * @param {string} turn.outFile
      * @param {string} turn.logFile
+     * @param {string} [turn.session] 不支持；给了就报错，不静默忽略
      * @param {string} [turn.eventsFile]
      * @param {string} [turn.schemaFile] ignored (no --output-schema); prompts demand JSON
      * @param {string} [turn.sandbox]
@@ -126,6 +132,13 @@ export function createAgentRunner(opts = {}) {
      * @param {AbortSignal} [turn.signal]
      */
     runTurn(turn) {
+      // 静默忽略会让人以为会话续上了。宁可响亮地失败，由调用方决定怎么降级。
+      if (turn.session) {
+        throw new Error(
+          'agent runner 不支持续会话（Cursor CLI 的 resume 接口未验证）。' +
+            '请改用支持续会话的 runner，或让调用方按「重建上下文」降级。',
+        )
+      }
       const args = buildAgentArgs(turn, {
         model: defaultModel,
         thinking: defaultThinking,
