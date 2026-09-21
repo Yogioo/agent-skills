@@ -39,14 +39,16 @@ const args = process.argv.slice(2)
 state.calls.push(args)
 if (args[0] === 'issue' && args[1] === 'edit') {
   const id = args[2]
-  const addAt = args.indexOf('--add-label')
-  if (addAt >= 0) {
-    const issue = (state.issues || []).find((item) => String(item.number) === String(id))
-    const name = args[addAt + 1]
-    if (issue && name) {
-      const labels = Array.isArray(issue.labels) ? issue.labels : []
-      if (!labels.some((label) => label && label.name === name)) labels.push({ name })
-      issue.labels = labels
+  const issue = (state.issues || []).find((item) => String(item.number) === String(id))
+  for (let i = 3; i < args.length; i++) {
+    if (args[i] !== '--add-label' && args[i] !== '--remove-label') continue
+    const name = args[i + 1]
+    if (!issue || !name) continue
+    const labels = Array.isArray(issue.labels) ? issue.labels : []
+    if (args[i] === '--add-label') {
+      if (!labels.some((label) => label && label.name === name)) issue.labels = [...labels, { name }]
+    } else {
+      issue.labels = labels.filter((label) => !label || label.name !== name)
     }
   }
 }
@@ -170,9 +172,85 @@ test('gh source lists ready issues, reuses detail, and writes lifecycle commands
       assert.deepEqual(state.calls.slice(1), [
         ['issue', 'edit', '2', '--add-label', 'in-progress', '--repo', 'owner/repo'],
         ['issue', 'close', '2', '--comment', 'afk: approved — implemented', '--repo', 'owner/repo'],
+        [
+          'issue',
+          'edit',
+          '2',
+          '--remove-label',
+          'ready-for-agent',
+          '--remove-label',
+          'in-progress',
+          '--repo',
+          'owner/repo',
+        ],
         ['issue', 'comment', '3', '--body', 'afk failed: review rejected', '--repo', 'owner/repo'],
-        ['issue', 'edit', '3', '--add-label', 'afk-failed', '--repo', 'owner/repo'],
+        [
+          'issue',
+          'edit',
+          '3',
+          '--remove-label',
+          'in-progress',
+          '--add-label',
+          'afk-failed',
+          '--repo',
+          'owner/repo',
+        ],
       ])
+    },
+  )
+})
+
+test('markDone clears the queue and claim labels so a reopened story can be re-armed', async () => {
+  await withFakeGh(
+    {
+      issues: [issue(8, 'shipped', '', ['bug', 'ready-for-agent', 'P1', 'in-progress'])],
+    },
+    async () => {
+      const source = createGhSource({
+        cwd: process.cwd(),
+        repo: 'owner/repo',
+        command: process.execPath,
+        commandPrefix: [join(dirname(process.env.AFK_FAKE_GH_STATE), 'fake-gh.mjs')],
+      })
+
+      await source.markDone('8', { status: 'approved', summary: 'shipped' })
+      const afterDone = JSON.parse(readFileSync(process.env.AFK_FAKE_GH_STATE, 'utf8'))
+      const labels = afterDone.issues[0].labels.map((label) => label.name)
+      assert.ok(!labels.includes('ready-for-agent'))
+      assert.ok(!labels.includes('in-progress'))
+
+      // 人把工单重新打开并放回队列：不再被残留的 in-progress 挡住。
+      afterDone.issues[0].labels.push({ name: 'ready-for-agent' })
+      writeFileSync(process.env.AFK_FAKE_GH_STATE, JSON.stringify(afterDone), 'utf8')
+      assert.deepEqual(await source.listReady(), [{ id: '8', title: 'shipped', priority: 1 }])
+    },
+  )
+})
+
+test('markFailed releases the claim but keeps the story queued', async () => {
+  await withFakeGh(
+    {
+      issues: [issue(9, 'retry me', '', ['ready-for-agent', 'in-progress'])],
+    },
+    async () => {
+      const source = createGhSource({
+        cwd: process.cwd(),
+        repo: 'owner/repo',
+        command: process.execPath,
+        commandPrefix: [join(dirname(process.env.AFK_FAKE_GH_STATE), 'fake-gh.mjs')],
+      })
+
+      await source.markFailed('9', 'review rejected')
+      const state = JSON.parse(readFileSync(process.env.AFK_FAKE_GH_STATE, 'utf8'))
+      const labels = state.issues[0].labels.map((label) => label.name)
+      assert.ok(!labels.includes('in-progress'))
+      assert.ok(labels.includes('ready-for-agent'))
+      assert.ok(labels.includes('afk-failed'))
+
+      // 人清掉 afk-failed 即重新武装。
+      state.issues[0].labels = state.issues[0].labels.filter((label) => label.name !== 'afk-failed')
+      writeFileSync(process.env.AFK_FAKE_GH_STATE, JSON.stringify(state), 'utf8')
+      assert.deepEqual(await source.listReady(), [{ id: '9', title: 'retry me', priority: 2 }])
     },
   )
 })

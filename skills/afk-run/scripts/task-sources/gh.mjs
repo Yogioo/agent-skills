@@ -239,6 +239,12 @@ export function createGhSource(opts = {}) {
     return { ...issue, labels: [...issue.labels, { name }] }
   }
 
+  function withoutLabel(issue, name) {
+    const wanted = name.toLowerCase()
+    const labels = issue.labels.filter((label) => labelName(label).toLowerCase() !== wanted)
+    return labels.length === issue.labels.length ? issue : { ...issue, labels }
+  }
+
   function readyIssues(issues) {
     const openSet = new Set(issues.map((issue) => issue.number))
     return issues
@@ -305,6 +311,19 @@ export function createGhSource(opts = {}) {
     markDone(id, result = {}) {
       const comment = `afk: ${result.status || 'done'} — ${String(result.summary || '').slice(0, 200)}`
       run(issueArgs(repo, ['issue', 'close', String(id), '--comment', comment]))
+      // 故事离开 agent 的手：队列标签与认领标记一起摘掉，否则重开工单会被
+      // in-progress 永久挡住（listReady 排除带 in-progress 的工单）。
+      run(
+        issueArgs(repo, [
+          'issue',
+          'edit',
+          String(id),
+          '--remove-label',
+          'ready-for-agent',
+          '--remove-label',
+          'in-progress',
+        ]),
+      )
       mutateSnapshot(id, () => null)
     },
 
@@ -315,8 +334,20 @@ export function createGhSource(opts = {}) {
 
     markFailed(id, note = '') {
       run(issueArgs(repo, ['issue', 'comment', String(id), '--body', `afk failed: ${String(note).slice(0, 300)}`]))
-      run(issueArgs(repo, ['issue', 'edit', String(id), '--add-label', 'afk-failed']))
-      mutateSnapshot(id, (issue) => withLabel(issue, 'afk-failed'))
+      // 认领结束但故事仍在 agent 手上：保留 ready-for-agent，人清掉 afk-failed
+      // 后工单自然回到队列。
+      run(
+        issueArgs(repo, [
+          'issue',
+          'edit',
+          String(id),
+          '--remove-label',
+          'in-progress',
+          '--add-label',
+          'afk-failed',
+        ]),
+      )
+      mutateSnapshot(id, (issue) => withLabel(withoutLabel(issue, 'in-progress'), 'afk-failed'))
     },
 
     describeBlocked() {
