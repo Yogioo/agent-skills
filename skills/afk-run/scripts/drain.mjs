@@ -33,13 +33,14 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afkHomeRoot } from './afk-home.mjs'
-import { ackInboxItem, listInboxItems, updateInboxItem } from './inbox.mjs'
+import { listInboxItems, updateInboxItem } from './inbox.mjs'
 import {
   DEFAULT_HEARTBEAT_MS,
   findRequirementById,
   isHeartbeatFresh,
   readRequirementRecord,
   requirementDir,
+  resolveEventRequirement,
 } from './requirement.mjs'
 import { isProcessAlive } from '../../exec-review/scripts/workdir-session.mjs'
 import { createRunner, runnerSessionMode } from '../../exec-review/scripts/runners/index.mjs'
@@ -154,11 +155,30 @@ function groupByRequirement(items) {
     }
     const key = `${item.projectKey}\u0000${item.requirementId}`
     if (!groups.has(key)) {
-      groups.set(key, { projectKey: item.projectKey, requirementId: item.requirementId, items: [] })
+      groups.set(key, {
+        projectKey: item.projectKey,
+        requirementId: item.requirementId,
+        items: [],
+        routedByInbox: false,
+      })
     }
-    groups.get(key).items.push(item)
+    const group = groups.get(key)
+    group.items.push(item)
+    if (item.routedBy === 'inbox') group.routedByInbox = true
   }
   return { groups: [...groups.values()], unrouted }
+}
+
+/**
+ * 事件可能带着工单却没带需求号（生产者算不出，或者干脆没算）。
+ * 队列这一侧再试一次反查——这是三层路由的第三层。
+ * 只用 workItems，不看环境变量：环境变量那一层生产者已经用过了，
+ * 这里再看一遍只会把 drain 自己的环境误用到别人的事件上。
+ */
+function routeItem(item, { home }) {
+  if (item.requirementId) return item
+  const found = resolveEventRequirement({ home, explicit: '', env: {}, workItems: item.workItems || [] })
+  return found ? { ...item, requirementId: found.requirementId, routedBy: 'inbox' } : item
 }
 
 /**
@@ -198,7 +218,7 @@ export async function drainInbox({
   report.scanned = items.length
   if (items.length === 0) return report
 
-  const { groups, unrouted } = groupByRequirement(items)
+  const { groups, unrouted } = groupByRequirement(items.map((item) => routeItem(item, { home })))
   report.unrouted = unrouted.map((item) => ({ id: item.id, kind: item.kind, projectKey: item.projectKey }))
 
   for (const group of groups) {
@@ -266,6 +286,8 @@ export async function drainInbox({
     }
 
     const runDir = join(cacheRoot, `wake-${localStamp(now)}-${requirementId}`)
+    // 如果需求号是队列这一侧反查出来的，落盘时一并记上，免得下轮再查一遍、页面上也好看
+    const routePatch = group.routedByInbox ? { requirementId } : {}
     try {
       const prompt = buildWakePrompt({ record, items: pending })
       if (!dryRun) mkdirSync(runDir, { recursive: true })
@@ -304,7 +326,11 @@ export async function drainInbox({
 
       // 敲通了才算看过。只把状态推到 seen——done 由被叫醒的那一轮自己决定。
       for (const item of pending) {
-        ackInboxItem(item.id, { home, state: 'seen', note: `drain 已叫醒 ${runnerName}（${localStamp(now)}）` })
+        updateInboxItem(
+          item.id,
+          { state: 'seen', note: `drain 已叫醒 ${runnerName}（${localStamp(now)}）`, ...routePatch },
+          { home },
+        )
       }
       report.woke.push({
         requirementId, projectKey, items: pending.map((i) => i.id),
@@ -315,7 +341,7 @@ export async function drainInbox({
       for (const item of pending) {
         updateInboxItem(
           item.id,
-          { wakeAttempts: (item.wakeAttempts || 0) + 1, lastWakeError: message },
+          { wakeAttempts: (item.wakeAttempts || 0) + 1, lastWakeError: message, ...routePatch },
           { home },
         )
       }
