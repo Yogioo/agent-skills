@@ -6,6 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -24,7 +25,9 @@ import {
   newRequirementId,
   readRequirementRecord,
   requirementDir,
+  requirementNotFoundMessage,
   resolveEventRequirement,
+  resolveLookupProjectKey,
   resolveRequirementForWorkItem,
   stampHeartbeat,
   updateRequirementRecord,
@@ -32,6 +35,25 @@ import {
 } from '../../skills/afk-run/scripts/requirement.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const CLI = join(__dirname, '..', '..', 'skills', 'afk-run', 'scripts', 'requirement.mjs')
+
+/** 跑 CLI：cwd 可以故意和需求目录不一样，AFK_HOME 指进临时 home。 */
+function runCli(args, { home, cwd }) {
+  const env = { ...process.env, AFK_HOME: home }
+  try {
+    return {
+      code: 0,
+      out: execFileSync(process.execPath, [CLI, ...args], {
+        encoding: 'utf8',
+        env,
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim(),
+    }
+  } catch (err) {
+    return { code: err.status, out: ((err.stdout || '') + (err.stderr || '')).trim() }
+  }
+}
 
 /** 每个测试一个干净的 AFK home 加一个 workdir。 */
 async function withEnv(fn) {
@@ -272,5 +294,95 @@ test('坏文件与 inbox 目录都不影响扫需求', async () => {
     const records = listRequirementRecords({ home })
     assert.equal(records.length, 1)
     assert.equal(records[0].requirementId, record.requirementId)
+  })
+})
+
+test('resolveLookupProjectKey：显式 project > workdir > cwd', async () => {
+  await withEnv(({ home, workdir }) => {
+    const record = createRequirementRecord({ workdir }, { home })
+    assert.equal(resolveLookupProjectKey({ projectKey: 'explicit_key' }), 'explicit_key')
+    assert.equal(resolveLookupProjectKey({ workdir }), record.projectKey)
+    assert.equal(resolveLookupProjectKey({ cwd: workdir }), record.projectKey)
+  })
+})
+
+test('没找到需求的提示：说清它属于哪个项目、加什么参数', () => {
+  const base = { requirementId: 'req-x', projectKey: 'here_00000000' }
+  assert.equal(requirementNotFoundMessage(base), '没找到需求: req-x（项目 here_00000000）')
+
+  const hint = requirementNotFoundMessage({
+    ...base,
+    elsewhere: { projectKey: 'there_11111111', workdir: 'C:/projects/there' },
+  })
+  assert.match(hint, /没找到需求: req-x（项目 here_00000000）/)
+  assert.match(hint, /属于项目 there_11111111/)
+  assert.match(hint, /--project there_11111111/)
+  assert.match(hint, /C:\/projects\/there/)
+
+  // 就是本项目缺文件时不该凭空多一句「它在别处」
+  assert.equal(
+    requirementNotFoundMessage({ ...base, elsewhere: { projectKey: 'here_00000000' } }),
+    '没找到需求: req-x（项目 here_00000000）',
+  )
+})
+
+test('CLI：从别的 cwd 用 --project / --workdir 定位需求', async () => {
+  await withEnv(async ({ home, workdir }) => {
+    const elsewhere = mkdtempSync(join(tmpdir(), 'afk-req-other-'))
+    try {
+      const record = createRequirementRecord({ workdir, title: '跨目录' }, { home })
+
+      // 不带定位：按 cwd 推，找不到，但提示要指出真正的项目
+      const miss = runCli(['--get', '--requirement', record.requirementId], { home, cwd: elsewhere })
+      assert.equal(miss.code, 3)
+      assert.match(miss.out, new RegExp(record.projectKey))
+      assert.match(miss.out, /--project/)
+
+      // --project 从任意 cwd 找到它
+      const byProject = runCli(['--get', '--requirement', record.requirementId, '--project', record.projectKey, '--json'], {
+        home,
+        cwd: elsewhere,
+      })
+      assert.equal(byProject.code, 0)
+      assert.equal(JSON.parse(byProject.out).requirementId, record.requirementId)
+
+      // --workdir 同理（与 --create 的定位方式一致）
+      const byWorkdir = runCli(['--get', '--requirement', record.requirementId, '--workdir', workdir], {
+        home,
+        cwd: elsewhere,
+      })
+      assert.equal(byWorkdir.code, 0)
+      assert.match(byWorkdir.out, new RegExp(record.requirementId))
+
+      // 反向：在需求自己的 workdir 里不传定位，行为与以前一致
+      const inWorkdir = runCli(['--get', '--requirement', record.requirementId], { home, cwd: workdir })
+      assert.equal(inWorkdir.code, 0)
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+})
+
+test('CLI：从别的 cwd 用 --project 挂工单、关单', async () => {
+  await withEnv(async ({ home, workdir }) => {
+    const elsewhere = mkdtempSync(join(tmpdir(), 'afk-req-other-'))
+    try {
+      const record = createRequirementRecord({ workdir }, { home })
+      const locate = ['--requirement', record.requirementId, '--project', record.projectKey]
+
+      const linked = runCli(['--link', ...locate, '--source', 'beads', '--item', 'e2e-wik'], { home, cwd: elsewhere })
+      assert.equal(linked.code, 0)
+      assert.deepEqual(JSON.parse(linked.out).workItems, [{ taskSource: 'beads', id: 'e2e-wik' }])
+
+      const closed = runCli(['--close', ...locate], { home, cwd: elsewhere })
+      assert.equal(closed.code, 0)
+      assert.ok(JSON.parse(closed.out).closedAt > 0)
+
+      const after = readRequirementRecord({ home, projectKey: record.projectKey, requirementId: record.requirementId })
+      assert.equal(after.workItems.length, 1)
+      assert.ok(after.closedAt > 0)
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true })
+    }
   })
 })

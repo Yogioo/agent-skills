@@ -68,6 +68,15 @@ node <afk-run>/scripts/requirement.mjs --link --requirement <需求 id> --source
 | 起总览页（给人看的「什么在等我」） | `node <afk-watch>/scripts/start-overview.mjs` |
 | 结束这个需求 | `requirement.mjs --close --requirement <id>` |
 
+**认需求默认按当前目录。** `--get` / `--link` / `--close` / `--set-session` / `--heartbeat` 不带定位参数时，用**当前工作目录**推项目——所以只有在需求自己的 workdir 里跑才对。从别处调用（CI、批量脚本、排障）时，加上 `--project <projectKey>` 或 `--workdir <需求目录>`，用法与 `--create` 一致：
+
+```
+node <afk-run>/scripts/requirement.mjs --get --requirement <需求 id> --project <projectKey>
+node <afk-run>/scripts/requirement.mjs --close --requirement <需求 id> --workdir <需求目录>
+```
+
+按 id 找需求本来就只需要 id，不该被 cwd 拦住：找不到时它会直接告诉你这个需求属于哪个项目（并给可直接粘贴的 `--project`）。看到「没找到需求」先看这一句，不要把跨目录的定位问题当成需求不存在。
+
 **`--requirement` 必须一路传下去。** 少了它，后面的事件全变成「无主」——看得见，但叫不醒你。
 
 **给人看的地址要出现在你的回复正文里**（总览页的 `url`、问卷的访问地址都一样），不能只留在工具输出或日志里。

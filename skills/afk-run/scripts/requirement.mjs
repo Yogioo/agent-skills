@@ -17,13 +17,17 @@
  * CLI：
  *   node requirement.mjs --create --workdir <目录> [--requirement <id>] [--title <标题>] [--runner pi]
  *   node requirement.mjs --list [--project <key>] [--json]
- *   node requirement.mjs --get --requirement <id>
+ *   node requirement.mjs --get --requirement <id> [--project <key> | --workdir <目录>]
  *   node requirement.mjs --where --source <taskSource> --item <workItemId>
  *   node requirement.mjs --set-session --requirement <id> --runner pi [--ref <sessionRef>]
  *   node requirement.mjs --link --requirement <id> --source <taskSource> --item <workItemId>
  *   node requirement.mjs --heartbeat --requirement <id>
  *   node requirement.mjs --close --requirement <id>
  * 退出码：0 有内容 / 3 没找到 / 2 出错。
+ *
+ * 按 id 找需求的子命令默认按**当前工作目录**推项目，所以能跑在需求自己的 workdir 里。
+ * 从别处调用（CI、批量脚本、排障）时用 `--project <key>` 或 `--workdir <目录>` 显式定位，
+ * 不必先 cd 回去；找不到时也会指出需求实际属于哪个项目。
  */
 
 import {
@@ -282,6 +286,30 @@ export function findRequirementById({ home = afkHomeRoot(), requirementId } = {}
 }
 
 /**
+ * 这次调用查哪个项目：`--project` > `--workdir` > 当前工作目录。
+ * 后两条与 `--create` 一致：显式给工作目录时按它解析 projectKey（标签被改过也认）。
+ */
+export function resolveLookupProjectKey({ projectKey = '', workdir = '', cwd = process.cwd() } = {}) {
+  if (projectKey) return projectKey
+  return resolveProjectConfigDir(workdir || cwd).projectKey
+}
+
+/**
+ * 按 id 找不到需求时的提示。**「没找到」不等于「不存在」**：它可能登记在别的项目下，
+ * 而按 id 找的操作本来不需要 cwd 参与，所以要把真实项目名和怎么定位说清楚。
+ */
+export function requirementNotFoundMessage({ requirementId = '', projectKey = '', elsewhere = null } = {}) {
+  const lines = [`没找到需求: ${requirementId}（项目 ${projectKey}）`]
+  if (elsewhere && elsewhere.projectKey && elsewhere.projectKey !== projectKey) {
+    lines.push(
+      `该需求属于项目 ${elsewhere.projectKey}，请加 --project ${elsewhere.projectKey}，` +
+        `或在它的 workdir 中执行（${elsewhere.workdir || '未知'}）`,
+    )
+  }
+  return lines.join('\n')
+}
+
+/**
  * 按 session reference 反查需求。**这就是需求助理的无状态入口**：
  * 它拿自己的 session 环境变量就能知道「我是哪个需求」，不靠记忆。
  */
@@ -355,12 +383,14 @@ function parseArgs(argv) {
 const USAGE = [
   'node requirement.mjs --create --workdir <目录> [--requirement <id>] [--title <标题>] [--runner pi]',
   'node requirement.mjs --list [--project <key>] [--json]',
-  'node requirement.mjs --get --requirement <id>',
+  'node requirement.mjs --get --requirement <id> [--project <key> | --workdir <目录>]',
   'node requirement.mjs --where --source <taskSource> --item <workItemId>',
   'node requirement.mjs --set-session --requirement <id> --runner pi [--ref <sessionRef>]',
-  'node requirement.mjs --link --requirement <id> --source <taskSource> --item <workItemId>',
-  'node requirement.mjs --heartbeat --requirement <id>',
-  'node requirement.mjs --close --requirement <id>',
+  'node requirement.mjs --link --requirement <id> --source <taskSource> --item <workItemId> [--project <key> | --workdir <目录>]',
+  'node requirement.mjs --heartbeat --requirement <id> [--project <key> | --workdir <目录>]',
+  'node requirement.mjs --close --requirement <id> [--project <key> | --workdir <目录>]',
+  '',
+  '--requirement 相关子命令默认按当前目录推项目；从别处调用时用 --project / --workdir 定位。',
   '',
   '退出码: 0 有内容 / 3 没找到 / 2 出错',
 ].join('\n')
@@ -424,11 +454,12 @@ function main() {
     }
 
     // 其余模式都需要先找到需求
-    const project = args.projectKey || resolveProjectConfigDir(args.workdir || process.cwd()).projectKey
+    const project = resolveLookupProjectKey({ projectKey: args.projectKey, workdir: args.workdir })
     const lookup = { projectKey: project, requirementId: args.requirementId }
     const current = readRequirementRecord(lookup)
     if (!current) {
-      process.stdout.write(`没找到需求: ${args.requirementId}（项目 ${project}）\n`)
+      const elsewhere = findRequirementById({ requirementId: args.requirementId })
+      process.stdout.write(`${requirementNotFoundMessage({ requirementId: args.requirementId, projectKey: project, elsewhere })}\n`)
       process.exit(3)
     }
 
