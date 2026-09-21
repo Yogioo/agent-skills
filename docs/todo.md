@@ -45,6 +45,7 @@ node <afk-watch>/scripts/start-background.mjs --stop   --workdir <目录>
 
 ## 待办
 
+- **下一阶段：工单即需求，评论即接口**——需求从会话挪进工单评论，session 降级成可丢的草稿。这会改写身份模型和技能 I/O，先出 ADR-0011。见 [todo-ticket-comments.md](todo-ticket-comments.md)。
 - P2 验收证据化：助理出验收清单，agent 跑可自动化项并留证据，人只点收/退。
 - P3 飞书入向通道。
 - P3 总览页上的按钮（叫醒 / 标处理完）：会打破页面的只读性质，ADR-0009 把它记成没做而不是否决，要单独一个决定。
