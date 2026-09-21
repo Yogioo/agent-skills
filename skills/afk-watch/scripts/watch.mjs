@@ -11,6 +11,8 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isClean } from '../../afk-run/scripts/git.mjs'
 import { deepMerge, requireAfkSections, resolveAfkConfigFiles } from '../../afk-run/scripts/afk-home.mjs'
+import { emitInboxEvent } from '../../afk-run/scripts/inbox.mjs'
+import { resolveEventRequirement } from '../../afk-run/scripts/requirement.mjs'
 import { loopRegistryPath } from '../../afk-run/scripts/loop.mjs'
 import { createSource } from '../../afk-run/scripts/task-sources/index.mjs'
 import {
@@ -84,6 +86,8 @@ export function buildExecutionArgs(options) {
   if (Number(options.retry) > 0) args.push('--retry', String(options.retry))
   if (options.stopFile) args.push('--stop-file', options.stopFile)
   if (options.allowDirty) args.push('--allow-dirty')
+  // 把需求 id 透给 loop：这样它写的事件直接带上路由，不必反查
+  if (options.requirement) args.push('--requirement', options.requirement)
   for (const id of options.pinnedIds || []) {
     if (id) args.push('--pinned-id', String(id))
   }
@@ -369,6 +373,7 @@ function parseArgs(argv) {
     configPath: '',
     cacheDir: '',
     dryRun: false,
+    requirement: '',
     stop: false,
     serve: null,
     port: null,
@@ -427,6 +432,9 @@ function parseArgs(argv) {
         break
       case '--allow-dirty':
         out.allowDirty = true
+        break
+      case '--requirement':
+        out.requirement = next()
         break
       case '--require-atomic-claim':
         out.requireAtomicClaim = true
@@ -629,8 +637,38 @@ function createLiveSpawnRun({
   }
 }
 
-function startResidentDashboard({ registryPath, watchSession, port, open }) {
-  const args = [
+/**
+ * watcher 停下时要不要发信。
+ *
+ * 白名单，不是黑名单：只有下面这几个原因才叫人。`stop` 既覆盖「人要求停」也覆盖
+ * 「出现停止文件」，那种情况人已经知道，发信就是噪音。将来新增停止原因也不会
+ * 自动开始发信——要先把它加进这个表。
+ */
+const WATCH_NOTIFY_REASONS = new Set(['require-atomic-claim', 'error'])
+
+export function inboxPayloadForWatchStop({ requirement, workdir, reason, message, watchRunDir, servePort, error, home }) {
+  const crashed = Boolean(error)
+  const effectiveReason = crashed ? 'error' : reason
+  if (!WATCH_NOTIFY_REASONS.has(effectiveReason)) return null
+
+  const routed = resolveEventRequirement({ home, explicit: requirement })
+  return {
+    kind: crashed ? 'watch-error' : 'watch-stop',
+    requirementId: routed?.requirementId ?? null,
+    workdir,
+    title: crashed ? `watcher 异常退出：${error}` : `watcher 停了：${effectiveReason}`,
+    detail: {
+      reason: effectiveReason,
+      message: message || '',
+      watchRunDir: watchRunDir || '',
+      servePort: servePort || 0,
+      ...(crashed ? { error } : {}),
+    },
+    nextStep: '没人看活了。判断是该收尾、修配置再起，还是补一波工单',
+  }
+}
+
+function startResidentDashboard({ registryPath, watchSession, port, open }) {  const args = [
     LOOP_SERVE_PATH,
     '--watch-registry',
     registryPath,
@@ -833,6 +871,7 @@ function main() {
       stopFile,
       allowDirty,
       configPath: args.configPath,
+      requirement: args.requirement,
       maxTasks: runConfig.maxTasks,
       maxFailures: runConfig.maxFailures,
       retry: runConfig.retry,
@@ -891,6 +930,14 @@ function main() {
     .then((result) => {
       appendWatchEvent(watchRunDir, { event: 'watch_stop', reason: result.reason })
       console.error(`afk-watch ${formatWatchPhaseLog({ event: 'watch_stop', reason: result.reason })}`)
+      const payload = inboxPayloadForWatchStop({
+        requirement: args.requirement,
+        workdir,
+        reason: result.reason,
+        watchRunDir,
+        servePort: serveEnabled === false ? 0 : servePort,
+      })
+      if (payload) emitInboxEvent(payload, { log: (line) => console.error(line) })
       stopOwnedProcesses(owned, killOwnedProcess)
       updateWatcherRegistry(cacheRoot, workdir, { state: 'stopped', childPid: null, claimMode })
       releaseWatcherInstance(cacheRoot, workdir, process.pid)
@@ -904,6 +951,18 @@ function main() {
     })
     .catch((err) => {
       appendWatchEvent(watchRunDir, { event: 'watch_stop', reason: 'error', message: err.message })
+      emitInboxEvent(
+        inboxPayloadForWatchStop({
+          requirement: args.requirement,
+          workdir,
+          reason: 'error',
+          message: err.message,
+          watchRunDir,
+          servePort: serveEnabled === false ? 0 : servePort,
+          error: err.message,
+        }),
+        { log: (line) => console.error(line) },
+      )
       stopOwned()
       releaseWatcherInstance(cacheRoot, workdir, process.pid)
       console.error(err.stack || err.message || String(err))

@@ -43,6 +43,10 @@ _Avoid_: remote lock
 A work item that is not ready and not in progress. The reason is source-specific: an unfinished dependency, or a label a human must clear before it can be claimed again.
 _Avoid_: exec-review blocked status (the executor could not finish)
 
+**Work item reference**:
+A work item named as a pair: its task source and its id. Ids are strings, and two task sources can use the same string, so the pair is the only safe key.
+_Avoid_: story id, issue number (both are source-specific), id alone
+
 **Work-item pool**:
 The watcher's last successful poll of ready, in-progress, and blocked work items for one execution environment.
 _Avoid_: queue (the execution-run page already uses that word for its own columns), backlog
@@ -100,3 +104,17 @@ _Avoid_: laziness contract (a heading, not a term), phase gate
 **Stop-and-ask**:
 The closed list of conditions on which the requirement assistant interrupts the developer instead of acting. An action that reaches the developer from outside that list is a bug in the list.
 _Avoid_: approval (the assistant does not request approval), confirmation flow
+
+## Requirement record and inbox
+
+**Requirement record**:
+One file per requirement, at `<AFK home>/<projectKey>/requirements/<requirement id>.json`. It holds the requirement's identity when no session is open: workdir, runner, the session reference, the work items the requirement spawned, and the assistant's heartbeat. It is the requirement's durable form; a session is a view of it.
+_Avoid_: requirement file, spec (a spec is a separate artifact), ticket list
+
+**Session reference**:
+The runner-specific handle for a requirement's session, stored in the requirement record as an opaque string. Only the runner interprets it. Every other component copies it unchanged.
+_Avoid_: session id (only some runners use ids), thread, pane
+
+**Inbox item**:
+One file describing one thing that happened and needs a decision: an execution run ended, a watch session stopped, or a questionnaire was submitted. A producer writes it and knows no reader. It carries the requirement record it belongs to, or a work item reference when no requirement claims it yet. Its state moves `unread` → `seen` → `done`, and only an explicit acknowledgement moves it to `done`.
+_Avoid_: notification (an inbox item is durable, a notification is best-effort), queue (the work-item pool owns that word), event

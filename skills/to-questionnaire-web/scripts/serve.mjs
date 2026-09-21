@@ -8,15 +8,16 @@ import { basename, dirname, extname, join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 function parseArgs(argv) {
-  const args = { file: '', host: '0.0.0.0', port: 0, open: false }
+  const args = { file: '', host: '0.0.0.0', port: 0, open: false, requirement: '' }
   for (let i = 0; i < argv.length; i += 1) {
     const value = argv[i]
     if (value === '--file') args.file = argv[++i] || ''
     else if (value === '--host') args.host = argv[++i] || args.host
     else if (value === '--port') args.port = Number(argv[++i] || 0)
+    else if (value === '--requirement') args.requirement = argv[++i] || ''
     else if (value === '--open') args.open = true
     else if (value === '--help' || value === '-h') {
-      console.log('Usage: node serve.mjs --file <questionnaire.md> [--host 0.0.0.0] [--port 0] [--open]')
+      console.log('Usage: node serve.mjs --file <questionnaire.md> [--host 0.0.0.0] [--port 0] [--open] [--requirement <id>]')
       process.exit(0)
     }
   }
@@ -113,6 +114,15 @@ form.onsubmit=async(event)=>{event.preventDefault();saveDraft();status.textConte
 </script></body></html>`
 }
 
+// 把「策划答了」告诉 AFK 收件箱。
+// afk-run 可能没装（问卷技能应当能单独用），所以导入失败就只是不转发，不影响问卷本身。
+let afkInbox = null
+try {
+  afkInbox = await import('../../afk-run/scripts/inbox.mjs')
+} catch (error) {
+  console.error(JSON.stringify({ event: 'afk_inbox_unavailable', error: error.message }))
+}
+
 const args = parseArgs(process.argv.slice(2))
 const file = resolve(args.file)
 if (!existsSync(file)) throw new Error(`questionnaire file not found: ${file}`)
@@ -170,6 +180,16 @@ const server = createServer(async (request, response) => {
       writeFileSync(responseMarkdown, `${lines.join('\n')}\n`, 'utf8')
       const answeredCount = model.questions.filter((item) => (result.answers[item.id]?.answer || '').trim() !== '').length
       writeStatus({ state: 'submitted', submittedAt: result.submittedAt, answeredCount, questionCount: model.questions.length })
+      if (afkInbox) {
+        afkInbox.emitInboxEvent({
+          kind: 'questionnaire-submitted',
+          requirementId: args.requirement || null,
+          workdir: process.cwd(),
+          title: `策划回答了 ${answeredCount}/${model.questions.length} 题：${model.title}`,
+          detail: { responseFile, responseMarkdown, statusFile, questionnaireFile: file, answeredCount },
+          nextStep: '读回答，把它纳入需求上下文，继续澄清或推进',
+        }, { log: (line) => console.error(line) })
+      }
       response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
       // 响应 flush 后再退出：closeAllConnections 清掉浏览器挂着的 keep-alive 空闲连接，
       // 否则 server.close() 可能一直等在位连接上，进程退不掉。

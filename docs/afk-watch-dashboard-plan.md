@@ -23,7 +23,7 @@
 
 **非目标**
 - 不重写 Execution run 内部渲染——扩展现有 `loop-serve`。
-- 不做跨 Execution environment（workdir）聚合。
+- 不做跨 Execution environment（workdir）聚合。**已由 [ADR-0009](adr/0009-human-surface-is-one-page.md) 推翻**：总览页是另一个页面，不是这个页面的；这个页面仍然只管它自己那个 workdir。
 - 不做远程访问/鉴权（仍绑 `127.0.0.1`）。
 
 ## 页面区块

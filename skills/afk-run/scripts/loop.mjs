@@ -27,6 +27,8 @@ import { tmpdir } from 'node:os'
 import { createSource } from './task-sources/index.mjs'
 import * as gitModule from './git.mjs'
 import { deepMerge, requireAfkSections, resolveAfkConfigFiles } from './afk-home.mjs'
+import { emitInboxEvent } from './inbox.mjs'
+import { resolveEventRequirement } from './requirement.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const RUN_TASK_PATH = resolve(
@@ -406,6 +408,49 @@ export async function runLoop(deps) {
 
 // ---------- CLI 主入口 ----------
 
+/**
+ * 一批干完就往收件箱放一封信——唤醒环的源头之一。
+ * 永不抛：写不成收件箱不能弄挂 loop。
+ * 一批一个事件（不是一单一个），因为人要做的决定是「这批行不行」。
+ */
+export function inboxPayloadForRun({ requirement, sourceName, workdir, result, runDir, reportFile, progressFile, serveUrl, error, home }) {
+  const tasks = result?.tasks || []
+  const workItems = tasks.map((task) => ({ taskSource: sourceName, id: task.id })).filter((item) => item.id)
+  const routed = resolveEventRequirement({ home, explicit: requirement, workItems })
+  const done = result?.stats?.done || 0
+  const failed = result?.stats?.failed || 0
+  const failedTasks = tasks
+    .filter((task) => task.kind === 'failed')
+    .map((task) => ({ id: task.id, title: task.title, reason: task.reason || task.summary || '' }))
+  const crashed = Boolean(error)
+
+  return {
+    kind: crashed ? 'run-error' : 'run-end',
+    requirementId: routed?.requirementId ?? null,
+    workdir,
+    workItems,
+    title: crashed
+      ? `执行链异常退出：${error}`
+      : `一批干完：${done} 完成 / ${failed} 失败`,
+    detail: {
+      reason: result?.reason || (crashed ? 'error' : ''),
+      attempted: result?.stats?.attempted || 0,
+      done,
+      failed,
+      runDir,
+      reportFile: reportFile || '',
+      progressFile: progressFile || '',
+      serveUrl: serveUrl || '',
+      failedTasks,
+      ...(crashed ? { error } : {}),
+    },
+    nextStep:
+      crashed || failed > 0
+        ? '看失败原因，判断是修 bug 还是重开一单'
+        : '读报告，出验收清单（准备到只差人点）',
+  }
+}
+
 function usage(code = 1) {
   const text = `用法:
   node loop.mjs --workdir <目录> [--source beads|gh] [--repo owner/name]
@@ -414,6 +459,7 @@ function usage(code = 1) {
     [--use-bot-identity] [--no-bot-identity]
     [--git-name <名>] [--git-email <邮箱>]
     [--config <~/.afk/config.json>] [--cache-dir <目录>] [--dry-run]
+    [--requirement <需求 id>]
     [--no-serve] [--no-open] [--port <端口>]
     透传 exec-review: [--timeout <秒>] [--runner <codex|pi>]
     [--executor-runner <…>] [--reviewer-runner <…>]
@@ -444,6 +490,7 @@ function parseArgs(argv) {
     configPath: '',
     cacheDir: '',
     dryRun: false,
+    requirement: '',
     timeout: 0,
     runner: '',
     executorRunner: '',
@@ -517,6 +564,9 @@ function parseArgs(argv) {
         break
       case '--dry-run':
         out.dryRun = true
+        break
+      case '--requirement':
+        out.requirement = next()
         break
       case '--timeout':
         out.timeout = Math.max(0, Number(next()) || 0)
@@ -1032,6 +1082,19 @@ function main() {
       const reportFile = writeReport(runDir, result, startedAt, workdir)
       emitLoopEvent('loop_end', { reason: result.reason, reportFile })
       releaseLoopInstance(cacheRoot, workdir, process.pid)
+      emitInboxEvent(
+        inboxPayloadForRun({
+          requirement: args.requirement,
+          sourceName,
+          workdir,
+          result,
+          runDir,
+          reportFile,
+          progressFile: loopProgressFile,
+          serveUrl,
+        }),
+        { log: (line) => console.error(line) },
+      )
       const summary = {
         reason: result.reason,
         attempted: result.stats.attempted,
@@ -1045,6 +1108,10 @@ function main() {
       process.stdout.write(JSON.stringify(summary, null, 2) + '\n')
     })
     .catch((err) => {
+      emitInboxEvent(
+        inboxPayloadForRun({ requirement: args.requirement, sourceName, workdir, runDir, error: err.message }),
+        { log: (line) => console.error(line) },
+      )
       releaseLoopInstance(cacheRoot, workdir, process.pid)
       console.error(`loop 异常: ${err.stack || err}`)
       process.exit(1)

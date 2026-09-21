@@ -29,10 +29,15 @@ node <afk-watch>/scripts/start-background.mjs --status --workdir <目录>
 node <afk-watch>/scripts/start-background.mjs --stop   --workdir <目录>
 ```
 
+## P1（已做 2026-09-21）
+
+1. **唤醒环**：一次 Execution run 结束 / watcher 异常停下 / 问卷提交 → 落 `~/.afk/inbox/*.json`；写者顺手 detached 踢一下 `drain.mjs`，drain 按需求本子路由，敲的是**原来那个 session**（runner 层负责翻译成各 CLI 的命令）。见 [ADR-0008](adr/0008-wake-ring-is-a-file-queue.md)。
+2. **需求状态落盘**：需求本子 `<AFK home>/<项目>/requirements/<id>.json` 是唯一真相，session 只是视图——需求助理靠 session reference 认自己，不靠记忆。见 `CONTEXT.md` 的 Requirement record / Session reference / Inbox item。
+
+脚本在 `skills/afk-run/scripts/`：`inbox.mjs`（收件箱读写）、`requirement.mjs`（需求本子 + 工单反查 + 心跳）、`drain.mjs`（一次性抽干 + 叫醒）、`checkin.mjs`（助理每轮报到）。
+
 ## 待办
 
-- P1 唤醒环：watch 批次结束 / questionnaire `submitted` → 落 `~/.afk/inbox/*.json`（或桌面通知、飞书 webhook），助理每轮先读 inbox。
-- P1 需求状态落盘：需求文件 / issue 是唯一真相，session 只是视图。
 - P2 验收证据化：助理出验收清单，agent 跑可自动化项并留证据，人只点收/退。
-- P2 多需求总览页：聚合「待人工处理」列表。
+- P2 多需求总览页：聚合「待人工处理」列表。**这张页面本身就是通知**（[ADR-0009](adr/0009-human-surface-is-one-page.md)），它推翻了 `afk-watch-dashboard-plan.md` 里「不做跨 workdir 聚合」那条非目标。
 - P3 飞书入向通道。
