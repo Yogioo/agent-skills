@@ -228,3 +228,28 @@ test('dry-run --runner agent 能跑通并写 executor.log 与 events', async () 
     rmSync(cache, { recursive: true, force: true })
   }
 })
+
+test('agent 没有已验证的续会话接口：给 session 就报错，不静默跑新会话', () => {
+  assert.equal(createRunner('agent').sessionMode, 'none')
+
+  const dir = mkdtempSync(join(tmpdir(), 'er-agent-session-'))
+  try {
+    const runner = createAgentRunner()
+    // 静默忽略会让人以为会话续上了。宁可响亮地失败，由调用方决定怎么重喂上下文。
+    assert.throws(
+      () =>
+        runner.runTurn({
+          workdir: dir,
+          prompt: 'task',
+          outFile: join(dir, 'out.md'),
+          logFile: join(dir, 'log.txt'),
+          eventsFile: join(dir, 'events.jsonl'),
+          session: 'sess-abc',
+          dryRun: true,
+        }),
+      /不支持续会话/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
