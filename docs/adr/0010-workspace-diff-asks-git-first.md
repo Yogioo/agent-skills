@@ -1,0 +1,25 @@
+# Workspace change detection asks git first
+
+Status: accepted
+
+An execution run has to answer one question about its workdir: what changed while the agent worked. The answer decides whether the run is `done` or `no_change`, which files the reviewer is told about, and whether a failed task gets rolled back. `run-task` answers it by capturing a fingerprint of the workdir before and after each phase and diffing the two.
+
+The fingerprints used to come from a recursive walk that read every file and hashed its contents, skipping only `.git` and `node_modules`. On a real Unity workdir (DigitDoor: 51 GB, 123,266 files) one snapshot took over five minutes, and the run takes three of them — once before the executor, once after it, once after the reviewer. Worse, the walk is synchronous: it blocks the event loop, so the progress heartbeat stops and the run's own timeout cannot fire. A run that stalls inside the walk never writes `executor_end`, never writes `summary.json`, and never lets the loop mark the work item done, so the page reports `执行中` forever while the process sits idle. Measured on the affected run: the executor had already finished and committed its work at 15:50:38, and the run was still inside the post-executor snapshot at 16:00 with zero CPU and zero I/O.
+
+Snapshots are therefore taken from git when the workdir is a git work tree. `git ls-files -s` yields the index blob hash of every tracked file — the content fingerprint, without reading any file — and `git status --porcelain -z -uall --no-renames` names the only files whose contents must actually be read. Cost tracks how much the agent changed, not how large the repository is. The same workdir takes 161 ms. Every fingerprint is the git blob hash (`sha1("blob <length>\0" + content)`), so index hashes and freshly computed hashes are comparable and the two modes agree.
+
+Non-git workdirs keep the walk, because there is no index to ask. It now skips a curated noise list — build output, dependencies, caches, Unity's `Library`/`Temp`/`CachedSymbols`, editor state — which is the same judgement `.gitignore` already records in a git workdir. A directory named like noise is skipped only when the file is untracked: a tracked file under `build/` is still compared, so a project that commits its build output does not silently lose change detection.
+
+## Considered Options
+
+- **Keep the content walk and only extend the skip list.** Rejected: the skip list has to guess what a project considers noise, and it cannot see anything `.gitignore` already encodes. It also leaves the run reading every source file's full contents three times, which is slow even on an ordinary workdir.
+- **Trust `git status` alone and drop the fingerprints.** Rejected: the executor commits its own work, so HEAD moves and the tree becomes clean. `git status` at that moment reports nothing, and the run would conclude `no_change` about a task that just changed files. Comparing content across the two snapshots is what makes the answer independent of HEAD moving.
+- **Make the walk asynchronous instead of using git.** Rejected as the primary fix: it would stop the event loop from blocking, but the run would still spend ~15 minutes per task hashing files that do not matter. Correctness of the timeout is worth having, but not at that price. The walk stays synchronous and bounded by the skip list.
+- **Cap the walk by file size or count.** Rejected: silently ignoring part of a workdir makes "no change" mean "no change we looked at", which is a worse failure than a slow run.
+
+## Consequences
+
+- Change detection in a git workdir inherits `.gitignore`, including its mistakes: a file the project ignores is invisible to the diff even if the agent edited it. This is a deliberate trade — ignored files are build output far more often than they are deliverables — and it is visible in the config rather than buried in a skip list.
+- A workdir with no usable git binary, or one that is not a work tree, silently falls back to the walk. `captureWorkspace` reports which mode it used, and `run-task` logs the mode, the file count and the elapsed time on every snapshot, so a slow run is attributable instead of mysterious.
+- Snapshots are still synchronous. The git mode makes that affordable for the workdirs this runs against; a non-git workdir of unusual size can still stall a run, and that would have to be solved by making the walk async.
+- Paths in a snapshot are relative to the snapshot directory and use `/`, in both modes, matching git's own output.

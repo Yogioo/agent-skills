@@ -230,7 +230,10 @@ test('run-task 收集 git 只读上下文，并以工作区快照检测改动', 
   assert.match(src, /['"]git['"]/, '应调用 git 命令')
   assert.match(src, /rev-parse/, '应读取仓库状态与 BASE_HEAD')
   assert.ok(src.includes("from './workspace.mjs'"), '应引入 workspace 快照模块')
-  assert.match(src, /snapshot\(workdir\)/, '执行前应做工作区快照')
+  assert.match(src, /captureWorkspace\(workdir\)/, '执行前应做工作区快照')
+  assert.match(src, /BEFORE|before/, '应保留执行前快照用于比对')
+  assert.equal(/[^.a-zA-Z]snapshot\(workdir\)/.test(src), false, '不应再用全文哈希的旧入口')
+  assert.match(src, /describeSnapshot/, '快照模式与耗时应进日志：卡在哪一步要看得出来')
   assert.match(src, /changedFiles/, '应以改动文件为准，而非提交')
 })
 

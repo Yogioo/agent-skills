@@ -30,7 +30,7 @@ import {
   overlaySources,
 } from './prompt-overlays.mjs'
 import { ProgressWriter } from './progress.mjs'
-import { snapshot, diff } from './workspace.mjs'
+import { captureWorkspace, diff } from './workspace.mjs'
 import { extractJsonFromEventsFile, extractJsonFromText } from './normalize-agent.mjs'
 import {
   cleanupPreviousSession,
@@ -459,6 +459,15 @@ function logMain(mainLogPath, line) {
   console.error(line)
 }
 
+/**
+ * 快照走了哪条路、花了多久、看到多少文件。
+ * 这三项必须进 main.log：快照曾经是「把整个工程读一遍算 SHA1」，
+ * 卡住时日志里只有一行「执行端开始」，事后完全看不出卡在哪。
+ */
+function describeSnapshot(label, capture) {
+  return `workspace: ${label} mode=${capture.mode} files=${Object.keys(capture.files).length} ${capture.elapsedMs}ms`
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (!args.workdir) usage()
@@ -631,7 +640,9 @@ async function main() {
   )
 
   // 执行前快照与 git 上下文：快照检测改动，git 查询只读
-  const before = snapshot(workdir)
+  const beforeSnap = captureWorkspace(workdir)
+  const before = beforeSnap.files
+  logMain(mainLogPath, describeSnapshot('before', beforeSnap))
   const gitContext = collectGitContext(workdir)
   const commitRule = buildExecutorCommitRule({
     gitCommit: settings.gitCommit,
@@ -707,7 +718,9 @@ async function main() {
     (existsSync(executorEvents) ? extractJsonFromEventsFile(executorEvents) : null) ||
     extractJsonFromText(execText)
   if (!outcome || typeof outcome !== 'object') outcome = null
-  const afterExec = snapshot(workdir)
+  const afterExecSnap = captureWorkspace(workdir)
+  const afterExec = afterExecSnap.files
+  logMain(mainLogPath, describeSnapshot('after-executor', afterExecSnap))
   const execDiff = diff(before, afterExec)
   const changedFiles = [...execDiff.changed, ...execDiff.added]
   const changedAny = changedFiles.length > 0 || execDiff.removed.length > 0
@@ -883,7 +896,9 @@ async function main() {
     finalize(summary, join(runDir, 'summary.json'))
     return
   }
-  const afterReview = snapshot(workdir)
+  const afterReviewSnap = captureWorkspace(workdir)
+  const afterReview = afterReviewSnap.files
+  logMain(mainLogPath, describeSnapshot('after-reviewer', afterReviewSnap))
   const reviewDiff = diff(afterExec, afterReview)
   const reviewChanged = [...reviewDiff.changed, ...reviewDiff.added]
   if (review.status !== 'refined' && reviewChanged.length > 0) {

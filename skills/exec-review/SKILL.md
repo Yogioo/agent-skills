@@ -10,7 +10,7 @@ description: '对一段任务说明跑执行（可选再审查；runner 必填�
 - **执行**：改工作区文件，报告简单 JSON outcome
 - **审查**（默认关，`--review true` 开启）：对照任务说明与仓库规范，审查执行端改动涉及的文件并**直接改进**
 
-**高度可复用：** 不假设目标目录是 git 仓库（改动检测用内容快照，跳过 `.git`/`node_modules`）。git 仓库默认允许执行端提交；`gitCommit: false` 或非 git 场景由调用方提交。让审查端直接改，是为了避免「审查端只报结论 → 执行端新开一次上下文处理」的低效往返。
+**高度可复用：** 不假设目标目录是 git 仓库——是 git 仓库就用 git 判改动（`git ls-files` + `git status`，只读真正脏了的文件），不是才退回内容快照遍历。git 仓库默认允许执行端提交；`gitCommit: false` 或非 git 场景由调用方提交。让审查端直接改，是为了避免「审查端只报结论 → 执行端新开一次上下文处理」的低效往返。
 
 入口：本目录 `scripts/run-task.mjs`。**需要先有 `~/.afk/config.json`**（否则启动即报错，见下）。
 
@@ -125,7 +125,7 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 - `~/.afk/config.json` 的 `execReview` 分区 — 默认 runner / 模型 / 思考等级（exec、review 可分开）+ `review` 开关 + gitCommit + sandbox + serve / returnLevel / heartbeatMs
 - `scripts/run-task.mjs` — 入口（默认只执行；`review: true` 时再审查；`gitCommit` 时注入通用 git 指引）
 - `scripts/commit-rules.mjs` — 仅 `gitCommit` 编排边界（何时 commit、BASE_HEAD、工作区干净）
-- `scripts/workspace.mjs` — 内容快照改动检测
+- `scripts/workspace.mjs` — 工作区改动检测（git 模式 / walk 模式）
 - `scripts/progress.mjs` — 单条进度事件流（level + 心跳）
 - `scripts/progress-http.mjs` — 进度页 HTML + SSE（里程碑 + agent 结构化事件）
 - `scripts/normalize-event.mjs` — 三 runner JSONL → NormalizedEvent（统一入口）
