@@ -174,6 +174,41 @@ test('需求已结束也照常报到，只是提示一句', async () => {
   })
 })
 
+test('runner 对不上要当场喊：本子里记的 runner 和这个 session 实际跑的不一致', async () => {
+  await withEnv(({ home, workdir }) => {
+    // 真实踩过：项目执行链配的是 agent，登记的人就把 agent 写了进去，
+    // 但助理 session 是 pi——runnerMode('agent') 是 none，唤醒环永远叫不醒它。
+    const record = createRequirementRecord(
+      { workdir, runner: 'agent', sessionRef: 'sess-mismatch' },
+      { home },
+    )
+
+    const result = checkin({ home, env: { PI_SESSION_ID: 'sess-mismatch' } })
+    assert.equal(result.ok, true, 'runner 不一致也要先把需求找回来，不能报「没登记过」')
+    assert.equal(result.record.requirementId, record.requirementId)
+    assert.deepEqual(result.runnerMismatch, {
+      recorded: 'agent',
+      detected: 'pi',
+      via: 'PI_SESSION_ID',
+    })
+
+    // 对上了就不喊
+    updateRequirementRecord(
+      { home, projectKey: record.projectKey, requirementId: record.requirementId },
+      { runner: 'pi' },
+    )
+    assert.equal(checkin({ home, env: { PI_SESSION_ID: 'sess-mismatch' } }).runnerMismatch, null)
+  })
+})
+
+test('--no-beat 时报告里说明没盖心跳，不说谎', async () => {
+  await withEnv(({ home, workdir }) => {
+    createRequirementRecord({ workdir, runner: 'pi', sessionRef: 'sess-ro' }, { home })
+    assert.equal(checkin({ home, env: { PI_SESSION_ID: 'sess-ro' }, beat: false }).beat, false)
+    assert.equal(checkin({ home, env: { PI_SESSION_ID: 'sess-ro' } }).beat, true)
+  })
+})
+
 test('CLI 退出码：有未读 0 / 没我的事 3', async () => {
   await withEnv(({ home, workdir }) => {
     const record = createRequirementRecord({ workdir, runner: 'pi', sessionRef: 'sess-cli' }, { home })

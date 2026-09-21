@@ -50,7 +50,7 @@ node <afk-run>/scripts/checkin.mjs
 node <afk-run>/scripts/requirement.mjs --create --workdir <工作目录> --title "<需求标题>" --runner pi --ref "$PI_SESSION_ID"
 ```
 
-`--ref` 是 runner 专属的（pi 是 `$PI_SESSION_ID`）。换 runner 后 checkin 认不出时，用 `--session <ref>` 显式传。
+**`--runner` 说的是「你这个助理 session 跑在哪个 harness 上」**，不是项目执行链用的 runner——两者可以不同，写错了唤醒环就永远叫不醒你（checkin 发现对不上会当场喊）。pi 的 reference 是 `$PI_SESSION_ID`；换 harness 后 checkin 认不出时用 `--session <ref>` 显式传。
 
 建完工单立刻挂上——唤醒环靠这个把工单和需求对上：
 

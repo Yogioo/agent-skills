@@ -58,7 +58,9 @@ export function checkin({ home = afkHomeRoot(), requirementId = '', sessionRef =
     record = findRequirementById({ home, requirementId })
     if (!record) return { ok: false, reason: `没有这个需求: ${requirementId}` }
   } else if (ref) {
-    record = findRequirementBySession({ home, sessionRef: ref, runner: runnerName })
+    // 不带 runner 过滤：runner 不一致时也要先把需求找回来，才能告诉人「你对不上」。
+    // 过滤掉就变成了「没登记过」——把真正的原因藏起来了。
+    record = findRequirementBySession({ home, sessionRef: ref })
     if (!record) {
       return { ok: false, reason: `这个 session 还没有登记过（${detected.via || '--session'} = ${ref}）` }
     }
@@ -80,8 +82,24 @@ export function checkin({ home = afkHomeRoot(), requirementId = '', sessionRef =
     ? stampHeartbeat({ home, projectKey: record.projectKey, requirementId: record.requirementId }, now) || record
     : record
 
+  // 本子里记的 runner 和这个 session 实际跑在哪个 harness 上不一致时，唤醒环会叫不醒你。
+  // 这是「看着一切正常、其实永远叫不动」那类失败，必须喊出来。
+  // 不自动改：不一致也可能是故意的（比如为了排查把助理跑在另一个 harness 上）。
+  const mismatched = final.runner && detected.runner && final.runner !== detected.runner
+  const runnerMismatch = mismatched
+    ? { recorded: final.runner, detected: detected.runner, via: detected.via }
+    : null
+
   const items = listInboxItems({ home, states: ['unread'], requirementId: final.requirementId })
-  return { ok: true, record: final, items, heartbeatAt: final.heartbeatAt, sessionVia: detected.via }
+  return {
+    ok: true,
+    record: final,
+    items,
+    beat,
+    heartbeatAt: final.heartbeatAt,
+    sessionVia: detected.via,
+    runnerMismatch,
+  }
 }
 
 // ---------------------------------------------------------------- CLI
@@ -111,12 +129,22 @@ function printCheckin(result) {
   const lines = []
   if (!result.ok) {
     lines.push(`认不出我负责哪个需求：${result.reason}`)
-    lines.push('还没登记过就先登记：node requirement.mjs --create --workdir <目录> --title <标题> --runner <runner>')
+    lines.push('还没登记过就先登记：node requirement.mjs --create --workdir <目录> --title <标题> --runner <runner> --ref <session reference>')
     return lines.join('\n')
   }
   const r = result.record
   lines.push(`需求 ${r.requirementId}${r.title ? `「${r.title}」` : ''}`)
-  lines.push(`  项目: ${r.projectKey}   runner: ${r.runner || '-'}   心跳已盖`)
+  lines.push(`  项目: ${r.projectKey}   runner: ${r.runner || '-'}   ${result.beat ? '心跳已盖' : '只读（没盖心跳）'}`)
+  if (result.runnerMismatch) {
+    lines.push(
+      `  ⚠ runner 对不上：本子里记的是 ${result.runnerMismatch.recorded}，` +
+        `但这个 session 是 ${result.runnerMismatch.detected}（${result.runnerMismatch.via}）—— 唤醒环会叫不醒你。`,
+    )
+    lines.push(
+      `     改过来：node requirement.mjs --set-session --requirement ${r.requirementId} ` +
+        `--runner ${result.runnerMismatch.detected} --ref <本 session 的 reference>`,
+    )
+  }
   if (r.workItems?.length) {
     lines.push(`  工单: ${r.workItems.map((i) => `${i.taskSource}:${i.id}`).join(', ')}`)
   }
