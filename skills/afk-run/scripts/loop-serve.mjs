@@ -79,7 +79,7 @@ export function projectLoopState(loopEvents = [], progressEvents = []) {
       tasks.set(event.id, {
         ...old,
         ...event,
-        state: event.kind === 'done' ? 'done' : 'failed',
+        state: event.kind === 'done' ? 'done' : event.kind === 'noop' ? 'noop' : 'failed',
         updatedAt: event.t,
       })
       if (currentId === event.id) {
@@ -121,7 +121,9 @@ export function projectLoopState(loopEvents = [], progressEvents = []) {
     })
   }
   const settledIds = new Set(
-    list.filter((task) => task.state === 'done' || task.state === 'failed').map((task) => task.id),
+    list
+      .filter((task) => task.state === 'done' || task.state === 'failed' || task.state === 'noop')
+      .map((task) => task.id),
   )
   const inProgressIds = new Set(
     list.filter((task) => task.state === 'in_progress').map((task) => task.id),
@@ -142,6 +144,7 @@ export function projectLoopState(loopEvents = [], progressEvents = []) {
     .filter(notClaimed)
     .map((task) => ({ ...task, state: 'blocked' }))
   const done = list.filter((task) => task.state === 'done').map(withDetailUrl)
+  const noop = list.filter((task) => task.state === 'noop').map(withDetailUrl)
   const failed = list.filter((task) => task.state === 'failed').map(withDetailUrl)
   const currentTask = active.find((task) => task.id === currentId) || active.at(-1) || null
 
@@ -186,6 +189,7 @@ export function projectLoopState(loopEvents = [], progressEvents = []) {
     active,
     blocked,
     done,
+    noop,
     failed,
     current,
     reason,
@@ -212,6 +216,7 @@ export function findTaskRecord(state, taskId) {
     state.ready,
     state.active,
     state.done,
+    state.noop,
     state.failed,
     state.current ? [state.current] : [],
   ]
@@ -310,6 +315,7 @@ function emptyLoopState() {
     active: [],
     blocked: [],
     done: [],
+    noop: [],
     failed: [],
     current: null,
     reason: '',
@@ -385,7 +391,7 @@ const HTML = `
   .eventrow:first-child { border-top:0; padding-top:0; }
   .eventrow b { color:var(--text); }
   .hidden { display:none !important; }
-  .queues { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
+  .queues { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; }
   .queue { min-height:138px; border:1px solid var(--line); background:var(--panel); padding:13px; border-radius:6px; }
   .queue h3 { color:var(--muted); font-size:12px; font-weight:600; margin-bottom:10px; }
   .count { font-family:var(--mono); color:var(--dim); float:right; }
@@ -405,6 +411,7 @@ const HTML = `
   .chip.ok { color:var(--green); background:#4bc47b22; }
   .chip.bad { color:var(--red); background:#e0676722; }
   .failed .taskid { color:var(--red); } .finished .taskid { color:var(--green); }
+  .noopcol .taskid { color:var(--muted); }
   .blockedcol .taskid { color:var(--amber); }
   .empty { color:var(--dim); font-size:13px; }
   .current { border:1px solid var(--line); background:var(--panel); padding:18px; border-radius:6px; display:grid; grid-template-columns:minmax(220px,1fr) 210px; gap:24px; }
@@ -437,6 +444,7 @@ const HTML = `
     <span class="pill active">进行中<b id="pillactive">0</b></span>
     <span class="pill warn">阻塞<b id="pillblocked">0</b></span>
     <span class="pill ok">完成<b id="pillfinished">0</b></span>
+    <span class="pill warn">无需改动<b id="pillnoop">0</b></span>
     <span class="pill bad">失败<b id="pillfailed">0</b></span>
   </div>
   <div class="summary">
@@ -465,6 +473,7 @@ const HTML = `
       <div class="queue"><h3>进行中 <span class="count" id="activecount">0</span></h3><div id="active"></div></div>
       <div class="queue blockedcol"><h3>阻塞 <span class="count" id="blockedcount">0</span></h3><div id="blocked"></div></div>
       <div class="queue finished"><h3>完成 <span class="count" id="finishedcount">0</span></h3><div id="finished"></div></div>
+      <div class="queue noopcol"><h3>无需改动 <span class="count" id="noopcount">0</span></h3><div id="noop"></div></div>
       <div class="queue failed"><h3>失败 <span class="count" id="failedcount">0</span></h3><div id="failed"></div></div>
     </div>
   </section>
@@ -506,6 +515,7 @@ const HTML = `
     if (stage === 'settled') return '<span class="chip ok">已结束</span>';
     if (task && task.state === 'in_progress') return '<span class="chip run">进行中</span>';
     if (task && task.state === 'done') return '<span class="chip ok">'+(esc(task.status || 'done'))+'</span>';
+    if (task && task.state === 'noop') return '<span class="chip exec">无需改动</span>';
     if (task && task.state === 'failed') return '<span class="chip bad">'+(esc(task.status || task.kind || 'failed'))+'</span>';
     return '';
   }
@@ -575,7 +585,7 @@ const HTML = `
     $('stopfile').textContent = state.stopFile || '-';
     $('stopsummary').textContent = state.stopFile || '-';
     $('rundir').textContent = state.runDir || (watch && watch.execRunDir) || '-';
-    queue('ready', state.ready || []); queue('active', state.active || []); queue('blocked', state.blocked || [], blockedTask); queue('finished', state.done || []); queue('failed', state.failed || []);
+    queue('ready', state.ready || []); queue('active', state.active || []); queue('blocked', state.blocked || [], blockedTask); queue('finished', state.done || []); queue('noop', state.noop || []); queue('failed', state.failed || []);
     const current = state.current;
     const last = current ? current.lastEventAt : state.lastEventAt;
     const age = last ? Date.now() - last : 0;
@@ -713,6 +723,7 @@ function main() {
         active: (watch.pool.inProgress || []).map((task) => ({ ...task, state: 'in_progress' })),
         blocked: (watch.pool.blocked || []).map((task) => ({ ...task, state: 'blocked' })),
         done: loop.done || [],
+        noop: loop.noop || [],
         failed: loop.failed || [],
         current: null,
         reason: '',

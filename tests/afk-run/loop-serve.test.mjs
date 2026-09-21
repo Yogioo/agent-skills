@@ -63,7 +63,7 @@ test('loop-serve 页面提供看板所需区块，且不提供写停止文件入
   const used = [...new Set([...script[1].matchAll(/\$\(['"]([a-zA-Z]+)['"]\)/g)].map((m) => m[1]))]
   const defined = new Set([...html.matchAll(/id="([a-zA-Z]+)"/g)].map((m) => m[1]))
   assert.deepEqual(used.filter((id) => !defined.has(id)), [], '脚本引用的 id 都必须存在')
-  for (const id of ['ready', 'active', 'finished', 'failed', 'stage', 'heartbeat', 'stopfile', 'rundir', 'report', 'pipeline', 'currentpanel', 'detailstat', 'pillready', 'watchphase', 'watchsection', 'watchevents']) {
+  for (const id of ['ready', 'active', 'finished', 'noop', 'failed', 'stage', 'heartbeat', 'stopfile', 'rundir', 'report', 'pipeline', 'currentpanel', 'detailstat', 'pillready', 'pillnoop', 'watchphase', 'watchsection', 'watchevents']) {
     assert.ok(defined.has(id), `页面应有 #${id}`)
   }
   assert.doesNotMatch(html, /<button/i, '看板必须只读')
@@ -99,6 +99,18 @@ test('loop-serve 将 loop 事件和当前任务进度投影为队列与阶段状
   assert.equal(ended.reportFile, 'C:/run/report.md')
   assert.equal(ended.reason, 'all-done')
   assert.equal(ended.lastEventAt, 7)
+})
+
+test('loop-serve: no_change 落到「无需改动」栏，不算失败', async () => {
+  const { projectLoopState } = await import('../../skills/afk-run/scripts/loop-serve.mjs')
+  const state = projectLoopState([
+    { t: 1, event: 'loop_start', source: 'gh', runDir: 'C:/run' },
+    { t: 2, event: 'task_start', id: '7', title: 'overlays', attempt: 1 },
+    { t: 3, event: 'task_end', id: '7', title: 'overlays', kind: 'noop', status: 'no_change', reason: 'exec-review status=no_change: 需人确认', attempts: 1 },
+  ])
+  assert.deepEqual(state.failed, [])
+  assert.deepEqual(state.noop.map((task) => task.id), ['7'])
+  assert.equal(state.noop[0].reason, 'exec-review status=no_change: 需人确认')
 })
 
 test('loop-serve 队列更新会移除不再就绪的任务，同时保留历史结果', async () => {

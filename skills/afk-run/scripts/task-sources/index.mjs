@@ -9,6 +9,7 @@
  *   markDone(id, result) → result: {status, summary, commit?}
  *   closeEligibleParents?() → string[] 子单成功后收尾父容器（beads: bd epic close-eligible）
  *   markFailed(id, note)
+ *   （no_change 没有对应调用：不重试、不打退避标记，工单保持认领状态等人工确认）
  *   recoverStale?(thresholdSec, now = Date.now) → string[] 仅 beads 实现的启动期 stale 恢复
  *   describeBlocked()    → { ready, blocked: [{id, title, blockedBy?}], inProgress: [{id, title}] }
  */

@@ -22,6 +22,7 @@ import {
   recoverAndRunLoop,
   releaseLoopInstance,
   runLoop,
+  writeReport,
   writeTaskMd,
 } from '../../skills/afk-run/scripts/loop.mjs'
 import { projectKeyFromWorkdir } from '../../skills/afk-run/scripts/afk-home.mjs'
@@ -39,8 +40,14 @@ test('decide: approved/done → done', () => {
   assert.equal(decide({ status: 'done' }).kind, 'done')
 })
 
-test('decide: no_change/blocked/timeout/empty/executor_failed → retry', () => {
-  for (const s of ['no_change', 'blocked', 'timeout', 'review_timeout', 'empty', 'executor_failed']) {
+test('decide: no_change → noop（确定性判断，不重试）', () => {
+  const d = decide({ status: 'no_change', summary: '已由现有提交满足' })
+  assert.equal(d.kind, 'noop')
+  assert.ok(d.reason.includes('no_change'))
+})
+
+test('decide: blocked/timeout/empty/executor_failed → retry', () => {
+  for (const s of ['blocked', 'timeout', 'review_timeout', 'empty', 'executor_failed']) {
     const d = decide({ status: s, summary: 'why' })
     assert.equal(d.kind, 'retry', s)
     assert.ok(d.reason.includes(s), s)
@@ -80,6 +87,7 @@ function makeFakes(overrides = {}) {
     isClean: () => true,
     commitAll: (task) => calls.commits.push(task),
     resetHard: () => calls.resets++,
+    isAncestor: () => false,
     ...overrides.git,
   }
   return { source, execReview, git, calls }
@@ -191,7 +199,7 @@ test('recoverAndRunLoop: 恢复后的工单会在首轮 listReady 被执行', as
     git,
     hooks: { taskDir: dir },
   })
-  assert.deepEqual(r.stats, { attempted: 1, done: 1, failed: 0 })
+  assert.deepEqual(r.stats, { attempted: 1, done: 1, failed: 0, noop: 0 })
   assert.deepEqual(calls.inProgress, ['stale-1'])
   rmSync(dir, { recursive: true, force: true })
 })
@@ -230,7 +238,7 @@ test('runLoop: done → markDone + 连续失败清零（提交由 exec-review �
   const dir = tmpDir()
   const r = await runLoop({ config: baseConfig, source, execReview, git, hooks: { taskDir: dir } })
   assert.equal(r.reason, 'all-done')
-  assert.deepEqual(r.stats, { attempted: 1, done: 1, failed: 0 })
+  assert.deepEqual(r.stats, { attempted: 1, done: 1, failed: 0, noop: 0 })
   assert.deepEqual(calls.inProgress, ['t1'])
   assert.equal(calls.done.length, 1)
   assert.equal(calls.done[0].id, 't1')
@@ -267,11 +275,81 @@ test('runLoop: blocked → 回滚重试 → 第二次成功（attempts=2）', as
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('runLoop: no_change 按失败处理，重试上限后放弃 → markFailed', async () => {
+test('writeReport: no_change 不进「失败」栏，已核实的进「完成」并标注证据', () => {
+  const dir = tmpDir()
+  const reportFile = writeReport(
+    dir,
+    {
+      reason: 'max-tasks',
+      stats: { attempted: 3, done: 1, failed: 1, noop: 1 },
+      tasks: [
+        { id: '7', title: '已满足', kind: 'done', status: 'done', attempts: 1, satisfiedBy: '0d243b4' },
+        { id: '8', title: '需人确认', kind: 'noop', status: 'no_change', attempts: 1, reason: 'exec-review status=no_change: 规格矛盾' },
+        { id: '9', title: '真失败', kind: 'failed', status: 'executor_failed', attempts: 1, reason: 'exec-review 异常' },
+      ],
+    },
+    new Date('2026-01-01T00:00:00Z'),
+    'C:/workdir',
+  )
+  const report = readFileSync(reportFile, 'utf8')
+  assert.match(report, /无需改动: 1/)
+  assert.ok(report.includes('## 无需改动（需人确认，不计失败）'))
+  assert.ok(report.includes('| 8 | 需人确认 | exec-review status=no_change: 规格矛盾 |'))
+  assert.ok(report.includes('| 7 | 已满足 | done（已由 0d243b4 满足） | 1 |'))
+  const failureSection = report.slice(report.indexOf('## 失败'))
+  assert.ok(failureSection.includes('| 9 |'), '真失败仍在失败表格里')
+  assert.ok(!failureSection.includes('| 8 |'), 'no_change 不得出现在失败表格')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('runLoop: no_change 不重试、不 markFailed、不计失败，单列 noop', async () => {
   const t1 = { id: 't1', title: 'T1', priority: 1 }
+  let runs = 0
   const { source, execReview, git, calls } = makeFakes({
     source: { listReady: queue([[t1], []]) },
-    execReview: { run: async () => ({ status: 'no_change', summary: '条件不足' }) },
+    execReview: {
+      run: async () => {
+        runs++
+        return { status: 'no_change', summary: '规格矛盾，改了也没用' }
+      },
+    },
+  })
+  const dir = tmpDir()
+  const r = await runLoop({
+    config: { ...baseConfig, retry: 2, maxFailures: 1 },
+    source,
+    execReview,
+    git,
+    hooks: { taskDir: dir },
+  })
+  assert.equal(runs, 1, 'no_change 是确定性判断，不该重试')
+  assert.equal(calls.failed.length, 0, 'no_change 不得 markFailed（afk-failed 是退避标记）')
+  assert.equal(calls.done.length, 0, '没有证据就不假装完成')
+  assert.equal(r.stats.failed, 0)
+  assert.equal(r.stats.noop, 1)
+  assert.equal(r.tasks[0].kind, 'noop')
+  assert.ok(r.tasks[0].reason.includes('no_change'))
+  assert.equal(r.reason, 'all-done', 'no_change 不触发 max-failures 熔断')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('runLoop: no_change 且 note 给出可核实的提交号 → 终态成功（markDone）', async () => {
+  const t1 = { id: '7', title: 'AFK home prompt overlays', priority: 1 }
+  const verified = []
+  const { source, execReview, git, calls } = makeFakes({
+    source: { listReady: queue([[t1], []]) },
+    execReview: {
+      run: async () => ({
+        status: 'no_change',
+        summary: '已由祖先提交 0d243b4（feat(afk): assemble per-environment prompt overlays）完整实现',
+      }),
+    },
+    git: {
+      isAncestor: (ref) => {
+        verified.push(ref)
+        return ref === '0d243b4'
+      },
+    },
   })
   const dir = tmpDir()
   const r = await runLoop({
@@ -281,10 +359,32 @@ test('runLoop: no_change 按失败处理，重试上限后放弃 → markFailed'
     git,
     hooks: { taskDir: dir },
   })
-  assert.equal(r.stats.failed, 1)
-  assert.equal(calls.failed.length, 1)
-  assert.ok(calls.failed[0].note.includes('no_change'))
+  assert.ok(verified.includes('0d243b4'), '证据必须去 git 核实')
+  assert.equal(calls.failed.length, 0)
+  assert.equal(calls.done.length, 1)
+  assert.equal(calls.done[0].id, '7')
+  assert.equal(calls.done[0].r.commit, '0d243b4', 'comment 要指明证据提交')
+  assert.ok(calls.done[0].r.summary.includes('0d243b4'))
+  assert.equal(r.stats.done, 1)
+  assert.equal(r.stats.failed, 0)
+  assert.equal(r.stats.noop, 0)
+  assert.equal(r.tasks[0].kind, 'done')
+  assert.equal(r.tasks[0].satisfiedBy, '0d243b4')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('runLoop: no_change 提到的提交号在历史里查不到 → 仍算 noop（不关单）', async () => {
+  const t1 = { id: 't1', title: 'T1', priority: 1 }
+  const { source, execReview, git, calls } = makeFakes({
+    source: { listReady: queue([[t1], []]) },
+    execReview: {
+      run: async () => ({ status: 'no_change', summary: '已由 deadbeef 实现，无需改动' }),
+    },
+  })
+  const dir = tmpDir()
+  const r = await runLoop({ config: baseConfig, source, execReview, git, hooks: { taskDir: dir } })
   assert.equal(calls.done.length, 0)
+  assert.equal(r.tasks[0].kind, 'noop')
   rmSync(dir, { recursive: true, force: true })
 })
 

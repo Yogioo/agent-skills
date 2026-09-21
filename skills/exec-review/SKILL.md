@@ -108,7 +108,7 @@ loop 会启动一个**独立进程**（`scripts/serve.mjs`）提供实时进度�
 |----------|--------------|
 | `approved` | 执行已实现，审查端（可能）直接改进后通过（需 `review: true`） |
 | `done` | 执行已实现且未跑审查（默认，或显式 `review: false`） |
-| `no_change` | 无需改代码（执行端回报 done 但工作区无改动） |
+| `no_change` | 无需改代码（执行端回报 done 但工作区无改动，或直接回报 no_change）。若需求已由现有提交满足，note 里写可核实的提交号，上位 loop 据此关单 |
 | `blocked` / `empty` | 执行端做不完 / 无事可做 → 记录原因；`blocked` 考虑升级问人 |
 | `executor_failed` / `error` | 先看 `cacheDir`，查清再开下一次 |
 

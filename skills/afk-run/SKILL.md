@@ -33,13 +33,13 @@ node <技能根>/scripts/loop.mjs --workdir <目录> --timeout 600 --runner pi
 
 - **任务选择**：`bd ready`（无未完成前置阻塞的工单）→ 过滤 **仅 `ready-for-agent` 标签** + **排除仍有 open 子 ticket 的 parent 容器** → `priority` 升序 + `id` 升序
 - **每任务**：markInProgress → 生成 task.md → 调 exec-review（默认 `gitCommit: true`）→ 状态机
-- **状态机**：`approved/done` → 校验工作区干净 → `markDone`（关子单）→ `closeEligibleParents`（beads：`bd epic close-eligible`）→ markDone 完成；失败路径不变
-- **终止条件**：all-done / stuck（存在依赖阻塞）/ in-progress（只有进行中工单）/ max-tasks / 连续失败熔断（max-failures）/ 停止文件存在 / superseded（同 workdir 新 loop 抢占）
+- **状态机**：`approved/done` → 校验工作区干净 → `markDone`（关子单）→ `closeEligibleParents`（beads：`bd epic close-eligible`）→ markDone 完成；`no_change` 不重试、不 `markFailed`：note 里有能在 git 历史核实到的提交号就按 `done` 关单（comment 指明证据），否则落「无需改动」栏转人工；其余失败路径不变
+- **终止条件**：all-done / stuck（存在依赖阻塞）/ in-progress（只有进行中工单）/ max-tasks / 连续失败熔断（max-failures，只数真正的失败）/ 停止文件存在 / superseded（同 workdir 新 loop 抢占）
 
 ## 输出
 
-- stdout：极简摘要 JSON（`reason/attempted/done/failed/runDir/reportFile/progressFile/serveUrl`）
-- `<runDir>/report.md`：完成/失败表格 + 停止原因
+- stdout：极简摘要 JSON（`reason/attempted/done/noop/failed/runDir/reportFile/progressFile/serveUrl`）
+- `<runDir>/report.md`：完成/无需改动/失败表格 + 停止原因
 - `<runDir>/loop-progress.jsonl`：loop 开始、队列、任务开始/结束、结束事件的审计流
 - 默认 runDir：`%TEMP%/afk-run/run-<时间戳>`（`--cache-dir` 可改）
 
@@ -47,10 +47,11 @@ node <技能根>/scripts/loop.mjs --workdir <目录> --timeout 600 --runner pi
 
 - 停止开关：在 `--stop-file`（默认 workdir 下 `afk-stop`）放一个文件，下一轮循环即停
 - 运行中可打开 stdout 摘要里的 `serveUrl` 查看只读看板；默认开启，`--no-serve` 可关闭。每个 exec-review 子任务仍固定关闭自己的 serve。
-- 看板队列列：**就绪 / 进行中 / 阻塞 / 完成 / 失败**。`pipeline_snapshot` 每轮从 beads 拉取依赖阻塞工单（含 `blockedBy`）；**进行中**只展示可执行子 ticket（不含仍有 open 子级的 parent 容器，如 `2j9` vs `2j9.1`）。
-- 总览页点击**已有 progress 文件**的工单（进行中/完成/失败）可跳转到同端口的 `/task/<id>`，即 exec-review 同款详情页（执行/审查阶段、日志、Agent 上下文）；阻塞/未启动工单无链接。
+- 看板队列列：**就绪 / 进行中 / 阻塞 / 完成 / 无需改动 / 失败**。`pipeline_snapshot` 每轮从 beads 拉取依赖阻塞工单（含 `blockedBy`）；**进行中**只展示可执行子 ticket（不含仍有 open 子级的 parent 容器，如 `2j9` vs `2j9.1`）。
+- 总览页点击**已有 progress 文件**的工单（进行中/完成/无需改动/失败）可跳转到同端口的 `/task/<id>`，即 exec-review 同款详情页（执行/审查阶段、日志、Agent 上下文）；阻塞/未启动工单无链接。
 - **单实例**：同一 workdir 同时只允许一个 loop。新启动会先 **kill 旧 loop 进程树**（含 exec-review 子进程）及其看板，再注册自身；旧 loop 若仍在跑会在下一轮检测到 `superseded` 后退出
 - 同一 workdir 复用固定端口时，**新 loop 会先停止上一轮注册的看板进程**，避免浏览器仍显示「已结束 · max-tasks」等陈旧终态；stdout 会打印当前 `run-<timestamp>` 目录名，请与看板页眉核对。
 - 失败任务自动回滚，工作区保持干净基线；reset/clean 排除停止文件本身
+- `no_change`（执行端判定无需改代码）是确定性结论，**不重试**：有可核实证据就当成功关单，否则保持认领状态等人确认（不计入 `max-failures`）
 - 中断重启：启动时一次性回收 `updated_at` 超过 `staleThresholdSec` 的 beads `in_progress` 工单，重置 open 并写审计 comment；默认阈值为 `2 × (timeout + hardTimeoutExtra)`，设为 `0` 可关闭
 - 超时：exec-review 层 `--timeout` 为主；loop 层兜底 = timeout + `hardTimeoutExtra`（默认 120s）

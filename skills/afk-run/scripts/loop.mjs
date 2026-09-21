@@ -45,8 +45,9 @@ const DEFAULT_STOP_FILE = 'afk-stop'
 // ---------- 状态机 ----------
 
 const DONE_STATUSES = ['approved', 'done']
+// 「无需改代码」是确定性判断：同一棵树跑第二遍只会得到同一结论，重试毫无意义。
+const NOOP_STATUSES = ['no_change']
 const RETRY_STATUSES = [
-  'no_change',
   'blocked',
   'empty',
   'executor_failed',
@@ -57,16 +58,47 @@ const RETRY_STATUSES = [
 /**
  * 单次 exec-review 结果 → 决策。
  * @param {{ status?: string, summary?: string }} outcome
- * @returns {{ kind: 'done' } | { kind: 'retry', reason: string } | { kind: 'failed', reason: string }}
+ * @returns {{ kind: 'done' } | { kind: 'noop', reason: string } | { kind: 'retry', reason: string } | { kind: 'failed', reason: string }}
  */
 export function decide(outcome) {
   const status = outcome?.status || 'unknown'
   if (DONE_STATUSES.includes(status)) return { kind: 'done' }
   const note = outcome?.summary || outcome?.review?.note || ''
-  if (RETRY_STATUSES.includes(status)) {
-    return { kind: 'retry', reason: `exec-review status=${status}: ${note}`.trim() }
-  }
+  const reason = `exec-review status=${status}: ${note}`.trim()
+  if (NOOP_STATUSES.includes(status)) return { kind: 'noop', reason }
+  if (RETRY_STATUSES.includes(status)) return { kind: 'retry', reason }
   return { kind: 'failed', reason: `exec-review 未知状态 ${status}: ${note}`.trim() }
+}
+
+// 7–40 位十六进制：git 短/长 SHA。前后不允许再连着十六进制字符，避免截断长哈希。
+const COMMIT_TOKEN_RE = /(?<![0-9a-f])[0-9a-f]{7,40}(?![0-9a-f])/gi
+
+/**
+ * `no_change` 时从执行端说明里找「需求已由现有提交满足」的证据。
+ *
+ * 只认能在 git 历史里核实到的提交号——执行端自称「已实现」不算证据；
+ * 核实不了（git 不支持这个方法 / 提交不在历史里）就当没证据，转人工。
+ *
+ * @param {object} outcome exec-review 的 summary.json
+ * @param {{ isAncestor?: (ref: string) => boolean }} git
+ * @returns {string|null} 核实到的提交号
+ */
+export function findSatisfiedCommit(outcome, git) {
+  if (!git || typeof git.isAncestor !== 'function') return null
+  const tokens = new Set()
+  for (const text of [outcome?.summary, outcome?.note, outcome?.outcome?.note, outcome?.reason]) {
+    for (const match of String(text || '').matchAll(COMMIT_TOKEN_RE)) {
+      tokens.add(match[0].toLowerCase())
+    }
+  }
+  for (const token of tokens) {
+    try {
+      if (git.isAncestor(token)) return token
+    } catch {
+      // git 查询失败 → 当没证据（宁转人工，不静默关单）
+    }
+  }
+  return null
 }
 
 // ---------- 任务文本 ----------
@@ -241,13 +273,13 @@ async function emitPipelineSnapshot(source, hooks) {
  * @param {object} deps.config  { stopFile, maxTasks, maxFailures, retry }
  * @param {object} deps.source  task source adapter（listReady/getDetail/markInProgress/markDone/markFailed/describeBlocked）
  * @param {object} deps.execReview  { run(taskFile) → outcome }
- * @param {object} deps.git     { head(), resetHard(headRef), isClean() } workdir 已在闭包绑定
+ * @param {object} deps.git     { head(), resetHard(headRef), isClean(), isAncestor(ref) } workdir 已在闭包绑定
  * @param {object} [deps.hooks] { onQueue(tasks), onTaskStart(task), onTask(record), taskDir, progressFile(task, attempt) }
  * @returns {Promise<{ reason: string, stats: object, tasks: object[] }>}
  */
 export async function runLoop(deps) {
   const { config, source, execReview, git, hooks = {} } = deps
-  const stats = { attempted: 0, done: 0, failed: 0 }
+  const stats = { attempted: 0, done: 0, failed: 0, noop: 0 }
   const tasks = []
   const attemptedIds = new Set()
   let consecutiveFailures = 0
@@ -333,14 +365,23 @@ export async function runLoop(deps) {
       }
       git.resetHard(startHead)
       if (decision.kind === 'retry' && attempt < config.retry) continue
-      result = { kind: 'failed', reason: decision.reason, outcome, attempts: attempt + 1 }
+      result = {
+        kind: decision.kind === 'noop' ? 'noop' : 'failed',
+        reason: decision.reason,
+        outcome,
+        attempts: attempt + 1,
+      }
       break
     }
 
     stats.attempted++
     let closedParents = []
+    // no_change + 可核实的提交号 = 需求已由现有代码满足，是终态成功，不是失败。
+    const satisfiedBy = result.kind === 'noop' ? findSatisfiedCommit(result.outcome, git) : null
+    if (satisfiedBy) result = { ...result, kind: 'done', satisfiedBy }
     if (result.kind === 'done') {
-      if (!git.isClean()) {
+      // satisfiedBy：成果已在历史提交里，工作区干净与否与验收无关（reset 已回滚执行端残留）
+      if (!satisfiedBy && !git.isClean()) {
         git.resetHard(startHead)
         await source.markFailed(task.id, 'git: 任务通过后工作区仍有未提交改动')
         consecutiveFailures++
@@ -365,9 +406,11 @@ export async function runLoop(deps) {
         continue
       }
       await source.markDone(task.id, {
-        status: result.outcome.status,
-        summary: result.outcome.summary || '',
-        commit: (git.head() || '').slice(0, 9),
+        status: satisfiedBy ? 'done' : result.outcome.status,
+        summary: satisfiedBy
+          ? `无需改动：已由现有提交 ${satisfiedBy} 满足。${result.outcome.summary || ''}`.trim()
+          : result.outcome.summary || '',
+        commit: satisfiedBy || (git.head() || '').slice(0, 9),
       })
       closedParents =
         typeof source.closeEligibleParents === 'function'
@@ -380,6 +423,10 @@ export async function runLoop(deps) {
       }
       consecutiveFailures = 0
       stats.done++
+    } else if (result.kind === 'noop') {
+      // 需人确认：不重试、不冒充失败（afk-failed 是退避标记，打了就再也拉不到）、不静默关单。
+      stats.noop++
+      consecutiveFailures = 0
     } else {
       await source.markFailed(task.id, result.reason)
       consecutiveFailures++
@@ -390,11 +437,12 @@ export async function runLoop(deps) {
       title: task.title,
       priority: task.priority,
       kind: result.kind,
-      status: result.outcome?.status,
-      reason: result.kind === 'failed' ? result.reason : undefined,
+      status: satisfiedBy ? 'done' : result.outcome?.status,
+      reason: result.kind === 'noop' || result.kind === 'failed' ? result.reason : undefined,
       attempts: result.attempts,
       summary: result.outcome?.summary,
       progressFile: lastProgressFile,
+      ...(satisfiedBy ? { satisfiedBy } : {}),
       ...(result.kind === 'done' && closedParents.length ? { closedParents } : {}),
     }
     tasks.push(record)
@@ -419,8 +467,12 @@ export function inboxPayloadForRun({ requirement, sourceName, workdir, result, r
   const routed = resolveEventRequirement({ home, explicit: requirement, workItems })
   const done = result?.stats?.done || 0
   const failed = result?.stats?.failed || 0
+  const noop = result?.stats?.noop || 0
   const failedTasks = tasks
     .filter((task) => task.kind === 'failed')
+    .map((task) => ({ id: task.id, title: task.title, reason: task.reason || task.summary || '' }))
+  const noopTasks = tasks
+    .filter((task) => task.kind === 'noop')
     .map((task) => ({ id: task.id, title: task.title, reason: task.reason || task.summary || '' }))
   const crashed = Boolean(error)
 
@@ -431,23 +483,27 @@ export function inboxPayloadForRun({ requirement, sourceName, workdir, result, r
     workItems,
     title: crashed
       ? `执行链异常退出：${error}`
-      : `一批干完：${done} 完成 / ${failed} 失败`,
+      : `一批干完：${done} 完成 / ${failed} 失败${noop ? ` / ${noop} 无需改动` : ''}`,
     detail: {
       reason: result?.reason || (crashed ? 'error' : ''),
       attempted: result?.stats?.attempted || 0,
       done,
       failed,
+      noop,
       runDir,
       reportFile: reportFile || '',
       progressFile: progressFile || '',
       serveUrl: serveUrl || '',
       failedTasks,
+      noopTasks,
       ...(crashed ? { error } : {}),
     },
     nextStep:
       crashed || failed > 0
         ? '看失败原因，判断是修 bug 还是重开一单'
-        : '读报告，出验收清单（准备到只差人点）',
+        : noop > 0
+          ? '看「无需改动」的工单：确认需求是否已满足，清掉 in-progress 重新武装'
+          : '读报告，出验收清单（准备到只差人点）',
   }
 }
 
@@ -905,21 +961,38 @@ function startLoopServe(runDir, port, open, cacheRoot, workdir) {
   return url
 }
 
-function writeReport(runDir, result, startedAt, workdir) {
+export function writeReport(runDir, result, startedAt, workdir) {
   const lines = [
     `# AFK 运行报告 ${localTimestamp(startedAt)}`,
     '',
     `- workdir: ${workdir}`,
     `- 停止原因: ${result.reason}`,
-    `- 尝试任务: ${result.stats.attempted} | 完成: ${result.stats.done} | 失败: ${result.stats.failed}`,
+    `- 尝试任务: ${result.stats.attempted} | 完成: ${result.stats.done} | 无需改动: ${result.stats.noop || 0} | 失败: ${result.stats.failed}`,
     '',
   ]
   const doneRows = result.tasks.filter((t) => t.kind === 'done')
+  const noopRows = result.tasks.filter((t) => t.kind === 'noop')
   const failedRows = result.tasks.filter((t) => t.kind === 'failed')
   if (doneRows.length) {
     lines.push('## 完成', '', '| id | 标题 | 状态 | 尝试次数 |', '|---|---|---|---|')
     for (const t of doneRows) {
-      lines.push(`| ${t.id} | ${t.title} | ${t.status} | ${t.attempts} |`)
+      lines.push(
+        `| ${t.id} | ${t.title} | ${t.status}${t.satisfiedBy ? `（已由 ${t.satisfiedBy} 满足）` : ''} | ${t.attempts} |`,
+      )
+    }
+    lines.push('')
+  }
+  if (noopRows.length) {
+    lines.push(
+      '## 无需改动（需人确认，不计失败）',
+      '',
+      '执行端判定无需改代码，但没给出可核实的提交号：既不算失败（不打 `afk-failed`），也不静默关单。',
+      '',
+      '| id | 标题 | 说明 |',
+      '|---|---|---|',
+    )
+    for (const t of noopRows) {
+      lines.push(`| ${t.id} | ${t.title} | ${t.reason || t.summary || ''} |`)
     }
     lines.push('')
   }
@@ -940,6 +1013,12 @@ function writeReport(runDir, result, startedAt, workdir) {
   }
   if (result.reason.startsWith('in-progress')) {
     lines.push('## 进行中', '', '没有可拉取的就绪工单；已有工单仍在进行中。', '')
+    if (noopRows.length) {
+      lines.push(
+        `其中 ${noopRows.length} 个是上面「无需改动」的工单：它们仍被认领，人工确认后清掉 in-progress 才会重新进入队列。`,
+        '',
+      )
+    }
   }
   const reportFile = join(runDir, 'report.md')
   writeFileSync(reportFile, lines.join('\n'), 'utf8')
@@ -1009,6 +1088,7 @@ function main() {
     head: () => gitModule.head(workdir),
     isClean: () => gitModule.isClean(workdir),
     resetHard: (headRef) => gitModule.resetHard(workdir, headRef, DEFAULT_STOP_FILE),
+    isAncestor: (ref) => gitModule.isAncestor(workdir, ref),
   }
   const source = createSource(sourceName, {
     cwd: workdir,
@@ -1099,6 +1179,7 @@ function main() {
         reason: result.reason,
         attempted: result.stats.attempted,
         done: result.stats.done,
+        noop: result.stats.noop,
         failed: result.stats.failed,
         runDir,
         reportFile,

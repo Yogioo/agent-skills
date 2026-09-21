@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ensureGit, isClean, head, resetHard, isGitRepo } from '../../skills/afk-run/scripts/git.mjs'
+import { ensureGit, isClean, head, resetHard, isGitRepo, isAncestor } from '../../skills/afk-run/scripts/git.mjs'
 
 function git(dir, args) {
   return execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
@@ -82,6 +82,23 @@ test('resetHard: 有 HEAD 时回滚到指定基线（含 untracked 清除，排�
   assert.equal(git(dir, ['show', 'HEAD:a.txt']).trim(), 'x')
   assert.ok(git(dir, ['status', '--porcelain']).includes('?? afk-stop'), '停止文件保留')
   assert.ok(!git(dir, ['status', '--porcelain']).includes('junk.txt'), 'untracked 残留被清')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('isAncestor: 只认 HEAD 能回溯到的提交，查不到一律 false', () => {
+  const dir = tmpRepo()
+  writeFileSync(join(dir, 'a.txt'), 'x')
+  git(dir, ['add', '-A'])
+  git(dir, ['commit', '-m', 'first'])
+  const first = head(dir)
+  writeFileSync(join(dir, 'a.txt'), 'y')
+  git(dir, ['add', '-A'])
+  git(dir, ['commit', '-m', 'second'])
+
+  assert.equal(isAncestor(dir, first), true, 'HEAD 的祖先')
+  assert.equal(isAncestor(dir, head(dir)), true, 'HEAD 自己')
+  assert.equal(isAncestor(dir, 'deadbeef'), false, '编的提交号')
+  assert.equal(isAncestor(dir, ''), false)
   rmSync(dir, { recursive: true, force: true })
 })
 

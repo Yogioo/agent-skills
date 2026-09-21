@@ -53,7 +53,7 @@
 ## 注意
 
 - **git 身份**：默认**不**改仓库 local 配置，提交用用户全局身份。需要机器人提交时设 `run.git.useBotIdentity: true`（或 CLI `--use-bot-identity`），并可配 `run.git.name` / `run.git.email`。若某次 AFK 曾写入 local `AFK Bot`，用 `git config --local --unset user.name` / `user.email` 清掉即可恢复全局身份。
-- **no_change 算失败**：执行端回报"无改动"会走失败分支（重试→放弃），不会假装完成。
+- **no_change 不是失败**：执行端回报「无改动」不会重试、不会打 `afk-failed`。note 里给出能在 git 历史里核实到的提交号时，loop 按成功关单（comment 指明该提交）；否则落进报告的「无需改动（需人确认）」栏、保持认领状态，**不计入 `max-failures`**——人工确认后清掉 `in-progress` 即重新进入队列。
 - **失败任务打 `afk-failed` label**（beads）：listReady 不再拉取；人工去掉 label 可重试。
 - **Parent 容器误进队列**：若 parent 仍带 `ready-for-agent` 且有 open 子 ticket，会被 beads adapter 跳过并在 stderr 打印 `[afk-run] beads: skipped ...`。
 - **超时语义**：主超时在 exec-review 层（AbortController 杀进程树）；loop 层兜底只防 exec-review 自身挂死。

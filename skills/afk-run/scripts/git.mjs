@@ -69,6 +69,22 @@ export function head(workdir) {
 }
 
 /**
+ * 该 ref 是否可从 HEAD 回溯到（用于核实「已由现有提交满足」的证据）。
+ * 查询失败/不是提交 → false，绝不把「核实不了」当成「核实通过」。
+ * @param {string} workdir
+ * @param {string} ref
+ */
+export function isAncestor(workdir, ref) {
+  if (!ref) return false
+  try {
+    runGit(workdir, ['merge-base', '--is-ancestor', ref, 'HEAD'])
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * 失败回滚：回到任务开始前基线（tracked 重置 + untracked 清除）。
  * 有 HEAD → reset --hard + clean -fd；无 HEAD（新仓库首任务失败）→ 仅 clean -fd。
  * @param {string} workdir
