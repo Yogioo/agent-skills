@@ -54,6 +54,7 @@
     "heartbeatMs": 10000,
     "structuredContext": true,
     "streamPartialOutput": false,
+    "workspaceSkip": [],
     "executor": {
       "runner": "",
       "bin": "",

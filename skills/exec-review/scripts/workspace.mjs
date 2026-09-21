@@ -9,7 +9,8 @@
  * 两种模式（见 `captureWorkspace`）：
  * - **git 模式**：只问 git。两条命令 + 只读真正脏了的文件。
  *   51 GB / 12 万文件的 Unity 工程实测约 0.7 秒。
- * - **walk 模式**：不是 git 目录时老实遍历，但跳过一堆构建产物与编辑器缓存目录。
+ * - **walk 模式**：不是 git 目录时老实遍历。跳过表默认只有版本控制元数据，
+ *   项目自己的噪音（构建产物、依赖、编辑器缓存）由操作者配 `workspaceSkip` 补。
  *
  * 为什么 git 模式是默认：旧实现是「遍历整个目录，每个文件读全文算 SHA1」。
  * 对 DigitDoor（51 GB / 123266 个文件）一次要 5 分钟以上，每个任务跑 3 次；
@@ -22,58 +23,36 @@ import { execFileSync } from 'node:child_process'
 import { join, resolve } from 'node:path'
 
 /**
- * walk 模式跳过的目录名（按路径段匹配）。可用 `opts.skip` 整份替换。
+ * 默认跳过表：**只放「按定义就不属于工作树」的目录**——版本控制系统的元数据。
  *
- * 这些目录里的东西通常不是「这次任务的成果」：node_modules、build/dist、
- * Unity 的 Library/Temp（几十 GB 很正常）、编辑器缓存。
- * 把它们算进去会让快照慢到不可用，而且会把构建噪音误报成代码改动。
+ * 这里**不放**任何构建产物目录（`build/`、`dist/`、`node_modules/`、Unity 的 `Library/`…）。
+ * 三条理由：
+ * 1. 哪个目录算噪音是**项目自己的判断**，不是这个技能的判断；
+ * 2. 任何一份名单都写不全（Unity / Unreal / Godot / Rust / Java / iOS… 各有各的），
+ *    补名单是一场永远输的游戏；
+ * 3. 更糟的是这些目录**都可能被某些项目正常提交**——统一跳过就是漏报改动。
  *
- * 代价：非 git 目录里、只改这些目录下的任务会被判成「没改动」。
- * git 模式没有这个问题以外的问题——它认的是 `.gitignore`，不是这份清单。
+ * 权威来源有两处，都不在这里：
+ * - git 工作树：项目自己的 `.gitignore`（git 模式直接问 git）；
+ * - 其它目录：操作者用 `execReview.workspaceSkip` 或 `EXEC_REVIEW_WORKSPACE_SKIP` 补。
  */
-export const DEFAULT_SKIP = new Set([
-  // 版本控制
-  '.git',
-  '.hg',
-  '.svn',
-  // 依赖
-  'node_modules',
-  'bower_components',
-  'vendor',
-  'Pods',
-  // 构建产物与缓存
-  'dist',
-  'build',
-  'Build',
-  'Builds',
-  'out',
-  'target',
-  'bin',
-  'obj',
-  'coverage',
-  '.cache',
-  '.next',
-  '.nuxt',
-  '.turbo',
-  '.venv',
-  'venv',
-  '__pycache__',
-  '.pytest_cache',
-  '.mypy_cache',
-  '.gradle',
-  // Unity
-  'Library',
-  'Temp',
-  'Logs',
-  'UserSettings',
-  'CachedSymbols',
-  'MemoryCaptures',
-  // 编辑器
-  '.vs',
-  '.idea',
-  '.vscode',
-  'DerivedData',
-])
+export const DEFAULT_SKIP = new Set(['.git', '.hg', '.svn'])
+
+/**
+ * 操作者补的目录名与默认表**取并集**。
+ * 默认表不允许被覆盖：少一个 `.git` 就会去哈希整个对象库。
+ * @param {Iterable<string>|string[]} [extra]
+ * @returns {Set<string>}
+ */
+export function resolveSkip(extra) {
+  const out = new Set(DEFAULT_SKIP)
+  const list = extra instanceof Set ? [...extra] : Array.isArray(extra) ? extra : []
+  for (const name of list) {
+    const value = String(name ?? '').trim()
+    if (value) out.add(value)
+  }
+  return out
+}
 
 /**
  * git blob 指纹。git 索引里存的就是这个值，所以两边可以直接比。
@@ -224,13 +203,13 @@ function walkSnapshot(dir, skip) {
  *
  * @param {string} dir
  * @param {object} [opts]
- * @param {Set<string>} [opts.skip]  walk 模式跳过的目录名
+ * @param {Iterable<string>} [opts.skip] 额外跳过的目录名，与默认表取并集
  * @param {'auto'|'git'|'walk'} [opts.mode]  默认 auto：是 git 目录就用 git
  * @returns {{ mode: 'git'|'walk', files: Record<string,string>, elapsedMs: number }}
  */
 export function captureWorkspace(dir, opts = {}) {
   const root = resolve(dir)
-  const skip = opts.skip || DEFAULT_SKIP
+  const skip = resolveSkip(opts.skip)
   const want = opts.mode || 'auto'
   const startedAt = Date.now()
 

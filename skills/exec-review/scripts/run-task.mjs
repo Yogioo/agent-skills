@@ -468,6 +468,11 @@ function describeSnapshot(label, capture) {
   return `workspace: ${label} mode=${capture.mode} files=${Object.keys(capture.files).length} ${capture.elapsedMs}ms`
 }
 
+/** 快照额外跳过的目录名，来自 `execReview.workspaceSkip` / `EXEC_REVIEW_WORKSPACE_SKIP`。 */
+function workspaceOptions(settings) {
+  return { skip: settings.workspaceSkip || [] }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (!args.workdir) usage()
@@ -640,7 +645,7 @@ async function main() {
   )
 
   // 执行前快照与 git 上下文：快照检测改动，git 查询只读
-  const beforeSnap = captureWorkspace(workdir)
+  const beforeSnap = captureWorkspace(workdir, workspaceOptions(settings))
   const before = beforeSnap.files
   logMain(mainLogPath, describeSnapshot('before', beforeSnap))
   const gitContext = collectGitContext(workdir)
@@ -718,7 +723,7 @@ async function main() {
     (existsSync(executorEvents) ? extractJsonFromEventsFile(executorEvents) : null) ||
     extractJsonFromText(execText)
   if (!outcome || typeof outcome !== 'object') outcome = null
-  const afterExecSnap = captureWorkspace(workdir)
+  const afterExecSnap = captureWorkspace(workdir, workspaceOptions(settings))
   const afterExec = afterExecSnap.files
   logMain(mainLogPath, describeSnapshot('after-executor', afterExecSnap))
   const execDiff = diff(before, afterExec)
@@ -896,7 +901,7 @@ async function main() {
     finalize(summary, join(runDir, 'summary.json'))
     return
   }
-  const afterReviewSnap = captureWorkspace(workdir)
+  const afterReviewSnap = captureWorkspace(workdir, workspaceOptions(settings))
   const afterReview = afterReviewSnap.files
   logMain(mainLogPath, describeSnapshot('after-reviewer', afterReviewSnap))
   const reviewDiff = diff(afterExec, afterReview)

@@ -154,6 +154,33 @@ test('resolveSettings review 默认 false，可被 CLI/config 开启', () => {
   assert.equal(resolveSettings({ review: 'true' }, base).review, true)
 })
 
+test('resolveSettings workspaceSkip：默认空，config 数组或 env 均可给', () => {
+  const base = { path: 'x', data: { runner: 'codex' } }
+  // 默认必须是空的："哪个目录是噪音"不该由技能替项目猜（git 工作树看 .gitignore）
+  assert.deepEqual(resolveSettings({}, base).workspaceSkip, [])
+
+  const fromConfig = resolveSettings(
+    {},
+    { path: 'x', data: { runner: 'codex', workspaceSkip: ['Library', 'Temp'] } },
+  )
+  assert.deepEqual(fromConfig.workspaceSkip, ['Library', 'Temp'])
+
+  const saved = process.env.EXEC_REVIEW_WORKSPACE_SKIP
+  try {
+    process.env.EXEC_REVIEW_WORKSPACE_SKIP = 'Library, Temp ,CachedSymbols'
+    assert.deepEqual(resolveSettings({}, base).workspaceSkip, ['Library', 'Temp', 'CachedSymbols'])
+    assert.deepEqual(
+      resolveSettings({}, { path: 'x', data: { runner: 'codex', workspaceSkip: ['other'] } })
+        .workspaceSkip,
+      ['Library', 'Temp', 'CachedSymbols'],
+      'env 应覆盖 config',
+    )
+  } finally {
+    if (saved === undefined) delete process.env.EXEC_REVIEW_WORKSPACE_SKIP
+    else process.env.EXEC_REVIEW_WORKSPACE_SKIP = saved
+  }
+})
+
 test('resolveSettings 没有任何 runner 来源时直接报错', () => {
   assert.throws(() => resolveSettings({}, { path: 'x', data: {} }), /未指定 executor runner/)
   assert.throws(() => resolveSettings({}, { path: 'x', data: { executor: { runner: 'pi' } } }), /未指定 reviewer runner/)

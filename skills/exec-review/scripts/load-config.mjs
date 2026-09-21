@@ -56,6 +56,16 @@ function asBool(v, def) {
   return def
 }
 
+/**
+ * 目录名列表：config 里可以写数组，env 里只能写逗号（或空格）分隔的字符串。
+ * @param {unknown} v
+ * @returns {string[]}
+ */
+function asList(v) {
+  const raw = Array.isArray(v) ? v : String(v ?? '').split(/[,\s]+/)
+  return raw.map((item) => String(item ?? '').trim()).filter(Boolean)
+}
+
 function assertRunner(name, label) {
   const key = String(name || '').toLowerCase()
   if (!RUNNERS.includes(key)) {
@@ -245,6 +255,12 @@ export function resolveSettings(args, loaded) {
     asBool(process.env.EXEC_REVIEW_STREAM_PARTIAL_OUTPUT, asBool(cfg.streamPartialOutput, false)),
   )
 
+  // 工作区快照额外跳过的目录名。默认空："哪个目录是噪音"由项目自己回答
+  // （git 工作树看 `.gitignore`；其它目录看这里），技能不替项目猜。
+  const workspaceSkip = asList(
+    firstNonEmpty(process.env.EXEC_REVIEW_WORKSPACE_SKIP) || cfg.workspaceSkip || [],
+  )
+
   return {
     configFiles: loaded?.files || [],
     sandbox,
@@ -253,6 +269,7 @@ export function resolveSettings(args, loaded) {
     review,
     structuredContext,
     streamPartialOutput,
+    workspaceSkip,
     serve,
     port,
     returnLevel,

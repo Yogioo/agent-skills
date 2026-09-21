@@ -22,6 +22,7 @@ import {
   diff,
   hasSkippedSegment,
   isGitWorkTree,
+  resolveSkip,
   snapshot,
 } from '../../skills/exec-review/scripts/workspace.mjs'
 
@@ -144,18 +145,24 @@ test('没动过就是空 diff', async () => {
   })
 })
 
-test('未跟踪文件落在噪音目录里会被跳过：.gitignore 写漏不该把快照拖回遍历', async () => {
+test('未跟踪文件只在配了 skip 时才跳过：.gitignore 写漏仍是项目自己的事', async () => {
   await withDir((dir) => {
     makeRepo(dir)
-    // 故意把 build/ 从忽略里漏掉，再往里丢一堆文件
+    // 故意把 build/ 从忽略里漏掉
     mkdirSync(join(dir, 'build'), { recursive: true })
     writeFileSync(join(dir, 'build', 'ignored-by-nobody.txt'), 'x\n')
 
-    const cap = captureWorkspace(dir)
-    assert.equal(cap.mode, 'git')
+    const withoutSkip = captureWorkspace(dir)
+    assert.equal(withoutSkip.mode, 'git')
     assert.ok(
-      !Object.keys(cap.files).some((p) => p.startsWith('build/')),
-      'build/ 下的未跟踪文件不该进快照',
+      Object.keys(withoutSkip.files).some((p) => p.startsWith('build/')),
+      '默认不猜：没配就得看得见',
+    )
+
+    const withSkip = captureWorkspace(dir, { skip: ['build'] })
+    assert.ok(
+      !Object.keys(withSkip.files).some((p) => p.startsWith('build/')),
+      '配了 build 之后就不该再读它',
     )
   })
 })
@@ -201,6 +208,24 @@ test("显式要 git 但目录不是仓库时退回 walk，不静默丢掉检测"
   })
 })
 
+test('默认跳过表不替项目猜：只有版本控制元数据', () => {
+  // 这条测试是防回归的：曾经有人（就是这次修复前）往默认表里塞了
+  // build/dist/node_modules/Library/Temp/... —— 任何一份名单都写不全，
+  // 而且这些目录都可能被某些项目正常提交，跳过就是漏报改动。
+  assert.deepEqual([...DEFAULT_SKIP].sort(), ['.git', '.hg', '.svn'])
+  for (const engineSpecific of ['Library', 'Temp', 'obj', 'build', 'dist', 'node_modules', 'target', 'bin']) {
+    assert.equal(DEFAULT_SKIP.has(engineSpecific), false, `${engineSpecific} 不该在默认表里`)
+  }
+})
+
+test('resolveSkip 取并集：操作者能加，但不能把 .git 弄掉', () => {
+  assert.deepEqual([...resolveSkip()].sort(), ['.git', '.hg', '.svn'])
+  assert.deepEqual([...resolveSkip(['Library', 'Temp'])].sort(), ['.git', '.hg', '.svn', 'Library', 'Temp'])
+  assert.ok(resolveSkip(['Library']).has('.git'), '少了 .git 就会去哈希整个对象库')
+  assert.ok(resolveSkip(new Set(['A'])).has('A'))
+  assert.deepEqual([...resolveSkip(['', '  ', null])].sort(), ['.git', '.hg', '.svn'], '空项要忽略')
+})
+
 test('isGitWorkTree / hasSkippedSegment', async () => {
   await withDir((dir) => {
     assert.equal(isGitWorkTree(dir), false, '不是仓库')
@@ -209,10 +234,9 @@ test('isGitWorkTree / hasSkippedSegment', async () => {
     assert.equal(isGitWorkTree(join(dir, 'src')), true, '仓库子目录也算')
 
     assert.equal(hasSkippedSegment('src/a.txt'), false)
-    assert.equal(hasSkippedSegment('Library/x/y.bin'), true)
-    assert.equal(hasSkippedSegment('a/node_modules/b.js'), true)
-    assert.equal(hasSkippedSegment('src/a.txt', new Set(['src'])), true, 'skip 可替换')
-    assert.ok(DEFAULT_SKIP.has('Library'), 'Unity 的 Library 必须在默认跳过表里')
+    assert.equal(hasSkippedSegment('a/.git/b'), true)
+    assert.equal(hasSkippedSegment('Library/x/y.bin', resolveSkip(['Library'])), true)
+    assert.equal(hasSkippedSegment('Library/x/y.bin'), false, '没配就不猜')
   })
 })
 
@@ -240,7 +264,7 @@ test('非 git 目录走 walk 模式，改动 / 新增 / 删除都被认出', asy
   })
 })
 
-test('walk 模式跳过噪音目录：Unity 工程不该把 Library 也算进去', async () => {
+test('walk 模式默认不猜：Library / node_modules 会老老实实进快照', async () => {
   await withDir((dir) => {
     writeFileSync(join(dir, 'game.cs'), 'v1\n')
     mkdirSync(join(dir, 'Library', 'Artifacts'), { recursive: true })
@@ -248,25 +272,38 @@ test('walk 模式跳过噪音目录：Unity 工程不该把 Library 也算进去
     mkdirSync(join(dir, 'node_modules', 'pkg'), { recursive: true })
     writeFileSync(join(dir, 'node_modules', 'pkg', 'index.js'), 'junk\n')
 
-    const before = captureWorkspace(dir).files
-    assert.deepEqual(Object.keys(before), ['game.cs'])
-
-    writeFileSync(join(dir, 'Library', 'Artifacts', 'huge.bin'), 'junk changed\n')
-    const after = captureWorkspace(dir).files
-    assert.deepEqual(diff(before, after), { changed: [], added: [], removed: [] })
-
-    writeFileSync(join(dir, 'game.cs'), 'v2\n')
-    assert.deepEqual(diff(before, captureWorkspace(dir).files).changed, ['game.cs'])
+    const seen = Object.keys(captureWorkspace(dir).files).sort()
+    assert.deepEqual(seen, ['Library/Artifacts/huge.bin', 'game.cs', 'node_modules/pkg/index.js'])
   })
 })
 
-test('walk 模式的 skip 可以被调用方整份替换', async () => {
+test('配了 workspaceSkip 才跳过：操作者自己的判断', async () => {
+  await withDir((dir) => {
+    writeFileSync(join(dir, 'game.cs'), 'v1\n')
+    mkdirSync(join(dir, 'Library'), { recursive: true })
+    writeFileSync(join(dir, 'Library', 'huge.bin'), 'junk\n')
+
+    const skip = ['Library']
+    const before = captureWorkspace(dir, { skip }).files
+    assert.deepEqual(Object.keys(before), ['game.cs'])
+
+    writeFileSync(join(dir, 'Library', 'huge.bin'), 'junk changed\n')
+    const after = captureWorkspace(dir, { skip }).files
+    assert.deepEqual(diff(before, after), { changed: [], added: [], removed: [] })
+
+    writeFileSync(join(dir, 'game.cs'), 'v2\n')
+    assert.deepEqual(diff(before, captureWorkspace(dir, { skip }).files).changed, ['game.cs'])
+  })
+})
+
+test('walk 模式的 skip 是并集，不是替换', async () => {
   await withDir((dir) => {
     mkdirSync(join(dir, 'keep'), { recursive: true })
     writeFileSync(join(dir, 'keep', 'a.txt'), 'a\n')
-    writeFileSync(join(dir, 'other.txt'), 'o\n')
+    mkdirSync(join(dir, 'other'), { recursive: true })
+    writeFileSync(join(dir, 'other', 'b.txt'), 'b\n')
 
-    const cap = captureWorkspace(dir, { skip: new Set(['other.txt']) })
+    const cap = captureWorkspace(dir, { skip: ['other'] })
     assert.deepEqual(Object.keys(cap.files), ['keep/a.txt'])
   })
 })

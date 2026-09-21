@@ -30,6 +30,7 @@
   "heartbeatMs": 10000,
   "structuredContext": true,
   "streamPartialOutput": false,
+  "workspaceSkip": [],
   "executor": {
     "runner": "",
     "bin": "",
@@ -64,8 +65,20 @@
 | `heartbeatMs` | 存活心跳间隔（毫秒） |
 | `structuredContext` | 进度页是否使用 normalized events tail（默认 `true`；`false` 回退 legacy log 行 tail） |
 | `streamPartialOutput` | agent runner 是否传 `--stream-partial-output`（默认 `false`）；启用后进度页合并 partial assistant 文本 |
+| `workspaceSkip` | 工作区快照额外跳过的**目录名**（数组；env `EXEC_REVIEW_WORKSPACE_SKIP` 逗号分隔）。默认 `[]` |
 
 > **注意（gitCommit 与 sandbox）**：执行端自行 `git commit` 需要能写入 `.git` 目录的沙箱。默认 `sandbox: "danger-full-access"` 可正常提交；若改用 `workspace-write`，`.git` 目录只读，执行端会报 `index.lock: Permission denied` 而 `blocked`（修复已完成但无法提交）。需要提交时请保持 `danger-full-access`。
+
+### `workspaceSkip`（非 git 目录才需要）
+
+改动检测优先问 git：是 git 工作树时用 `.gitignore` 定范围，**不看这个字段**。不是 git 目录时才退回遍历，而这个字段就是那时该跳过的目录名。
+
+技能自带的默认表**只有版本控制元数据**（`.git` / `.hg` / `.svn`）——哪个目录算噪音是项目自己的判断，技能不替项目猜；给一份引擎名单（Unity 的 `Library`、`obj`、`node_modules`…）既写不全，也会在那些目录被正常提交的项目里漏报改动。
+
+- 数组写法：`"workspaceSkip": ["Library", "Temp", "CachedSymbols"]`
+- env 写法：`EXEC_REVIEW_WORKSPACE_SKIP="Library,Temp"`（优先级高于 config）
+- 与默认表**取并集**，不能把 `.git` 替掉。
+- 在 git 工作树里它只影响**未跟踪**文件：已跟踪文件哪怕住在 `build/` 里也照常比对。
 
 `thinking` 常见取值（视模型而定）：`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。
 
