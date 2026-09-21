@@ -56,6 +56,7 @@ const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000
 const DEFAULT_STALE_LOCK_MS = 30 * 60 * 1000
 const DEFAULT_MAX_ATTEMPTS = 3
 const INBOX_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'inbox.mjs')
+const CHECKIN_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'checkin.mjs')
 
 function localStamp(ts) {
   const d = new Date(ts)
@@ -134,14 +135,21 @@ function releaseLock(file) {
 /**
  * 叫醒词只给指针，不给正文——正文在收件箱和报告文件里，让它自己去读。
  * 明确禁止替人验收，因为那是 Two steps 里唯一属于人的第二步。
+ * 第一句是报到：SKILL 的「每轮先报到」也管唤醒轮，而唤醒轮没有人机对话在替它续心跳。
  */
 export function buildWakePrompt({ record, items }) {
   const title = record.title ? `「${record.title}」` : ''
+  // 唤醒轮没有 runner 的 session 环境变量可用时，靠这里注入的 reference 把需求认回来。
+  const checkinArgs = [`--requirement ${record.requirementId}`]
+  if (record.sessionRef) checkinArgs.push(`--session "${record.sessionRef}"`)
+  if (record.runner) checkinArgs.push(`--runner ${record.runner}`)
   return [
     `[AFK] 需求 ${record.requirementId}${title} 收到 ${items.length} 条事件：`,
     ...items.map((item) => `- ${item.kind}: ${item.title || '(无标题)'}${item.nextStep ? `  → ${item.nextStep}` : ''}`),
     '',
-    `先读原始记录（不要只凭这段摘要行动）：node "${INBOX_SCRIPT}" --list --state unread`,
+    `先报到（盖心跳 + 取收件箱）：node "${CHECKIN_SCRIPT}" ${checkinArgs.join(' ')}`,
+    '',
+    `再读原始记录（不要只凭这段摘要行动）：node "${INBOX_SCRIPT}" --list --state unread`,
     '',
     '规则：',
     '- 能自己做完的做完；命中 Stop-and-ask 清单的才要人决定。',

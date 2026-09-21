@@ -83,7 +83,13 @@ node <afk-run>/scripts/requirement.mjs --close --requirement <需求 id> --workd
 
 ## 被唤醒的轮次
 
-唤醒环叫醒你时，用户不在场。这一轮只做四件事：
+唤醒环叫醒你时，用户不在场。这一轮同样**先报到**（唤醒词里会给出可直接粘贴的那一条；唤醒轮没有人机对话在替你续心跳，报到是这一轮唯一的续心跳途径）：
+
+```
+node <afk-run>/scripts/checkin.mjs --requirement <需求 id> --session "<你的 session reference>"
+```
+
+然后做四件事：
 
 1. 读事件本体（`inbox.mjs --list --state unread --json`——checkin 只给了摘要，`detail` 指针在里面）；
 2. 顺着事件 `detail` 里的指针读原始报告与回答；

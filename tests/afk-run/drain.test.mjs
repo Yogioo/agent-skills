@@ -114,6 +114,25 @@ test('同一需求的多条事件合并成一次敲醒，turn 带上 session 与
   })
 })
 
+test('叫醒词先要它报到：checkin 命令带着需求号与 session reference', async () => {
+  await withEnv(async ({ home, workdir, cacheRoot }) => {
+    const { record } = makeAwakeRequirement({ home, workdir })
+    writeInboxItem({ kind: 'run-end', requirementId: record.requirementId, workdir, title: 'A' }, { home })
+
+    const turns = []
+    await drainInbox({ home, cacheRoot, createRunnerFn: recordingRunner(turns) })
+    const prompt = turns[0].turn.prompt
+
+    assert.match(prompt, /checkin\.mjs/, 'SKILL 的第一条规则是每轮先报到，唤醒轮也是「一轮」')
+    assert.ok(prompt.includes(`--requirement ${record.requirementId}`), '报到命令要自带需求号，唤醒轮的 cwd 未必是需求目录')
+    assert.ok(prompt.includes(`--session "${record.sessionRef}"`), '唤醒轮没有 runner 的环境变量，session reference 要由 drain 注入')
+    assert.ok(
+      prompt.indexOf('checkin.mjs') < prompt.indexOf('inbox.mjs'),
+      '先报到（盖心跳）再读事件本体',
+    )
+  })
+})
+
 test('router：不传 requirement 时靠工单反查', async () => {
   await withEnv(async ({ home, workdir, cacheRoot }) => {
     const { record } = makeAwakeRequirement({ home, workdir }, { workItems: [{ taskSource: 'tapd', id: '1111' }] })
