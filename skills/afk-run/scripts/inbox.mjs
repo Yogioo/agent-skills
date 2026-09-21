@@ -260,6 +260,29 @@ export function emitInboxEvent(item, { home = afkHomeRoot(), kick = true, log = 
 }
 
 /**
+ * 读一条事件。读不到（没写过、id 非法、文件半截）一律返回 null——读者不该被一条坏名字弄崩。
+ * @param {string} id
+ * @param {object} [opts]
+ * @param {string} [opts.home]
+ * @returns {object|null}
+ */
+export function readInboxItem(id, { home = afkHomeRoot() } = {}) {
+  let file
+  try {
+    file = join(inboxDir(home), `${assertInboxId(id)}.json`)
+  } catch {
+    return null
+  }
+  if (!existsSync(file)) return null
+  try {
+    const record = JSON.parse(readFileSync(file, 'utf8'))
+    return record && record.id ? record : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * 改一条事件的字段。id / kind / createdAt 不允许被 patch 改。
  * drain 用它记尝试次数，不靠只改 state 的 ack。
  * @returns {object} 改完的记录
@@ -273,6 +296,14 @@ export function updateInboxItem(id, patch = {}, { home = afkHomeRoot() } = {}) {
 
   const record = JSON.parse(readFileSync(file, 'utf8'))
   const now = Date.now()
+  // 状态是单调的（unread < seen < done）：写回退会让人看到「已处理」又变回「已读未处理」，
+  // 然后被 isStuckSeen 当成误报。守卫放在写入点——同一类错误下次在这里就炸，
+  // 而不是几十分钟后在总览页上表现为一条假的「待人工处理」。
+  if (patch.state && INBOX_STATES.indexOf(patch.state) < INBOX_STATES.indexOf(record.state)) {
+    throw new Error(
+      `收件箱状态不能回退: ${record.state} → ${patch.state}（只允许 ${INBOX_STATES.join(' < ')}）`,
+    )
+  }
   const next = {
     ...record,
     ...patch,

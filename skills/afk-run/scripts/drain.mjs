@@ -8,7 +8,7 @@
  * 一轮：
  *   读 unread → 按需求分组 → 反查需求本子 → 看心跳 → 抢锁
  *   → 给那个 session 追一轮（runner 层负责翻译成各 CLI 的命令）
- *   → 成功标 seen；失败记一次尝试次数
+ *   → 成功把 unread 推到 seen（不碰轮内已经自己 ack 的条目）；失败记一次尝试次数
  *
  * 三件**故意不做**的事：
  * - 不替人验收：Two steps 的第二件只有人能点，所以叫醒词里明确禁止。
@@ -40,7 +40,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afkHomeRoot } from './afk-home.mjs'
-import { DEFAULT_STUCK_SEEN_MS, isStuckSeen, listInboxItems, updateInboxItem } from './inbox.mjs'
+import { DEFAULT_STUCK_SEEN_MS, isStuckSeen, listInboxItems, readInboxItem, updateInboxItem } from './inbox.mjs'
 import {
   DEFAULT_HEARTBEAT_MS,
   findRequirementById,
@@ -347,13 +347,21 @@ export async function drainInbox({
         throw new Error(`runner 退出码 ${runResult.code}${runResult.aborted ? '（超时中止）' : ''}`)
       }
 
-      // 敲通了才算看过。只把状态推到 seen——done 由被叫醒的那一轮自己决定。
+      // 敲通了才算看过。只把 **unread** 推到 seen——done 由被叫醒的那一轮自己决定：
+      // 它可能在轮内已经 ack --done，这里是收尾，不是裁判，不能把它的结论回退成 seen。
       for (const item of pending) {
-        updateInboxItem(
-          item.id,
-          { state: 'seen', note: `drain 已叫醒 ${runnerName}（${localStamp(now)}）`, ...routePatch },
-          { home },
-        )
+        const fresh = readInboxItem(item.id, { home })
+        if (!fresh) continue // 轮内被人删了：没什么可记的，不该弄崩整轮
+        if (fresh.state === 'unread') {
+          updateInboxItem(
+            item.id,
+            { state: 'seen', note: `drain 已叫醒 ${runnerName}（${localStamp(now)}）`, ...routePatch },
+            { home },
+          )
+        } else if (Object.keys(routePatch).length) {
+          // 轮内已经走过一步（seen / done）：只补路由，不动状态，也不盖掉处理人的备注
+          updateInboxItem(item.id, { ...routePatch }, { home })
+        }
       }
       report.woke.push({
         requirementId, projectKey, items: pending.map((i) => i.id),

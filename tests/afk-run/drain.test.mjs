@@ -19,7 +19,7 @@ import {
   wakeLogEntry,
   wakeLogPath,
 } from '../../skills/afk-run/scripts/drain.mjs'
-import { listInboxItems, updateInboxItem, writeInboxItem } from '../../skills/afk-run/scripts/inbox.mjs'
+import { ackInboxItem, listInboxItems, updateInboxItem, writeInboxItem } from '../../skills/afk-run/scripts/inbox.mjs'
 import {
   createRequirementRecord,
   linkWorkItems,
@@ -387,6 +387,67 @@ function listLockFiles(home, projectKey) {
   if (!existsSync(dir)) return []
   return readdirSync(dir).filter((name) => name.endsWith('.lock'))
 }
+
+// ---------------------------------------------------------------- 叫醒之后谁说了算
+
+test('被叫醒那一轮自己标了 done，drain 收尾不得把它回退成 seen', async () => {
+  await withEnv(async ({ home, workdir, cacheRoot }) => {
+    const { record } = makeAwakeRequirement({ home, workdir }, { workItems: [{ taskSource: 'tapd', id: '1111' }] })
+    // 这条没带需求号，靠工单反查路由：收尾那一下只该补路由，不该碰状态
+    const handled = writeInboxItem(
+      { kind: 'run-end', workdir, workItems: [{ taskSource: 'tapd', id: '1111' }], title: '已经处理完' },
+      { home },
+    )
+    const untouched = writeInboxItem(
+      { kind: 'questionnaire-submitted', requirementId: record.requirementId, workdir, title: '还没动' },
+      { home },
+    )
+    assert.equal(handled.requirementId, null, '写的时候还没路由')
+
+    // 模拟被唤醒的那一轮：session 在轮内 ack 掉自己收到的信
+    let doneAt = 0
+    const turns = []
+    const report = await drainInbox({
+      home,
+      cacheRoot,
+      createRunnerFn: recordingRunner(turns, () => {
+        doneAt = ackInboxItem(handled.id, { home, note: '已经在轮内处理完' }).doneAt
+        return { code: 0 }
+      }),
+    })
+
+    assert.equal(report.woke.length, 1)
+    const stored = (id) => listInboxItems({ home }).find((i) => i.id === id)
+    assert.equal(stored(handled.id).state, 'done', 'drain 收尾不是裁判，不能覆盖那一轮的结论')
+    assert.equal(stored(handled.id).doneAt, doneAt, 'doneAt 是真正处理完的时刻，不能被改写')
+    assert.equal(stored(handled.id).note, '已经在轮内处理完', '处理人的话不能被叫醒痕迹盖掉')
+    assert.equal(stored(handled.id).requirementId, record.requirementId, '路由补丁照旧要落盘')
+    assert.equal(stored(untouched.id).state, 'seen', '没被处理的那条照旧推到 seen')
+    assert.ok(stored(untouched.id).note, '要留叫醒痕迹')
+  })
+})
+
+test('总数不变量：叫醒一轮之后的 done 既不进 unread 也不进 seen', async () => {
+  await withEnv(async ({ home, workdir, cacheRoot }) => {
+    const { record } = makeAwakeRequirement({ home, workdir })
+    const item = writeInboxItem({ kind: 'run-end', requirementId: record.requirementId, workdir, title: 'A' }, { home })
+
+    await drainInbox({
+      home,
+      cacheRoot,
+      createRunnerFn: recordingRunner([], () => {
+        updateInboxItem(item.id, { state: 'done' }, { home })
+        return { code: 0 }
+      }),
+    })
+
+    const [stored] = listInboxItems({ home })
+    assert.equal(stored.state, 'done')
+    assert.equal(stored.seenAt, undefined, '从没进过 seen 的条目不该凭空多一个 seenAt')
+    assert.equal(listInboxItems({ home, states: ['unread'] }).length, 0)
+    assert.equal(listInboxItems({ home, states: ['seen'] }).length, 0)
+  })
+})
 
 // ---------------------------------------------------------------- 叫醒了但一直没处理
 

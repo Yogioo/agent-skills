@@ -18,6 +18,7 @@ import {
   inboxCounts,
   isStuckSeen,
   listInboxItems,
+  readInboxItem,
   updateInboxItem,
   writeInboxItem,
 } from '../../skills/afk-run/scripts/inbox.mjs'
@@ -210,6 +211,31 @@ test('重复 ack 不会把时间往后推：否则永远算不出停了多久', 
     const again = ackInboxItem(item.id, { home, state: 'seen', note: '再看一眼' })
     assert.equal(again.seenAt, first.seenAt)
     assert.equal(again.note, '再看一眼', '重复 ack 仍然可以补 note')
+  })
+})
+
+test('状态是单调的：done 不能被写回 seen / unread', async () => {
+  await withHome((home) => {
+    const item = writeInboxItem({ kind: 'run-end', workdir: 'C:/projects/Demo' }, { home })
+    const done = ackInboxItem(item.id, { home })
+
+    assert.throws(() => updateInboxItem(item.id, { state: 'seen' }, { home }), /不能回退/)
+    assert.throws(() => updateInboxItem(item.id, { state: 'unread' }, { home }), /不能回退/)
+    assert.equal(readInboxItem(item.id, { home }).state, 'done', '拒绝之后原记录不能被动过')
+
+    // 原样写同一个状态不算回退：重复 ack 仍然可以补 note
+    const again = updateInboxItem(item.id, { state: 'done', note: '再确认一次' }, { home })
+    assert.equal(again.doneAt, done.doneAt)
+    assert.equal(again.note, '再确认一次')
+  })
+})
+
+test('readInboxItem：读一条，读不到就 null，不抛', async () => {
+  await withHome((home) => {
+    const item = writeInboxItem({ kind: 'run-end', workdir: 'C:/projects/Demo' }, { home })
+    assert.equal(readInboxItem(item.id, { home }).id, item.id)
+    assert.equal(readInboxItem('没这条', { home }), null)
+    assert.equal(readInboxItem('../越界', { home }), null)
   })
 })
 
