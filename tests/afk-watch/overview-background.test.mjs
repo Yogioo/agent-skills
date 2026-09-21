@@ -7,7 +7,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -147,6 +147,32 @@ test('--stop 停掉并释放端口与注册表；再停退出码 4', async () =>
     const again = call(['--stop', '--cache-dir', cacheDir], env)
     assert.equal(again.code, 4)
     assert.equal(again.payload.reason, 'not-running')
+  })
+})
+
+test('上一次运行留下的启动行不能冒充这一次的：日志是跨次追加的', async () => {
+  await withServers(async ({ cacheDir, env }) => {
+    // 模拟上一次运行死得不安详：日志里留了一条旧启动行，端口早就没人监听了
+    writeFileSync(
+      join(cacheDir, 'overview.log'),
+      `${JSON.stringify({ event: 'overview_started', pid: 999999, port: 1, url: 'http://127.0.0.1:1/' })}\n`,
+      'utf8',
+    )
+
+    const started = call(['--cache-dir', cacheDir], env)
+    assert.equal(started.code, 0)
+    assert.notEqual(started.payload.port, 1, '不能把旧端口配到新 pid 上')
+    assert.notEqual(started.payload.url, 'http://127.0.0.1:1/')
+    assert.equal(
+      started.payload.port,
+      Number(new URL(started.payload.url).port),
+      'pid / port / url 必须来自同一次启动',
+    )
+    assert.equal(await reachable(started.payload.url), true)
+
+    // --status 读的是注册表，也不能是旧端口
+    const status = call(['--status', '--cache-dir', cacheDir], env)
+    assert.equal(status.payload.port, started.payload.port)
   })
 })
 

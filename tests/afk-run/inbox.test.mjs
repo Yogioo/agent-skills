@@ -12,9 +12,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  DEFAULT_STUCK_SEEN_MS,
   INBOX_STATES,
   ackInboxItem,
   inboxCounts,
+  isStuckSeen,
   listInboxItems,
   updateInboxItem,
   writeInboxItem,
@@ -182,4 +184,44 @@ test('列表按创建时间升序', async () => {
     const ids = listInboxItems({ home }).map((item) => item.id)
     assert.deepEqual(ids, [first.id, second.id])
   })
+})
+
+// ---------------------------------------------------------------- 停在哪一步
+
+test('状态迁移盖时间戳：seenAt / doneAt', async () => {
+  await withHome((home) => {
+    const item = writeInboxItem({ kind: 'run-end', workdir: 'C:/projects/Demo' }, { home })
+    assert.equal('seenAt' in item, false, '刚投的信还没有走过任何一步')
+
+    const seen = updateInboxItem(item.id, { state: 'seen' }, { home })
+    assert.equal(typeof seen.seenAt, 'number')
+    assert.equal('doneAt' in seen, false)
+
+    const done = updateInboxItem(item.id, { state: 'done' }, { home })
+    assert.equal(typeof done.doneAt, 'number')
+    assert.equal(done.seenAt, seen.seenAt, '再过一步不该把已经记下的时间抹掉')
+  })
+})
+
+test('重复 ack 不会把时间往后推：否则永远算不出停了多久', async () => {
+  await withHome((home) => {
+    const item = writeInboxItem({ kind: 'run-end', workdir: 'C:/projects/Demo' }, { home })
+    const first = ackInboxItem(item.id, { home, state: 'seen' })
+    const again = ackInboxItem(item.id, { home, state: 'seen', note: '再看一眼' })
+    assert.equal(again.seenAt, first.seenAt)
+    assert.equal(again.note, '再看一眼', '重复 ack 仍然可以补 note')
+  })
+})
+
+test('isStuckSeen：只看 seen，且要看停了多久', () => {
+  const now = 1_000_000_000
+  const base = { state: 'seen', seenAt: now - 60_000 }
+  assert.equal(isStuckSeen(base, { now }), false, '刚敲完不算卡住')
+  assert.equal(isStuckSeen(base, { now, windowMs: 30_000 }), true)
+  assert.equal(isStuckSeen({ ...base, state: 'unread' }, { now, windowMs: 0 }), false, '还没敲过的不算')
+  assert.equal(isStuckSeen({ ...base, state: 'done' }, { now, windowMs: 0 }), false, '处理完的不算')
+  // 老条目没有 seenAt，退回 updatedAt（drain 标 seen 时写的就是它）
+  assert.equal(isStuckSeen({ state: 'seen', updatedAt: now - 60_000 }, { now, windowMs: 30_000 }), true)
+  assert.equal(isStuckSeen({ state: 'seen' }, { now }), false, '一个时间都没有就不澱报')
+  assert.equal(DEFAULT_STUCK_SEEN_MS, 15 * 60 * 1000)
 })

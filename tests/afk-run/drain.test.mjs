@@ -6,13 +6,20 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { drainInbox } from '../../skills/afk-run/scripts/drain.mjs'
-import { listInboxItems, writeInboxItem } from '../../skills/afk-run/scripts/inbox.mjs'
+import {
+  appendWakeLog,
+  drainInbox,
+  isNoteworthy,
+  readWakeLog,
+  wakeLogEntry,
+  wakeLogPath,
+} from '../../skills/afk-run/scripts/drain.mjs'
+import { listInboxItems, updateInboxItem, writeInboxItem } from '../../skills/afk-run/scripts/inbox.mjs'
 import {
   createRequirementRecord,
   linkWorkItems,
@@ -380,3 +387,124 @@ function listLockFiles(home, projectKey) {
   if (!existsSync(dir)) return []
   return readdirSync(dir).filter((name) => name.endsWith('.lock'))
 }
+
+// ---------------------------------------------------------------- 叫醒了但一直没处理
+
+test('叫醒后停太久的条目会被点名，但不重敲——重敲就是重复干活', async () => {
+  await withEnv(async ({ home, workdir, cacheRoot }) => {
+    const { record } = makeAwakeRequirement({ home, workdir })
+    const item = writeInboxItem(
+      { kind: 'run-end', requirementId: record.requirementId, workdir, title: '敲过没回音' },
+      { home },
+    )
+    updateInboxItem(item.id, { state: 'seen' }, { home })
+
+    const turns = []
+    const report = await drainInbox({
+      home,
+      cacheRoot,
+      createRunnerFn: recordingRunner(turns),
+      stuckSeenMs: 0,
+    })
+
+    assert.equal(turns.length, 0, 'seen 不是 unread，不该再敲一次')
+    assert.equal(report.woke.length, 0)
+    assert.equal(report.stuck.length, 1)
+    assert.equal(report.stuck[0].id, item.id)
+    assert.equal(report.stuck[0].requirementId, record.requirementId)
+    assert.equal(report.stuck[0].title, '敲过没回音')
+    // 状态不动：升级成人看，不替人做决定
+    assert.equal(listInboxItems({ home, states: ['seen'] }).length, 1)
+  })
+})
+
+test('刚敲完的不算卡住（默认窗口）', async () => {
+  await withEnv(async ({ home, workdir, cacheRoot }) => {
+    const { record } = makeAwakeRequirement({ home, workdir })
+    const item = writeInboxItem(
+      { kind: 'run-end', requirementId: record.requirementId, workdir, title: '刚敲完' },
+      { home },
+    )
+    updateInboxItem(item.id, { state: 'seen' }, { home })
+
+    const report = await drainInbox({ home, cacheRoot, createRunnerFn: recordingRunner([]) })
+    assert.deepEqual(report.stuck, [])
+  })
+})
+
+test('收件箱全空时也要点名卡住的条目：这条消息本来就没人替它说', async () => {
+  await withEnv(async ({ home, workdir, cacheRoot }) => {
+    const { record } = makeAwakeRequirement({ home, workdir })
+    const item = writeInboxItem({ kind: 'run-end', requirementId: record.requirementId, workdir, title: 'X' }, { home })
+    updateInboxItem(item.id, { state: 'seen' }, { home })
+
+    const report = await drainInbox({ home, cacheRoot, createRunnerFn: recordingRunner([]), stuckSeenMs: 0 })
+    assert.equal(report.scanned, 0, '没有 unread')
+    assert.equal(report.stuck.length, 1, '但卡住的那条仍然要点名')
+  })
+})
+
+// ---------------------------------------------------------------- 叫醒记录落盘
+
+test('叫醒记录：写一轮、读回来，新的在前', async () => {
+  await withEnv(async ({ home }) => {
+    const base = {
+      scanned: 2,
+      woke: [{ requirementId: 'req-a', runner: 'pi', items: ['i1'], runDir: 'C:/tmp/wake-a' }],
+      waiting: [],
+      blocked: [{ requirementId: 'req-b', reason: 'runner agent 不支持续会话', items: ['i2'] }],
+      unrouted: [{ id: 'evt-1', kind: 'watch-stop', projectKey: 'p' }],
+      failed: [],
+      stuck: [],
+    }
+    assert.ok(appendWakeLog({ ...base, at: 1000 }, { home }))
+    assert.ok(appendWakeLog({ ...base, at: 2000, woke: [], scanned: 0, stuck: [{ id: 's1' }] }, { home }))
+
+    const entries = readWakeLog({ home, limit: 10 })
+    assert.equal(entries.length, 2)
+    assert.equal(entries[0].at, 2000, '新的在前')
+    assert.equal(entries[1].woke[0].runDir, 'C:/tmp/wake-a', '唤醒那一轮的报告目录要留下，否则没人找得到')
+    assert.equal(entries[1].blocked[0].reason, 'runner agent 不支持续会话')
+    assert.equal(wakeLogPath(home), join(home, 'wake-log.jsonl'))
+  })
+})
+
+test('什么都没有的一轮不写记录：这是流水，不是心跳', async () => {
+  await withEnv(async ({ home }) => {
+    const empty = {
+      at: 1, scanned: 0, woke: [], waiting: [], blocked: [], unrouted: [], failed: [], stuck: [],
+    }
+    assert.equal(isNoteworthy(empty), false)
+    assert.equal(appendWakeLog(empty, { home }), '')
+    assert.deepEqual(readWakeLog({ home }), [])
+    // 只有卡住的条目也算值得记：那是唯一能解释「为什么没人叫我」的线索
+    assert.equal(isNoteworthy({ ...empty, stuck: [{ id: 's1' }] }), true)
+  })
+})
+
+test('记录写不成也不择掉唤醒环', async () => {
+  await withEnv(async ({ home }) => {
+    const lines = []
+    // 把日志路径占成目录：写入必然失败（EISDIR）
+    mkdirSync(wakeLogPath(home), { recursive: true })
+
+    const ok = appendWakeLog(
+      { at: 1, scanned: 1, woke: [{ requirementId: 'r', runner: 'pi', items: ['i'], runDir: '' }], waiting: [], blocked: [], unrouted: [], failed: [], stuck: [] },
+      { home, log: (line) => lines.push(line) },
+    )
+    assert.equal(ok, '')
+    assert.match(lines.join('\n'), /写唤醒记录失败/)
+  })
+})
+
+test('wakeLogEntry 只留指针与计数，不放大段正文', async () => {
+  const entry = wakeLogEntry({
+    at: 5,
+    scanned: 1,
+    woke: [{ requirementId: 'r', runner: 'pi', items: ['i'], runDir: 'd', prompt: '很大一坨正文' }],
+    waiting: [], blocked: [], unrouted: [], failed: [], stuck: [],
+  })
+  assert.equal(entry.at, 5)
+  assert.equal(entry.woke[0].runDir, 'd')
+  assert.ok(!('prompt' in entry.woke[0]), '不该把唤醒词存进日志')
+})

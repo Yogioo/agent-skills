@@ -81,6 +81,8 @@ node <afk-run>/scripts/requirement.mjs --link --requirement <需求 id> --source
 3. 把需要人决定的事列成清单，停在这里；
 4. 处理完的把条目标掉：`inbox.mjs --ack <id> --done`。
 
+**没标掉就会被当成「叫醒了但一直没处理完」摆到总览页上。** `drain` 只捞 `unread`——它把条目推到 `seen` 就再也不看它了，所以一条被你叫醒、又没被标掉的事件会从此不出声。唯一能发现它的地方是总览页（超过 15 分钟）和 `<AFK home>/wake-log.jsonl`。你觉得这一轮干完了，就当场标掉。
+
 **验收是人点的那一下。** 你准备到「清单已经摆好、只差他点」为止，然后等人出现。
 
 ## 两件事（Two steps）

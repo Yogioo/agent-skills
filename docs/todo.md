@@ -36,12 +36,17 @@ node <afk-watch>/scripts/start-background.mjs --stop   --workdir <目录>
 
 脚本在 `skills/afk-run/scripts/`：`inbox.mjs`（收件箱读写）、`requirement.mjs`（需求本子 + 工单反查 + 心跳）、`drain.mjs`（一次性抽干 + 叫醒）、`checkin.mjs`（助理每轮报到）。
 
-## P2（部分已做 2026-09-21）
+## P2（已做 2026-09-21）
 
-- **多需求总览页**（已做）：`skills/afk-watch/scripts/{overview,start-overview}.mjs`。三个区块：待人工处理（叫不醒的需求 / 无主事件 / 唤醒环已放弃）、需求、执行环境。只读，不读 `config.json`；陈旧（注册表在、进程死）显式标出。见 [ADR-0009](adr/0009-human-surface-is-one-page.md)。
+- **多需求总览页**：`skills/afk-watch/scripts/{overview,start-overview}.mjs`。区块：待人工处理（叫不醒的需求 / 无主事件 / 唤醒环已放弃 / 叫醒了但一直没处理完）、需求、执行环境、最近唤醒。只读，不读 `config.json`；陈旧（注册表在、进程死）显式标出。见 [ADR-0009](adr/0009-human-surface-is-one-page.md)。
+- **唤醒可见**：`drain` 每轮的结论追加到 `<AFK home>/wake-log.jsonl`。踢它的人用 `stdio:'ignore'`，不留一份就等于没发生（`--no-log` 可关）。答案进两个地方：总览页的**最近唤醒**区块，和事件本身。
+- **「叫醒了但一直没处理完」**：inbox 状态迁移盖 `seenAt` / `doneAt`；`drain` 每轮点名超过 `DEFAULT_STUCK_SEEN_MS`（15 分钟）还没被标成 `done` 的条目（**即使收件箱全空**），但**不重敲**——重敲就是重复干活，升级给人看才对。
+- **叫不醒的需求**：`runner=agent` 这类不支持续会话的登记，总览页直接标出来——真实踩过，之前只能靠人肉排查本子。
 
 ## 待办
 
 - P2 验收证据化：助理出验收清单，agent 跑可自动化项并留证据，人只点收/退。
 - P3 飞书入向通道。
 - P3 总览页上的按钮（叫醒 / 标处理完）：会打破页面的只读性质，ADR-0009 把它记成没做而不是否决，要单独一个决定。
+- P3 唤醒那一轮的报告仍在 `%TEMP%/afk-wake/`（会被清）：`wake-log.jsonl` 只留了指针。要长期留证据得把 `--cache-dir` 指到 AFK home 下。
+

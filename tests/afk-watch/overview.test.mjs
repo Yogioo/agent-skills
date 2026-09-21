@@ -12,7 +12,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { EXHAUSTED_WAKE_ATTEMPTS, projectOverview, renderPage, wakeableOf } from '../../skills/afk-watch/scripts/overview.mjs'
-import { writeInboxItem } from '../../skills/afk-run/scripts/inbox.mjs'
+import { updateInboxItem, writeInboxItem } from '../../skills/afk-run/scripts/inbox.mjs'
+import { appendWakeLog } from '../../skills/afk-run/scripts/drain.mjs'
 import { createRequirementRecord, closeRequirement } from '../../skills/afk-run/scripts/requirement.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -46,7 +47,7 @@ test('空机器：没有需求、没有环境、没有要人动的事', async ()
     assert.equal(model.counts.requirements, 0)
     assert.equal(model.counts.environments, 0)
     assert.equal(model.counts.needsHuman, 0)
-    assert.deepEqual(model.needsHuman, { unrouted: [], exhausted: [], unwakeable: [] })
+    assert.deepEqual(model.needsHuman, { unrouted: [], exhausted: [], stuckSeen: [], unwakeable: [] })
     assert.match(renderPage(model), /没有要你动的事/)
   })
 })
@@ -257,5 +258,88 @@ test('页面明确声明不读 config.json', async () => {
   await withEnv(({ home, watchCacheRoot, runCacheRoot }) => {
     const html = renderPage(projectOverview({ home, watchCacheRoot, runCacheRoot, isAlive: () => false }))
     assert.match(html, /不读 <span class="mono">config\.json<\/span>/)
+  })
+})
+
+// ---------------------------------------------------------------- 叫醒了但没处理完
+
+test('seen 停了太久进「待人工处理」：这件事不给它留位置就永远不会被发现', async () => {
+  await withEnv(({ home, workdir, watchCacheRoot, runCacheRoot }) => {
+    const record = createRequirementRecord({ workdir, runner: 'pi', sessionRef: 's' }, { home })
+    const item = writeInboxItem({ kind: 'run-end', requirementId: record.requirementId, workdir, title: '敲过没回音' }, { home })
+    updateInboxItem(item.id, { state: 'seen' }, { home })
+
+    // 窗口给 0：刚标 seen 也算停太久
+    const stuck = projectOverview({ home, watchCacheRoot, runCacheRoot, isAlive: () => false, stuckSeenMs: 0 })
+    assert.equal(stuck.needsHuman.stuckSeen.length, 1)
+    assert.equal(stuck.needsHuman.stuckSeen[0].id, item.id)
+    assert.match(stuck.needsHuman.stuckSeen[0].why, /没标成已处理/)
+    assert.match(renderPage(stuck), /叫醒了但一直没处理完/)
+
+    // 默认窗口下它不算卡住：刚敲完不该立刻要人动手
+    const fresh = projectOverview({ home, watchCacheRoot, runCacheRoot, isAlive: () => false })
+    assert.equal(fresh.needsHuman.stuckSeen.length, 0)
+
+    // 处理掉的（done）永远不算
+    updateInboxItem(item.id, { state: 'done' }, { home })
+    const acked = projectOverview({ home, watchCacheRoot, runCacheRoot, isAlive: () => false, stuckSeenMs: 0 })
+    assert.equal(acked.needsHuman.stuckSeen.length, 0)
+  })
+})
+
+test('unread 的条目不会被当成「叫醒了没处理」', async () => {
+  await withEnv(({ home, workdir, watchCacheRoot, runCacheRoot }) => {
+    writeInboxItem({ kind: 'run-end', workdir, title: '还没敲过' }, { home })
+    const model = projectOverview({ home, watchCacheRoot, runCacheRoot, isAlive: () => false, stuckSeenMs: 0 })
+    assert.equal(model.needsHuman.stuckSeen.length, 0, '没敲过的走 unrouted，不走 stuckSeen')
+    assert.equal(model.needsHuman.unrouted.length, 1)
+  })
+})
+
+// ---------------------------------------------------------------- 最近唤醒
+
+test('最近唤醒：drain 的结论留在页面上，事后看得出敲了什么、为什么没敲', async () => {
+  await withEnv(({ home, watchCacheRoot, runCacheRoot }) => {
+    appendWakeLog(
+      {
+        at: 1_700_000_000_000,
+        scanned: 3,
+        woke: [{ requirementId: 'req-a', runner: 'pi', items: ['i1'], runDir: 'C:/tmp/wake-1' }],
+        waiting: [{ requirementId: 'req-b', reason: '心跳还新鲜（12s 前有人动过）', items: ['i2'] }],
+        blocked: [],
+        unrouted: [],
+        failed: [],
+        stuck: [],
+      },
+      { home },
+    )
+
+    const model = projectOverview({ home, watchCacheRoot, runCacheRoot, isAlive: () => false })
+    assert.equal(model.wakeLog.length, 1)
+    assert.equal(model.wakeLog[0].scanned, 3)
+
+    const html = renderPage(model)
+    assert.match(html, /最近唤醒/)
+    assert.match(html, /敲醒 1/)
+    assert.match(html, /等下一轮 1/)
+    assert.match(html, /心跳还新鲜/)
+    assert.match(html, /C:\/tmp\/wake-1/, '唤醒那一轮的报告目录要指出来，否则没人找得到')
+  })
+})
+
+test('没有唤醒记录时不渲染空区块', async () => {
+  await withEnv(({ home, watchCacheRoot, runCacheRoot }) => {
+    const model = projectOverview({ home, watchCacheRoot, runCacheRoot, isAlive: () => false })
+    assert.deepEqual(model.wakeLog, [])
+    assert.ok(!renderPage(model).includes('最近唤醒'))
+  })
+})
+
+test('唤醒记录损坏不炸页面，只当没有这一段', async () => {
+  await withEnv(({ home, watchCacheRoot, runCacheRoot }) => {
+    writeFileSync(join(home, 'wake-log.jsonl'), '{半截\n\n', 'utf8')
+    const model = projectOverview({ home, watchCacheRoot, runCacheRoot, isAlive: () => false })
+    assert.deepEqual(model.wakeLog, [])
+    assert.match(renderPage(model), /AFK 总览/)
   })
 })

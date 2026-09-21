@@ -38,6 +38,23 @@ export const INBOX_STATES = ['unread', 'seen', 'done']
 /** 未被需求认领的事件：requirementId 为 null。 */
 export const UNROUTED = null
 
+/**
+ * 叫醒之后多久还没被标成 done，就算「叫醒了但没处理完」。
+ * 这类事件不在 unread 里，所以既不叫醒也不出声——除了这个窗口，没有别的信号能发现它。
+ */
+export const DEFAULT_STUCK_SEEN_MS = 15 * 60 * 1000
+
+/**
+ * 一条 seen 事件是不是卡住了。老条目没有 `seenAt`，退回 `updatedAt`
+ * ——那正是 drain 标 seen 时写的时间，之后没人再动它。
+ */
+export function isStuckSeen(item, { now = Date.now(), windowMs = DEFAULT_STUCK_SEEN_MS } = {}) {
+  if (!item || item.state !== 'seen') return false
+  const since = item.seenAt || item.updatedAt || item.createdAt || 0
+  if (!since) return false
+  return now - since >= windowMs
+}
+
 export function inboxDir(home = afkHomeRoot()) {
   return join(home, 'inbox')
 }
@@ -255,13 +272,20 @@ export function updateInboxItem(id, patch = {}, { home = afkHomeRoot() } = {}) {
   if (!existsSync(file)) throw new Error(`收件箱条目不存在: ${id}`)
 
   const record = JSON.parse(readFileSync(file, 'utf8'))
+  const now = Date.now()
   const next = {
     ...record,
     ...patch,
     id: record.id,
     kind: record.kind,
     createdAt: record.createdAt,
-    updatedAt: Date.now(),
+    updatedAt: now,
+  }
+  // 状态迁移盖时间戳：谁走到哪一步、在那里停了多久，是「叫醒了但没人处理」唯一的证据。
+  // 只在真的跨过那一步时盖——重复 ack 不会把时间往后推，否则永远算不出停多久。
+  if (next.state !== record.state) {
+    if (next.state === 'seen') next.seenAt = now
+    if (next.state === 'done') next.doneAt = now
   }
   writeAtomic(file, next)
   return next

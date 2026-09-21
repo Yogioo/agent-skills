@@ -23,6 +23,7 @@ import {
   listRequirementRecords,
   newRequirementId,
   readRequirementRecord,
+  requirementDir,
   resolveEventRequirement,
   resolveRequirementForWorkItem,
   stampHeartbeat,
@@ -173,6 +174,36 @@ test('按 session reference 认需求（助理的无状态入口）', async () =
     assert.equal(findRequirementBySession({ home, sessionRef: '' }), null)
     assert.equal(findRequirementById({ home, requirementId: record.requirementId }).requirementId, record.requirementId)
     assert.equal(findRequirementById({ home, requirementId: 'req-missing' }), null)
+  })
+})
+
+test('同一 session 两个需求且时间戳打平时，认谁必须是确定的', async () => {
+  await withEnv(({ home, workdir }) => {
+    // id 显式指定：读目录的顺序由文件系统决定（NTFS 是字母序），不能当平局决胜。
+    // 这里让文件名顺序（aaaa → zzzz）与想要的答案（zzzz）相反，就能真的抳住这个 bug。
+    const names = ['req-260101-0000-aaaa', 'req-260101-0000-zzzz']
+    const [smaller, bigger] = names.map((requirementId) =>
+      createRequirementRecord(
+        { requirementId, workdir, runner: 'pi', sessionRef: 'sess-shared' },
+        { home },
+      ),
+    )
+
+    // 强制打平：同一毫秒内建两条就是这个样子（真实产出里很常见）
+    const pinned = 1_700_000_000_000
+    for (const r of [smaller, bigger]) {
+      const key = { home, projectKey: r.projectKey, requirementId: r.requirementId }
+      const raw = readRequirementRecord(key)
+      const file = join(requirementDir(home, r.projectKey), `${r.requirementId}.json`)
+      writeFileSync(file, `${JSON.stringify({ ...raw, updatedAt: pinned })}\n`, 'utf8')
+    }
+
+    // 平局用 id 降序兜底（id 以时间戳开头，降序 ≈ 新的在前），且每次都得同一个
+    const picked = [...Array(5)].map(
+      () => findRequirementBySession({ home, sessionRef: 'sess-shared' }).requirementId,
+    )
+    assert.equal(new Set(picked).size, 1, '每次都得同一个：否则 checkin 会认到另一个需求')
+    assert.equal(picked[0], bigger.requirementId)
   })
 })
 

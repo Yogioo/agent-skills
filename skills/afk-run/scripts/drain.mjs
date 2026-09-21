@@ -14,6 +14,8 @@
  * - 不替人验收：Two steps 的第二件只有人能点，所以叫醒词里明确禁止。
  * - 不静默丢：叫不醒的事件留在 unread，并在报告里点名（blocked 桶）。
  * - 不读 config.json：runner 设置走 CLI / env，避免把 token 带进日志。
+ * - 每轮顺手把结论追加进 <AFK home>/wake-log.jsonl：踢它的人用 stdio:'ignore' 起进程，
+ *   不留一份就等于没发生（--no-log 可关）。
  *
  * CLI：
  *   node drain.mjs [--requirement <id>] [--runner pi] [--dry-run] [--json] [--timeout <秒>]
@@ -21,19 +23,24 @@
  */
 
 import {
+  appendFileSync,
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
   realpathSync,
+  renameSync,
+  statSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afkHomeRoot } from './afk-home.mjs'
-import { listInboxItems, updateInboxItem } from './inbox.mjs'
+import { DEFAULT_STUCK_SEEN_MS, isStuckSeen, listInboxItems, updateInboxItem } from './inbox.mjs'
 import {
   DEFAULT_HEARTBEAT_MS,
   findRequirementById,
@@ -199,6 +206,7 @@ export async function drainInbox({
   staleLockMs = DEFAULT_STALE_LOCK_MS,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
   heartbeatWindowMs = DEFAULT_HEARTBEAT_MS,
+  stuckSeenMs = DEFAULT_STUCK_SEEN_MS,
   dryRun = false,
   now = Date.now(),
   createRunnerFn = createRunner,
@@ -211,11 +219,26 @@ export async function drainInbox({
     blocked: [],
     unrouted: [],
     failed: [],
+    stuck: [],
     dryRun,
   }
 
   const items = listInboxItems({ home, states: ['unread'] })
   report.scanned = items.length
+
+  // 「叫醒了但一直没处理完」：这些条目已经不在 unread 里，所以既不叫醒、也不出声。
+  // 每轮顺手点一次名，让页面和 wake-log 看得见。**不改它们**——已经敲过了，
+  // 再敲一次是重复劳动（可能重复干活），升级成人看才是对的。
+  report.stuck = listInboxItems({ home, states: ['seen'] })
+    .filter((item) => isStuckSeen(item, { now, windowMs: stuckSeenMs }))
+    .map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      requirementId: item.requirementId || '',
+      title: item.title || '',
+      seenAt: item.seenAt || item.updatedAt || 0,
+    }))
+
   if (items.length === 0) return report
 
   const { groups, unrouted } = groupByRequirement(items.map((item) => routeItem(item, { home })))
@@ -354,6 +377,123 @@ export async function drainInbox({
   return report
 }
 
+// ------------------------------------------------------- 叫醒记录（持久）
+
+/**
+ * 叫醒记录落一份磁盘副本。
+ *
+ * `kickDrain` 用 detached + stdio:'ignore' 起进程——drain 的标准输出**没人接**，
+ * 五个桶（敲醒 / 等下一轮 / 叫不醒 / 无主 / 叫了但失败）看完就没了。
+ * 不留一份，事后就只能猜「唤醒环到底干过什么」。
+ */
+export function wakeLogPath(home = afkHomeRoot()) {
+  return join(home, 'wake-log.jsonl')
+}
+
+/** 超过这个体积就只留最后几条：它是流水，不是账本。 */
+const WAKE_LOG_MAX_BYTES = 256 * 1024
+const WAKE_LOG_KEEP_LINES = 200
+
+/** 把一轮报告压成日志条目——只留指针与计数，不放大段正文。 */
+export function wakeLogEntry(report) {
+  const ids = (list) => list.flatMap((entry) => entry.items || [])
+  return {
+    at: report.at,
+    scanned: report.scanned,
+    dryRun: Boolean(report.dryRun),
+    woke: (report.woke || []).map((entry) => ({
+      requirementId: entry.requirementId,
+      runner: entry.runner || '',
+      items: entry.items || [],
+      runDir: entry.runDir || '',
+    })),
+    waiting: (report.waiting || []).map((entry) => ({
+      requirementId: entry.requirementId,
+      reason: entry.reason || '',
+      items: entry.items || [],
+    })),
+    blocked: (report.blocked || []).map((entry) => ({
+      requirementId: entry.requirementId,
+      reason: entry.reason || '',
+      items: entry.items || [],
+    })),
+    unrouted: (report.unrouted || []).map((entry) => ({
+      id: entry.id,
+      kind: entry.kind || '',
+      projectKey: entry.projectKey || '',
+    })),
+    failed: (report.failed || []).map((entry) => ({
+      requirementId: entry.requirementId,
+      error: entry.error || '',
+      items: entry.items || [],
+    })),
+    stuck: report.stuck || [],
+    itemCount: ids(report.woke || []).length + ids(report.waiting || []).length +
+      ids(report.blocked || []).length + ids(report.failed || []).length +
+      (report.unrouted || []).length,
+  }
+}
+
+/** 这一轮值不值得记：什么都没碰到就别长大长。 */
+export function isNoteworthy(report) {
+  return report.scanned > 0 || (report.stuck || []).length > 0
+}
+
+/**
+ * 追加一轮记录。**不抛**：写不成日志不能弄挂唤醒环，只能少一份痕迹。
+ * @returns {string} 写入的路径；没写时为空串
+ */
+export function appendWakeLog(report, { home = afkHomeRoot(), log = () => {} } = {}) {
+  if (!isNoteworthy(report)) return ''
+  const file = wakeLogPath(home)
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    // 太大先压：留尾部若干行。原子写，读者不会撞到半截文件。
+    try {
+      if (statSync(file).size > WAKE_LOG_MAX_BYTES) {
+        const kept = readWakeLog({ home, limit: WAKE_LOG_KEEP_LINES, raw: true })
+        writeFileSync(`${file}.tmp`, kept.map((line) => `${line}\n`).join(''), 'utf8')
+        renameSync(`${file}.tmp`, file)
+      }
+    } catch {
+      /* 文件不存在或读不动：继续追加 */
+    }
+    appendFileSync(file, `${JSON.stringify(wakeLogEntry(report))}\n`, 'utf8')
+    return file
+  } catch (err) {
+    log(`[afk] 写唤醒记录失败（忽略）: ${err.message}`)
+    return ''
+  }
+}
+
+/**
+ * 读尾部若干条，新的在前。坏行跳过。
+ * @param {object} [opts]
+ * @param {boolean} [opts.raw] 原样返回行（供压缩时回写）
+ */
+export function readWakeLog({ home = afkHomeRoot(), limit = 10, raw = false } = {}) {
+  const file = wakeLogPath(home)
+  if (!existsSync(file)) return []
+  let lines = []
+  try {
+    lines = readFileSync(file, 'utf8').split('\n').filter((line) => line.trim())
+  } catch {
+    return []
+  }
+  const tail = lines.slice(Math.max(0, lines.length - limit))
+  if (raw) return tail
+  const entries = []
+  for (const line of tail) {
+    try {
+      const parsed = JSON.parse(line)
+      if (parsed && typeof parsed === 'object') entries.push(parsed)
+    } catch {
+      /* 半截行：跳过 */
+    }
+  }
+  return entries.reverse()
+}
+
 // ------------------------------------------------------- CLI
 
 function parseArgs(argv) {
@@ -369,6 +509,7 @@ function parseArgs(argv) {
     else if (value === '--max-attempts') args.maxAttempts = Number(argv[++i] || 0)
     else if (value === '--cache-dir') args.cacheDir = argv[++i] || ''
     else if (value === '--dry-run') args.dryRun = true
+    else if (value === '--no-log') args.noLog = true
     else if (value === '--json') args.json = true
     else if (value === '--help' || value === '-h') args.help = true
   }
@@ -376,9 +517,10 @@ function parseArgs(argv) {
 }
 
 const USAGE = [
-  'node drain.mjs [--requirement <id>] [--runner pi] [--dry-run] [--json] [--timeout <秒>]',
+  'node drain.mjs [--requirement <id>] [--runner pi] [--dry-run] [--json] [--timeout <秒>] [--no-log]',
   '',
   '把收件箱抽干一次，跑完就退。写事件的一方负责踢它。',
+  '每轮顺手把结论追加到 <AFK home>/wake-log.jsonl（--no-log 可关）。',
   '退出码: 0 敲了至少一个 / 3 没得敲 / 2 出错',
 ].join('\n')
 
@@ -394,6 +536,11 @@ function printReport(report) {
   show('叫不醒，要人', report.blocked, (e) => `${e.requirementId}: ${e.reason}${e.lastError ? ` — ${e.lastError}` : ''}`)
   show('无主', report.unrouted, (e) => `${e.id} (${e.kind}, 项目 ${e.projectKey || '未知'}) — 没有需求认领它`)
   show('叫了但失败', report.failed, (e) => `${e.requirementId}: ${e.error}`)
+  show(
+    '叫醒了但一直没处理',
+    report.stuck || [],
+    (e) => `${e.requirementId || '无主'}: ${e.title || e.kind}（${e.id}）`,
+  )
   return lines.join('\n')
 }
 
@@ -415,6 +562,12 @@ async function main() {
     maxAttempts: args.maxAttempts || undefined,
     dryRun: args.dryRun,
   })
+
+  // 默认落一份持久记录：踢我们的人把 stdout 丢了，不写就等于没发生。
+  if (!args.noLog && !args.dryRun) {
+    const logged = appendWakeLog(report, { log: (line) => console.error(line) })
+    report.logFile = logged
+  }
 
   process.stdout.write(`${args.json ? JSON.stringify(report, null, 2) : printReport(report)}\n`)
   if (report.failed.length > 0) return 2

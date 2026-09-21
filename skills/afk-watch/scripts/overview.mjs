@@ -3,11 +3,12 @@
  * 总览页：整台机器一张页面，回答「什么在等我」（见 ADR-0009）。
  *
  * 它是**只读的聚合**，不替代任何 per-workdir 看板（那些归 `loop-serve`，见 ADR-0005）。
- * 数据只来自四类文件：
+ * 数据只来自这些文件：
  *   - Inbox item            <AFK home>/inbox/*.json
  *   - Requirement record     <AFK home>/<项目>/requirements/*.json
  *   - Watcher 注册表          <watch cache>/watch-<hash>.json（+ 它 runDir 里的 pool.json）
  *   - Loop 注册表              <run cache>/loop-<hash>.json
+ *   - 叫醒记录                <AFK home>/wake-log.jsonl（drain 留下的）
  *
  * **它不读 `config.json`。** 那里有 task source 的凭据，不该流进浏览器或日志。
  *
@@ -25,7 +26,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { afkHomeRoot } from '../../afk-run/scripts/afk-home.mjs'
-import { listInboxItems } from '../../afk-run/scripts/inbox.mjs'
+import { DEFAULT_STUCK_SEEN_MS, isStuckSeen, listInboxItems } from '../../afk-run/scripts/inbox.mjs'
+import { readWakeLog } from '../../afk-run/scripts/drain.mjs'
 import { DEFAULT_HEARTBEAT_MS, isHeartbeatFresh, listRequirementRecords } from '../../afk-run/scripts/requirement.mjs'
 import { runnerSessionMode } from '../../exec-review/scripts/runners/index.mjs'
 import { isPidAlive } from './watch-state.mjs'
@@ -109,6 +111,8 @@ export function wakeableOf(record) {
  * @param {string} [opts.runCacheRoot]
  * @param {(pid: number) => boolean} [opts.isAlive]
  * @param {number} [opts.now]
+ * @param {number} [opts.stuckSeenMs]
+ * @param {number} [opts.wakeLogLimit]
  */
 export function projectOverview({
   home = afkHomeRoot(),
@@ -116,11 +120,14 @@ export function projectOverview({
   runCacheRoot = defaultRunCacheRoot(),
   isAlive = isPidAlive,
   now = Date.now(),
+  stuckSeenMs = DEFAULT_STUCK_SEEN_MS,
+  wakeLogLimit = 5,
 } = {}) {
   const inbox = listInboxItems({ home })
   const requirements = listRequirementRecords({ home })
   const watchers = readRegistries(watchCacheRoot, 'watch-')
   const loops = readRegistries(runCacheRoot, 'loop-')
+  const wakeLog = readWakeLog({ home, limit: wakeLogLimit })
 
   // ---------------------------------------------------------------- 需求
   const requirementById = new Map()
@@ -155,7 +162,7 @@ export function projectOverview({
   })
 
   // ---------------------------------------------------------------- 待人工处理
-  // 只有这两类是人必须动的手：没人认领的，和唤醒环已经放弃的。
+  // 前三类是人必须动的手：没人认领的、唤醒环已经放弃的、登记本身就叫不醒的。
   const unrouted = inbox
     .filter((item) => !item.requirementId)
     .map((item) => ({ ...item, why: '没有被任何需求认领：先登记需求、或把工单挂上' }))
@@ -167,6 +174,16 @@ export function projectOverview({
         (item.wakeAttempts || 0) >= EXHAUSTED_WAKE_ATTEMPTS,
     )
     .map((item) => ({ ...item, why: `已叫醒 ${item.wakeAttempts} 次仍失败：${item.lastWakeError || '原因未记'}` }))
+
+  // 叫醒了、但一直没被标成 done：事件已离开 unread，所以 drain 不会再碰它。
+  // 它既不是「没敲」也不是「敲失败」——是敲了没回音，所以它也不出声，只有这一页说得出来。
+  const stuckSeen = inbox
+    .filter((item) => isStuckSeen(item, { now, windowMs: stuckSeenMs }))
+    .map((item) => ({
+      ...item,
+      seenAt: item.seenAt || item.updatedAt || 0,
+      why: `叫醒后已过 ${Math.round((now - (item.seenAt || item.updatedAt || now)) / 60000)} 分钟没标成已处理：要么那一轮没干活，要么干了没回报`,
+    }))
 
   // 叫不醒的需求：登记本身有问题，与有没有事件无关。事件来了也只会堆在那里。
   const unwakeable = requirementsOut
@@ -217,11 +234,12 @@ export function projectOverview({
       open: requirementsOut.filter((record) => !record.closed).length,
       environments: environments.length,
       inbox: countItems(inbox),
-      needsHuman: unrouted.length + exhausted.length + unwakeable.length,
+      needsHuman: unrouted.length + exhausted.length + unwakeable.length + stuckSeen.length,
     },
     needsHuman: {
       unrouted: unrouted.map((item) => pickItem(item)),
       exhausted: exhausted.map((item) => pickItem(item)),
+      stuckSeen: stuckSeen.map((item) => pickItem(item)),
       unwakeable: unwakeable.map((record) => ({
         requirementId: record.requirementId,
         title: record.title,
@@ -231,6 +249,7 @@ export function projectOverview({
     },
     requirements: requirementsOut,
     environments,
+    wakeLog,
   }
 }
 
@@ -243,6 +262,7 @@ function pickItem(item) {
     requirementId: item.requirementId || '',
     projectKey: item.projectKey || '',
     createdAt: item.createdAt,
+    seenAt: item.seenAt || 0,
     wakeAttempts: item.wakeAttempts || 0,
     why: item.why,
   }
@@ -305,7 +325,7 @@ function countsLine(model) {
 function itemLine(item, now) {
   return `<li><div class="row"><span class="pill">${esc(item.kind)}</span>` +
     `<span>${esc(item.title) || '<span class="sub">（无标题）</span>'}</span>` +
-    `<span class="mono">${ago(item.createdAt, now)}</span></div>` +
+    `<span class="mono">${item.seenAt ? `叫醒于 ${ago(item.seenAt, now)}` : ago(item.createdAt, now)}</span></div>` +
     (item.nextStep ? `<div class="sub">下一步：${esc(item.nextStep)}</div>` : '') +
     (item.why ? `<div class="why">${esc(item.why)}</div>` : '') +
     (item.wakeAttempts ? `<div class="mono">已叫醒 ${item.wakeAttempts} 次</div>` : '') +
@@ -322,11 +342,13 @@ function renderNeedsHuman(model) {
       `<div class="mono">${esc(r.requirementId)}</div></li>`),
     unrouted: model.needsHuman.unrouted.map((item) => itemLine(item, now)),
     exhausted: model.needsHuman.exhausted.map((item) => itemLine(item, now)),
+    stuckSeen: (model.needsHuman.stuckSeen || []).map((item) => itemLine(item, now)),
   }
   const lists = [
     ['叫不醒的需求', rows.unwakeable],
     ['没有被任何需求认领', rows.unrouted],
     ['唤醒环已经放弃', rows.exhausted],
+    ['叫醒了但一直没处理完', rows.stuckSeen],
   ].filter(([, items]) => items.length)
 
   if (!lists.length) {
@@ -343,6 +365,49 @@ function renderNeedsHuman(model) {
       )
       .join('')
   )
+}
+
+/**
+ * 最近唤醒：唤醒环到底干过什么。
+ *
+ * drain 的输出没人接（踢它的人用 stdio:'ignore'），所以这一段是**事后唯一能看到「敲了什么、为什么没敲」的地方**。
+ */
+function renderWakeLog(model) {
+  const entries = model.wakeLog || []
+  if (!entries.length) return ''
+  const now = model.generatedAt
+  const rows = entries.map((entry) => {
+    const bits = []
+    if (entry.woke.length) bits.push(`<span class="pill ok">敲醒 ${entry.woke.length}</span>`)
+    if (entry.waiting.length) bits.push(`<span class="pill">等下一轮 ${entry.waiting.length}</span>`)
+    if (entry.blocked.length) bits.push(`<span class="pill bad">叫不醒 ${entry.blocked.length}</span>`)
+    if (entry.failed.length) bits.push(`<span class="pill bad">叫了但失败 ${entry.failed.length}</span>`)
+    if (entry.unrouted.length) bits.push(`<span class="pill bad">无主 ${entry.unrouted.length}</span>`)
+    if (entry.stuck.length) bits.push(`<span class="pill bad">叫醒后没回音 ${entry.stuck.length}</span>`)
+    if (!bits.length) bits.push('<span class="pill">什么都没碰</span>')
+    const why = [
+      ...entry.blocked.map((b) => `叫不醒 ${b.requirementId || '无主'}：${b.reason}`),
+      ...entry.waiting.map((w) => `等下一轮 ${w.requirementId || '无主'}：${w.reason}`),
+      ...entry.failed.map((f) => `失败 ${f.requirementId || '无主'}：${f.error}`),
+    ]
+    return (
+      `<li><div class="row"><span class="mono">${ago(entry.at, now)}</span>` +
+      `<span class="sub">扫到 ${entry.scanned} 条未读</span>${bits.join('')}` +
+      (entry.dryRun ? '<span class="pill">dry-run</span>' : '') +
+      `</div>` +
+      (why.length ? `<div class="why">${esc(why.join('；'))}</div>` : '') +
+      `<div class="mono">${esc(wakePathHint(entry))}</div></li>`
+    )
+  })
+  return (
+    `<h2>最近唤醒</h2>` +
+    `<div class="card"><ul class="events">${rows.join('')}</ul></div>`
+  )
+}
+
+function wakePathHint(entry) {
+  const dirs = entry.woke.map((w) => w.runDir).filter(Boolean)
+  return dirs.length ? `日志：${dirs.join(' ')}` : ''
 }
 
 function renderRequirements(model) {
@@ -439,9 +504,10 @@ export function renderPage(model, { staticMode = false } = {}) {
 <div class="sub">${esc(new Date(model.generatedAt).toLocaleString())}　${toggle}</div>
 <div class="sub">${countsLine(model)}</div>
 ${renderNeedsHuman(model)}
+${renderWakeLog(model)}
 ${renderRequirements(model)}
 ${renderEnvironments(model)}
-<div class="sub" style="margin-top:28px">只读页面。数据来自收件箱 / 需求本子 / watcher 与 loop 注册表，不读 <span class="mono">config.json</span>。</div>
+<div class="sub" style="margin-top:28px">只读页面。数据来自收件箱 / 需求本子 / 唤醒记录 / watcher 与 loop 注册表，不读 <span class="mono">config.json</span>。</div>
 </main></body></html>`
 }
 
@@ -485,7 +551,7 @@ function parseArgs(argv) {
 const USAGE = [
   'node overview.mjs [--port <端口>] [--json]',
   '',
-  '整台机器一张只读总览页：待人工处理 / 需求 / 执行环境。',
+  '整台机器一张只读总览页：待人工处理 / 最近唤醒 / 需求 / 执行环境。',
   '--json 不启服务，只把投影结果打出来（调试与测试用）。',
 ].join('\n')
 

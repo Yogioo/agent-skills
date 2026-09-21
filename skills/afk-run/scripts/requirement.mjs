@@ -138,7 +138,9 @@ export function createRequirementRecord(record = {}, { home = afkHomeRoot(), pro
     sessionRef: record.sessionRef || '',
     workItems: normalizeWorkItems(record.workItems),
     createdAt: now,
-    updatedAt: now,
+    // 建档也算一次写：与 updateRequirementRecord 共用同一条递增线，
+    // 否则同毫秒内建的档会和刚改过的档比不出先后。
+    updatedAt: nextUpdatedAt(),
     heartbeatAt: now,
     closedAt: null,
   }
@@ -159,6 +161,22 @@ export function readRequirementRecord({ home = afkHomeRoot(), projectKey, requir
 }
 
 /**
+ * 下一次写入的时间戳，**进程内严格递增**。
+ *
+ * 毫秒太粗：建两条需求、再改一条，可能全在同一毫秒里完成。逐条 `max(now, 自己+1)` 不够
+ * ——两条各自加一之后还是会打平（同毫秒内被改的两条都等于 T+1），而「同一 session 认哪个需求」
+ * 正好比的就是这个先后。所以计数器放在模块级：后写的必定大于先写的。
+ * 跨进程仍可能撞上（不同步的时钟），那就交给调用方的 id 平局决胜。
+ */
+let lastStamp = 0
+
+function nextUpdatedAt() {
+  const now = Date.now()
+  lastStamp = now > lastStamp ? now : lastStamp + 1
+  return lastStamp
+}
+
+/**
  * 改一个需求本子。requirementId / projectKey / createdAt 不允许被 patch 改。
  * @returns {object|null} 改完的记录；需求不存在时 null
  */
@@ -171,7 +189,7 @@ export function updateRequirementRecord(
 
   const next = { ...current, ...patch, requirementId: current.requirementId, projectKey: current.projectKey, createdAt: current.createdAt }
   if (patch.workItems) next.workItems = normalizeWorkItems(patch.workItems)
-  next.updatedAt = Date.now()
+  next.updatedAt = nextUpdatedAt()
   delete next.file
   writeAtomic(current.file, next)
   return { ...next, file: current.file }
@@ -275,8 +293,15 @@ export function findRequirementBySession({ home = afkHomeRoot(), sessionRef, run
       String(record.sessionRef || '') === ref && (!runner || !record.runner || record.runner === runner),
   )
   if (!matches.length) return null
-  // 同一 session 被两个需求登记过：拿最新的，并在报告里留下痕迹（由调用方决定说不说）
-  return matches.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0]
+  // 同一 session 被两个需求登记过：拿最新的，并在报告里留下痕迹（由调用方决定说不说）。
+  // updatedAt 由 monotonicUpdatedAt 推进，所以「最新」是真的可比；这里只用 id 兜
+  // 那些手工改过的、或老版本写下的记录：平局时退回 id 降序，至少结果是确定的
+  // （读目录的顺序由文件系统决定，不能当 tie-break，否则只在部分机器上复现）。
+  return matches.sort((a, b) => {
+    const byTime = (b.updatedAt || 0) - (a.updatedAt || 0)
+    if (byTime !== 0) return byTime
+    return String(b.requirementId || '').localeCompare(String(a.requirementId || ''))
+  })[0]
 }
 
 /**

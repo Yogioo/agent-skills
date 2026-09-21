@@ -12,7 +12,17 @@
  * 退出码：0 成功 / 1 启动后立刻退出（输出带 logTail）/ 2 参数问题 / 3 已在跑（复用输出里的 pid）/ 4 没在跑。
  */
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -96,14 +106,38 @@ function readLogTail(cacheDir, lines = LOG_TAIL_LINES) {
 }
 
 /** 从日志里捞启动行：总览页自己打印了真实端口（可能因为被占而顺延）。 */
-function startedInfoFromLog(cacheDir) {
-  const text = readLogTail(cacheDir, 400)
+function startedInfoFromLog(cacheDir, fromOffset = 0) {
+  const text = fromOffset > 0 ? readLogSince(cacheDir, fromOffset) : readLogTail(cacheDir, 400)
   const line = text.split('\n').reverse().find((row) => row.includes('overview_started'))
   if (!line) return null
   try {
     return JSON.parse(line)
   } catch {
     return null
+  }
+}
+
+/**
+ * 读日志里 `offset` 之后的内容。
+ * 日志是**跨次追加**的（openSync 'a'），上一次运行留下的启动行会让「等启动行」瞬间假成功，
+ * 把旧端口配到新 pid 上——所以启动时只看自己这一次写进来的那一段。
+ */
+function readLogSince(cacheDir, offset) {
+  const file = logPath(cacheDir)
+  if (!existsSync(file)) return ''
+  try {
+    const size = statSync(file).size
+    if (size <= offset) return ''
+    const fd = openSync(file, 'r')
+    try {
+      const buffer = Buffer.allocUnsafe(size - offset)
+      readSync(fd, buffer, 0, buffer.length, offset)
+      return buffer.toString('utf8')
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return ''
   }
 }
 
@@ -167,6 +201,8 @@ async function runStart(args) {
 
   mkdirSync(args.cacheDir, { recursive: true })
   const logFile = logPath(args.cacheDir)
+  // 写入前先量一下起点：只认自己这一次打的启动行（见 readLogSince）
+  const logOffset = existsSync(logFile) ? statSync(logFile).size : 0
   const fd = openSync(logFile, 'a')
   const childArgs = [OVERVIEW_MJS]
   if (args.port) childArgs.push('--port', String(args.port))
@@ -183,7 +219,7 @@ async function runStart(args) {
   let info = null
   while (Date.now() < deadline) {
     if (!isPidAlive(child.pid)) break
-    info = startedInfoFromLog(args.cacheDir)
+    info = startedInfoFromLog(args.cacheDir, logOffset)
     if (info) break
     await sleep(200)
   }
