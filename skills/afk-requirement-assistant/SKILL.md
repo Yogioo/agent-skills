@@ -65,9 +65,12 @@ node <afk-run>/scripts/requirement.mjs --link --requirement <需求 id> --source
 | 看这个需求现在什么情况 | `requirement.mjs --list --json`、或 `--get --requirement <id>` |
 | 起执行链路（不占终端） | `node <afk-watch>/scripts/start-background.mjs --workdir <目录> --requirement <需求 id>` |
 | 起问卷网页 | `node <to-questionnaire-web>/scripts/serve.mjs --file <问卷.md> --requirement <需求 id>` |
+| 起总览页（给人看的「什么在等我」） | `node <afk-watch>/scripts/start-overview.mjs` |
 | 结束这个需求 | `requirement.mjs --close --requirement <id>` |
 
 **`--requirement` 必须一路传下去。** 少了它，后面的事件全变成「无主」——看得见，但叫不醒你。
+
+**给人看的地址要出现在你的回复正文里**（总览页的 `url`、问卷的访问地址都一样），不能只留在工具输出或日志里。
 
 ## 被唤醒的轮次
 

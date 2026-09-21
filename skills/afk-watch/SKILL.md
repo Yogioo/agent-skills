@@ -1,6 +1,6 @@
 ---
 name: afk-watch
-description: 长时间轮询任务源，有就绪工单时启动一次 afk-run 执行批次并等待结束。用户要持续无人值守处理队列、启动 watcher、或要求 atomic claim 时加载。
+description: 长时间轮询任务源，有就绪工单时启动一次 afk-run 执行批次并等待结束；也管整台机器的只读总览页（待人工处理 / 所有需求 / 执行环境）。用户要持续无人值守处理队列、启动 watcher、要求 atomic claim，或要看「什么在等我」时加载。
 disable-model-invocation: true
 ---
 
@@ -15,6 +15,24 @@ disable-model-invocation: true
 - 同目录的 afk-run 技能在 `../afk-run`
 
 完成标准：后台启动后 `--status` 报 `running: true`；停止后注册表被释放，且只清理本次登记的子进程和看板。
+
+## 总览页（整台机器一张，不属于某一个 workdir）
+
+上面的看板是**一个 workdir 一张**，随 watcher 一起生灭。总览页回答的是另一个问题——「什么在等我」——所以它要跨 workdir、也要比 watcher 活得久（见 [ADR-0009](../../docs/adr/0009-human-surface-is-one-page.md)）：
+
+```powershell
+node <技能根>/scripts/start-overview.mjs [--port <端口>]
+node <技能根>/scripts/start-overview.mjs --status
+node <技能根>/scripts/start-overview.mjs --stop
+```
+
+三种模式与传统启动器一样只输出单行 JSON：`0` 成功 / `1` 启动后立刻退出（读 `logTail`）/ `2` 参数问题 / `3` 已在跑（复用输出里的 `pid`）/ `4` 没在跑。启动输出里的 `url` 就是给人打开的地址。常用参数：`--port`、`--cache-dir`。
+
+三个区块：**待人工处理**（叫不醒的需求 / 无主事件 / 唤醒环已放弃的事件）、**需求**、**执行环境**（watcher phase、pool 计数、陈旧标记）。默认 5 秒自动刷新，`?static=1` 关掉。
+
+它只读收件箱、需求本子、watcher 与 loop 注册表——**不读 `config.json`**，task source 的凭据不会流进浏览器。注册表还在、进程已死的会标成**陈旧**，不谎报在跑。
+
+它**不替代**上面那份 per-workdir 看板（ADR-0005），只是在它之外多一个跨环境的视图。
 
 ## 调用
 

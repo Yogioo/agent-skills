@@ -36,8 +36,12 @@ node <afk-watch>/scripts/start-background.mjs --stop   --workdir <目录>
 
 脚本在 `skills/afk-run/scripts/`：`inbox.mjs`（收件箱读写）、`requirement.mjs`（需求本子 + 工单反查 + 心跳）、`drain.mjs`（一次性抽干 + 叫醒）、`checkin.mjs`（助理每轮报到）。
 
+## P2（部分已做 2026-09-21）
+
+- **多需求总览页**（已做）：`skills/afk-watch/scripts/{overview,start-overview}.mjs`。三个区块：待人工处理（叫不醒的需求 / 无主事件 / 唤醒环已放弃）、需求、执行环境。只读，不读 `config.json`；陈旧（注册表在、进程死）显式标出。见 [ADR-0009](adr/0009-human-surface-is-one-page.md)。
+
 ## 待办
 
 - P2 验收证据化：助理出验收清单，agent 跑可自动化项并留证据，人只点收/退。
-- P2 多需求总览页：聚合「待人工处理」列表。**这张页面本身就是通知**（[ADR-0009](adr/0009-human-surface-is-one-page.md)），它推翻了 `afk-watch-dashboard-plan.md` 里「不做跨 workdir 聚合」那条非目标。
 - P3 飞书入向通道。
+- P3 总览页上的按钮（叫醒 / 标处理完）：会打破页面的只读性质，ADR-0009 把它记成没做而不是否决，要单独一个决定。
