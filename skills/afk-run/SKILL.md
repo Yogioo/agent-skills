@@ -32,7 +32,7 @@ node <技能根>/scripts/loop.mjs --workdir <目录> --timeout 600 --runner pi
 ## 行为契约（确定性轨道）
 
 - **任务选择**：`bd ready`（无未完成前置阻塞的工单）→ 过滤 **仅 `ready-for-agent` 标签** + **排除仍有 open 子 ticket 的 parent 容器** → `priority` 升序 + `id` 升序
-- **每任务**：markInProgress → 生成 task.md → 调 exec-review（默认 `gitCommit: true`）→ 状态机
+- **每任务**：认领（`atomic` 源走 `tryClaim`，已被其它 loop 认领则跳过取下一张；其余源走 markInProgress）→ 生成 task.md → 调 exec-review（默认 `gitCommit: true`）→ 状态机
 - **状态机**：`approved/done` → 校验工作区干净 → `markDone`（关子单）→ `closeEligibleParents`（beads：`bd epic close-eligible`）→ markDone 完成；`no_change` 不重试、不 `markFailed`：note 里有能在 git 历史核实到的提交号就按 `done` 关单（comment 指明证据），否则落「无需改动」栏转人工；其余失败路径不变
 - **终止条件**：all-done / stuck（存在依赖阻塞）/ in-progress（只有进行中工单）/ max-tasks / 连续失败熔断（max-failures，只数真正的失败）/ 停止文件存在 / superseded（同 workdir 新 loop 抢占）
 

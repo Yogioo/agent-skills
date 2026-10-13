@@ -331,7 +331,17 @@ export async function runLoop(deps) {
 
     const task = ready[0]
     attemptedIds.add(String(task.id))
-    await source.markInProgress(task.id)
+    if (source.claimMode === 'atomic' && typeof source.tryClaim === 'function') {
+      // 同一库多 workdir 并行时，listReady 与认领之间可能被别的 loop 抢先。
+      const claim = await source.tryClaim(task.id)
+      if (claim.status === 'already-claimed') {
+        console.error(`[afk-run] ${task.id} 已被其它 loop 认领，跳过`)
+        continue
+      }
+      if (claim.status !== 'claimed') throw new Error(claim.message || `认领失败: ${task.id}`)
+    } else {
+      await source.markInProgress(task.id)
+    }
     const detail = await source.getDetail(task.id)
     const taskFile = join(hooks.taskDir || tmpdir(), `task-${task.id}.md`)
     writeTaskMd(detail, taskFile)

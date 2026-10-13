@@ -3,12 +3,13 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createBeadsSource } from '../../skills/afk-run/scripts/task-sources/beads.mjs'
+import { createSource } from '../../skills/afk-run/scripts/task-sources/index.mjs'
 
 const bdJs = join(process.env.APPDATA || '', 'npm', 'node_modules', '@beads', 'bd', 'bin', 'bd.js')
 
@@ -85,6 +86,22 @@ test('beads tryClaim is atomic: same actor can repeat, another actor is already-
     const bob = createBeadsSource({ cwd: dir, actor: 'bob' })
     assert.deepEqual(bob.tryClaim(id), { status: 'already-claimed', claimMode: 'atomic' })
     assert.equal(row(dir, id).status, 'in_progress')
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test('createSource(beads) 按 workdir 派生 actor：同库不同 workdir 互斥，同 workdir 可重复认领', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afk-beads-wt-'))
+  try {
+    bd(dir, ['init', '--quiet', '--skip-agents', '--skip-hooks', '--prefix', 'afk-wt'])
+    const sub = join(dir, 'wt-alpha')
+    mkdirSync(sub)
+    const id = bd(dir, ['create', 'shared', '--silent']).trim()
+    const main = createSource('beads', { cwd: dir })
+    assert.deepEqual(main.tryClaim(id), { status: 'claimed', claimMode: 'atomic' })
+    assert.deepEqual(createSource('beads', { cwd: dir }).tryClaim(id), { status: 'claimed', claimMode: 'atomic' })
+    assert.deepEqual(createSource('beads', { cwd: sub }).tryClaim(id), { status: 'already-claimed', claimMode: 'atomic' })
   } finally {
     cleanup(dir)
   }

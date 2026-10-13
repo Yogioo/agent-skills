@@ -14,6 +14,7 @@
  *   describeBlocked()    → { ready, blocked: [{id, title, blockedBy?}], inProgress: [{id, title}] }
  */
 
+import { basename, resolve } from 'node:path'
 import { createBeadsSource } from './beads.mjs'
 import { createGhSource } from './gh.mjs'
 import { createTapdSource } from './tapd.mjs'
@@ -24,7 +25,12 @@ export function createSource(name, opts = {}) {
   const key = String(name || 'beads').toLowerCase()
   switch (key) {
     case 'beads':
-      return createBeadsSource(opts)
+      // 同一 beads 库被多个 worktree 共用时，按 workdir 区分 actor，`--claim` 才能互斥；
+      // 同 workdir 的 watcher 与 afk-run 共用一个 actor，pinned 交接时重复认领仍成功。
+      return createBeadsSource({
+        ...opts,
+        actor: opts.actor || (opts.cwd ? `afk@${basename(resolve(opts.cwd))}` : ''),
+      })
     case 'gh':
       return createGhSource(opts)
     case 'tapd':

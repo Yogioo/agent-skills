@@ -55,4 +55,4 @@ afk-run 通过 adapter 消费任务源。**怎么写工单才能被正确消费*
 - **GitHub**：`claimMode` 为 `best-effort`。已有 `in-progress` 标签则 `already-claimed`，否则加标签并返回 `claimed`。两次添加之间没有比较并交换。
 - **TAPD**：`claimMode` 为 `best-effort`。就绪由标签决定；`tryClaim` 加上 `afk-claimed` 标签，需求随即离开**所有**执行环境的就绪池。已带机器标签时返回 `already-claimed`，并在 message 里说明该撤销哪个标签。
 
-afk-run 批次仍调用 `markInProgress`。watcher 在启动批次前调用 `tryClaim`；若工单因此离开就绪列表，watcher 会把该 id 作为 `--pinned-id` 传给这一次 afk-run（同一批次内每个 pinned id 只处理一次，不会被反复注入队列）。
+afk-run 批次对 `atomic` 源调用 `tryClaim`（`already-claimed` 时跳过该单），其余源仍调用 `markInProgress`。beads 的 actor 默认按 workdir 目录名派生为 `afk@<目录名>`：共用同一 beads 库的多个 worktree 互斥认领，同 workdir 的 watcher 与 afk-run 共用 actor。watcher 在启动批次前调用 `tryClaim`；若工单因此离开就绪列表，watcher 会把该 id 作为 `--pinned-id` 传给这一次 afk-run（同一批次内每个 pinned id 只处理一次，不会被反复注入队列）。

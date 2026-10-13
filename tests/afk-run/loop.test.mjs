@@ -247,6 +247,30 @@ test('runLoop: done → markDone + 连续失败清零（提交由 exec-review �
   rmSync(dir, { recursive: true, force: true })
 })
 
+test('runLoop: atomic 源认领被其它 loop 抢先 → 跳过该单，接着做下一张', async () => {
+  const t1 = { id: 't1', title: 'T1', priority: 1 }
+  const t2 = { id: 't2', title: 'T2', priority: 2 }
+  const claims = []
+  const { source, execReview, git, calls } = makeFakes({
+    source: {
+      claimMode: 'atomic',
+      listReady: queue([[t1, t2], [t2], []]),
+      tryClaim: async (id) => {
+        claims.push(id)
+        return { status: id === 't1' ? 'already-claimed' : 'claimed', claimMode: 'atomic' }
+      },
+    },
+  })
+  const dir = tmpDir()
+  const r = await runLoop({ config: baseConfig, source, execReview, git, hooks: { taskDir: dir } })
+  assert.equal(r.reason, 'all-done')
+  assert.deepEqual(claims, ['t1', 't2'])
+  assert.deepEqual(calls.inProgress, [], 'atomic 源走 tryClaim，不再调 markInProgress')
+  assert.deepEqual(r.stats, { attempted: 1, done: 1, failed: 0, noop: 0 })
+  assert.deepEqual(calls.done.map((d) => d.id), ['t2'])
+  rmSync(dir, { recursive: true, force: true })
+})
+
 test('runLoop: blocked → 回滚重试 → 第二次成功（attempts=2）', async () => {
   const t1 = { id: 't1', title: 'T1', priority: 2 }
   let n = 0
