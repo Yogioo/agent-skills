@@ -6,7 +6,7 @@ This deployment has no inbound notification channel (no permission to send chat-
 
 The page is read-only. It reads registries, work-item pools, inbox items, and requirement records — never `config.json`, so no task-source credential can reach a browser or a log.
 
-This supersedes the "不做跨 Execution environment（workdir）聚合" non-goal in `docs/afk-watch-dashboard-plan.md`. The watcher's page is spawned per workdir and dies with its watcher (ADR-0005); a page that answers "what needs me" has to outlive individual watchers and cover every execution environment.
+This supersedes the earlier non-goal of not aggregating across execution environments (workdirs), which the deleted afk-watch dashboard plan had recorded. The watcher's page is spawned per workdir and dies with its watcher (ADR-0005); a page that answers "what needs me" has to outlive individual watchers and cover every execution environment.
 
 ## Considered Options
 
