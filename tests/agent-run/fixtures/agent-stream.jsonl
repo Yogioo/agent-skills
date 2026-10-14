@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","cwd":"/proj","session_id":"s1","model":"Test"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Do task"}]},"session_id":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll read the file"}]},"session_id":"s1"}
+{"type":"tool_call","subtype":"started","call_id":"call-1","tool_call":{"readToolCall":{"args":{"path":"README.md"}}},"session_id":"s1"}
+{"type":"tool_call","subtype":"completed","call_id":"call-1","tool_call":{"readToolCall":{"args":{"path":"README.md"},"result":{"success":{"content":"hello"}}}},"session_id":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done"}]},"session_id":"s1"}
+{"type":"result","subtype":"success","result":"{\"status\":\"done\",\"taskId\":\"t1\",\"note\":\"ok\"}","session_id":"s1"}

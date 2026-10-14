@@ -43,12 +43,51 @@ pwsh -File .\scripts\sync-links.ps1 -Force
 
 Then commit/push as usual. Other machines still use `npx skills add/update` (install copies), not junctions.
 
-## Skills
+## Reusable Components
 
 | Skill | Description |
 |-------|-------------|
-| [afk-requirement-assistant](./skills/afk-requirement-assistant/SKILL.md) | 用长期需求 session 管理需求澄清、规格、工单和测试反馈 |
-| [exec-review](./skills/exec-review/SKILL.md) | Run a single execute → review pass for one task via Codex with a live progress view; the reviewer directly refines the workspace in the same run (no rework loop; the agents edit files, the caller commits) |
-| [afk-watch](./skills/afk-watch/SKILL.md) | Poll a task source and start one serialized afk-run batch when ready work exists |
-| [to-questionnaire-web](./skills/to-questionnaire-web/SKILL.md) | 将 questionnaire Markdown 暴露为可填写的局域网页并等待提交结果 |
+| [workspace-diff](./skills/workspace-diff/SKILL.md) | Capture directory fingerprints and compare additions, modifications, and deletions |
+| [agent-run](./skills/agent-run/SKILL.md) | Invoke one agent through pi, Codex, or Cursor; normalize events and report invocation facts |
+| [work-items](./skills/work-items/SKILL.md) | Read, select, claim, and explicitly update beads, GitHub, or TAPD work items; localize TAPD images |
+| [event-inbox](./skills/event-inbox/SKILL.md) | Persist, query, and acknowledge events without triggering notifications or agent wakeups |
+| [requirement-store](./skills/requirement-store/SKILL.md) | Store requirements, opaque session references, work-item links, and heartbeats |
+| [questionnaire](./skills/questionnaire/SKILL.md) | Collect questionnaire answers through a local web form and return persistent results |
+| [prompt-compose](./skills/prompt-compose/SKILL.md) | Assemble prompts from explicit layers and variables, with source provenance |
+| [run-runtime](./skills/run-runtime/SKILL.md) | Local leases, owned processes, progress, configuration layers, and explicit Git checkpoints |
 | [xlsx-cell-diff](./skills/xlsx-cell-diff/SKILL.md) | xlsx 显示值 diff 与 overlay 合并（源配置表格比对、提交配置变更、三路冲突） |
+
+Each component installs independently, uses explicit inputs, and documents its CLI
+and tests. The extracted components do not import the legacy AFK skills or read
+their configuration. An operation result is not a task acceptance decision.
+
+## Existing Workflows
+
+These entries keep their existing implementations and configuration. The extraction
+does not switch or disable an existing workflow. Their local legacy copies remain
+for compatibility; future migration can replace those copies with component calls.
+
+| Skill | Responsibility |
+|-------|----------------|
+| [afk-requirement-assistant](./skills/afk-requirement-assistant/SKILL.md) | Long-lived requirement conversation and lifecycle routing |
+| [exec-review](./skills/exec-review/SKILL.md) | Execute a task, optionally review it, and report the workflow result |
+| [afk-run](./skills/afk-run/SKILL.md) | Run a task batch with its retry, rollback, and completion policies |
+| [afk-watch](./skills/afk-watch/SKILL.md) | Poll a task source, start batches, and display workflow state |
+| [afk-init](./skills/afk-init/SKILL.md) | Initialize the existing AFK configuration |
+| [to-questionnaire-web](./skills/to-questionnaire-web/SKILL.md) | Existing questionnaire flow with AFK notification integration |
+
+Scheduling, retries, automatic wakeups, acceptance, and task closing remain workflow
+decisions. AFK queue and requirement dashboards remain views of those workflows;
+the reusable runtime exposes the underlying progress and local run mechanics.
+
+## Validation
+
+Focused tests live under `tests/<component>/`. The composition examples exercise
+multiple public component interfaces together without AFK configuration:
+
+```bash
+node --test tests/components/composition.test.mjs
+```
+
+Agent and remote work-item transports use local fakes in tests. These checks cover
+adapter contracts and local composition; they do not certify live remote services.

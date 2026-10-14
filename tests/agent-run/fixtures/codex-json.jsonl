@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"th_abc123"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"grep -r auth src/"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"grep -r auth src/","exit_code":0,"output":"src/auth.ts"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Found auth module."}}
+{"type":"item.completed","item":{"id":"item_3","type":"file_change","path":"src/auth.ts","action":"edit"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20}}

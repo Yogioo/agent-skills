@@ -5,6 +5,11 @@ run-*/
 *.jsonl
 .tmp/
 
+# Reusable runtime source and checked-in event fixtures are not run caches.
+!skills/run-runtime/
+!tests/run-runtime/
+!tests/agent-run/fixtures/*.jsonl
+
 # Beads / Dolt local store (this repo uses GitHub Issues; do not commit bd init)
 .beads/
 .dolt/
