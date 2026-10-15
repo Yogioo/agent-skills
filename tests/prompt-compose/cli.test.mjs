@@ -1,13 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const skill = fileURLToPath(new URL('../../skills/prompt-compose/', import.meta.url))
-const cli = join(skill, 'scripts', 'cli.mjs')
+import { createRuntimeCopy } from '../support/runtime-package.mjs'
+
+const cli = fileURLToPath(new URL('../../tools/prompt-compose/cli.mjs', import.meta.url))
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'prompt-compose-cli-'))
@@ -142,28 +143,28 @@ test('outputs never overwrite inputs and out/provenance stay distinct with --for
   assert.equal(readFileSync(out, 'utf8'), 'BASE\n')
 })
 
-test('packaged skill runs alone outside the repository', (t) => {
+test('copied runtime runs alone outside the repository', (t) => {
   const dir = fixture(t)
-  const installed = join(dir, 'install', 'prompt-compose')
-  cpSync(skill, installed, { recursive: true })
-  assert.equal(existsSync(join(dirname(installed), 'exec-review')), false)
+  const rt = createRuntimeCopy('prompt-compose-runtime-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  assert.equal(existsSync(join(rt.root, 'skills')), false)
   const manifestFile = manifest(dir, 'm.json', { base: 'standalone {{X}}', variables: { X: 'ok' } })
   const out = join(dir, 'out.md')
   const report = success(invoke(
     ['--manifest', manifestFile, '--out', out],
-    { executable: join(installed, 'scripts', 'cli.mjs'), cwd: dir },
+    { executable: rt.cli('prompt-compose'), cwd: dir },
   ))
   assert.equal(report.status, 'composed')
   assert.equal(readFileSync(out, 'utf8'), 'standalone ok\n')
 })
 
-test('installed directory junction executes help and compose', (t) => {
+test('installed runtime directory junction executes help and compose', (t) => {
   const dir = fixture(t)
-  const target = join(dir, 'skill-source')
-  const installed = join(dir, 'installed-skill')
-  cpSync(skill, target, { recursive: true })
-  symlinkSync(target, installed, process.platform === 'win32' ? 'junction' : 'dir')
-  const options = { executable: join(installed, 'scripts', 'cli.mjs'), cwd: dir }
+  const rt = createRuntimeCopy('prompt-compose-junction-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  const installed = join(dir, 'installed-runtime')
+  symlinkSync(rt.root, installed, process.platform === 'win32' ? 'junction' : 'dir')
+  const options = { executable: join(installed, 'tools', 'prompt-compose', 'cli.mjs'), cwd: dir }
   const help = invoke(['--help'], options)
   assert.equal(help.status, 0, help.stderr)
   assert.match(help.stdout, /manifest/)

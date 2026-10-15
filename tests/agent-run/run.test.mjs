@@ -11,8 +11,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { runCli } from '../../skills/agent-run/scripts/cli.mjs'
-import { runAgentTurn } from '../../skills/agent-run/scripts/run-agent-turn.mjs'
+import { runCli } from '../../tools/agent-run/cli.mjs'
+import { runAgentTurn } from '../../lib/agent-run/run-agent-turn.mjs'
 
 function capture() {
   const out = []

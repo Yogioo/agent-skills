@@ -8,9 +8,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { EXIT } from '../../skills/xlsx-cell-diff/scripts/exit-codes.mjs'
-import { loadWorkbookFromPath } from '../../skills/xlsx-cell-diff/scripts/xlsx-read.mjs'
-import { readZip } from '../../skills/xlsx-cell-diff/scripts/zip.mjs'
+import { EXIT } from '../../lib/xlsx-cell-diff/exit-codes.mjs'
+import { loadWorkbookFromPath } from '../../lib/xlsx-cell-diff/xlsx-read.mjs'
+import { readZip } from '../../lib/xlsx-cell-diff/zip.mjs'
 import {
   TERRAIN,
   TERRAIN_FIXED,

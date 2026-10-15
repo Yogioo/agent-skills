@@ -5,8 +5,14 @@ run-*/
 *.jsonl
 .tmp/
 
+# Packaging artifacts and installed dependencies (never commit).
+node_modules/
+*.tgz
+pack/
+
 # Reusable runtime source and checked-in event fixtures are not run caches.
-!skills/run-runtime/
+!lib/run-runtime/
+!tools/run-runtime/
 !tests/run-runtime/
 !tests/agent-run/fixtures/*.jsonl
 

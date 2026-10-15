@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { DEFAULT_SKIP, blobFingerprint, captureWorkspace, diff, resolveSkip } from '../../skills/workspace-diff/scripts/workspace.mjs'
+import { DEFAULT_SKIP, blobFingerprint, captureWorkspace, diff, resolveSkip } from '../../lib/workspace-diff.mjs'
 
 const empty = { changed: [], added: [], removed: [] }
 
@@ -194,7 +194,7 @@ test('invalid roots and modes fail; explicit Git never falls back for ordinary d
 test('Git is optional in auto mode but required in explicit Git mode', (t) => {
   const dir = fixture(t)
   put(dir, 'document.md', 'document')
-  const moduleUrl = new URL('../../skills/workspace-diff/scripts/workspace.mjs', import.meta.url).href
+  const moduleUrl = new URL('../../lib/workspace-diff.mjs', import.meta.url).href
   const script = `import { captureWorkspace } from ${JSON.stringify(moduleUrl)};
     import assert from 'node:assert/strict';
     assert.equal(captureWorkspace(process.argv[1]).mode, 'walk');

@@ -5,10 +5,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { appendEvent, readEvents } from '../../skills/run-runtime/scripts/progress.mjs'
-import { redactSecrets } from '../../skills/run-runtime/scripts/config.mjs'
+import { appendEvent, readEvents } from '../../lib/run-runtime/progress.mjs'
+import { redactSecrets } from '../../lib/run-runtime/config.mjs'
 
-const cli = fileURLToPath(new URL('../../skills/run-runtime/scripts/cli.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../../tools/run-runtime/cli.mjs', import.meta.url))
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'runtime-contract-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))

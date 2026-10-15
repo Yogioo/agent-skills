@@ -8,13 +8,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const skill = fileURLToPath(new URL('../../skills/work-items/', import.meta.url))
-const cli = join(skill, 'scripts', 'cli.mjs')
+import { createRuntimeCopy } from '../support/runtime-package.mjs'
+
+const cli = fileURLToPath(new URL('../../tools/work-items/cli.mjs', import.meta.url))
 
 const FAKE_BD = `import { readFileSync, writeFileSync } from 'node:fs'
 const stateFile = process.env.WORK_ITEMS_FAKE_BD_STATE
@@ -149,13 +150,13 @@ test('operational source failure is exit 1, not a fake empty list', (t) => {
   assert.match(result.stderr, /db locked|Command failed/)
 })
 
-test('packaged skill runs alone with no old sibling skills', (t) => {
+test('copied runtime runs alone with no legacy skills alongside', (t) => {
   const fx = fixture(t)
-  const installed = join(fx.temp, 'install', 'work-items')
-  cpSync(skill, installed, { recursive: true })
-  const executable = join(installed, 'scripts', 'cli.mjs')
-  assert.equal(existsSync(join(dirname(installed), 'afk-run')), false)
-  assert.equal(existsSync(join(dirname(installed), 'afk-watch')), false)
+  const rt = createRuntimeCopy('work-items-runtime-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  const executable = rt.cli('work-items')
+  assert.equal(existsSync(join(rt.root, 'skills')), false)
+  assert.equal(existsSync(join(rt.root, 'afk-run')), false)
   const options = { executable, cwd: fx.temp }
   assert.equal(success(invoke(['capabilities', '--source', 'beads'], options)).claimMode, 'atomic')
   assert.deepEqual(
@@ -164,13 +165,13 @@ test('packaged skill runs alone with no old sibling skills', (t) => {
   )
 })
 
-test('installed directory junction executes help and capabilities', (t) => {
+test('installed runtime directory junction executes help and capabilities', (t) => {
   const fx = fixture(t)
-  const target = join(fx.temp, 'skill-source')
-  const installed = join(fx.temp, 'installed-skill')
-  cpSync(skill, target, { recursive: true })
-  symlinkSync(target, installed, process.platform === 'win32' ? 'junction' : 'dir')
-  const executable = join(installed, 'scripts', 'cli.mjs')
+  const rt = createRuntimeCopy('work-items-junction-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  const installed = join(fx.temp, 'installed-runtime')
+  symlinkSync(rt.root, installed, process.platform === 'win32' ? 'junction' : 'dir')
+  const executable = join(installed, 'tools', 'work-items', 'cli.mjs')
   const options = { executable, cwd: fx.temp }
   const help = invoke(['--help'], options)
   assert.equal(help.status, 0, help.stderr)

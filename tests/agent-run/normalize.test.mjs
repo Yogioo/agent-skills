@@ -19,9 +19,9 @@ import {
   normalizeCodexEvent,
   normalizeEvent,
   normalizePiEvent,
-} from '../../skills/agent-run/scripts/normalize-event.mjs'
-import { parseStreamJsonChunk } from '../../skills/agent-run/scripts/runners/spawn-agent-turn.mjs'
-import { runCli } from '../../skills/agent-run/scripts/cli.mjs'
+} from '../../lib/agent-events.mjs'
+import { parseStreamJsonChunk } from '../../lib/agent-run/runners/spawn-agent-turn.mjs'
+import { runCli } from '../../tools/agent-run/cli.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIXTURES = join(__dirname, 'fixtures')

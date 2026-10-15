@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createGhSource, parseRepoRemote, parseTaskList, priorityFromLabels } from '../../skills/work-items/scripts/gh.mjs'
+import { createGhSource, parseRepoRemote, parseTaskList, priorityFromLabels } from '../../lib/work-items/gh.mjs'
 
 const FAKE_GH = `import { readFileSync, writeFileSync } from 'node:fs'
 const stateFile = process.env.WORK_ITEMS_FAKE_GH_STATE

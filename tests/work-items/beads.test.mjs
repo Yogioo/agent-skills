@@ -9,8 +9,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createBeadsSource } from '../../skills/work-items/scripts/beads.mjs'
-import { createWorkSource } from '../../skills/work-items/scripts/index.mjs'
+import { createBeadsSource } from '../../lib/work-items/beads.mjs'
+import { createWorkSource } from '../../lib/work-items/index.mjs'
 
 const FAKE_BD = `import { readFileSync, writeFileSync } from 'node:fs'
 const stateFile = process.env.WORK_ITEMS_FAKE_BD_STATE

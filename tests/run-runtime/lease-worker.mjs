@@ -1,5 +1,5 @@
 /** Contention worker: acquire a lease, hold it briefly if won, print one JSON line. */
-import { acquireLease } from '../../skills/run-runtime/scripts/lease.mjs'
+import { acquireLease } from '../../lib/run-runtime/lease.mjs'
 
 const [registryDir, workdir] = process.argv.slice(2)
 const result = acquireLease({ registryDir, workdir })

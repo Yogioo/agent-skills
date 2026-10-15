@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { assemblePrompt, renderTemplate, PromptComposeError } from '../../skills/prompt-compose/scripts/prompt-compose.mjs'
+import { assemblePrompt, renderTemplate, PromptComposeError } from '../../lib/prompt-compose.mjs'
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'prompt-compose-api-'))

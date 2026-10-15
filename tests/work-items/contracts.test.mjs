@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { run } from '../../skills/work-items/scripts/cli.mjs'
-import { createBeadsSource } from '../../skills/work-items/scripts/beads.mjs'
-import { createGhSource } from '../../skills/work-items/scripts/gh.mjs'
+import { run } from '../../tools/work-items/cli.mjs'
+import { createBeadsSource } from '../../lib/work-items/beads.mjs'
+import { createGhSource } from '../../lib/work-items/gh.mjs'
 
 test('GitHub capabilities require neither a repository nor an external command', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'work-items-capability-'))

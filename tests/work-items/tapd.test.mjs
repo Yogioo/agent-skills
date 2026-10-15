@@ -23,7 +23,7 @@ import {
   replaceImagePath,
   safeImageName,
   toLinkPath,
-} from '../../skills/work-items/scripts/tapd.mjs'
+} from '../../lib/work-items/tapd.mjs'
 
 const FAKE_CLI = `import { readFileSync, writeFileSync } from 'node:fs'
 const stateFile = process.env.WORK_ITEMS_FAKE_TAPD_STATE

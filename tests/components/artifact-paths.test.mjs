@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { compose } from '../../skills/prompt-compose/scripts/cli.mjs'
-import { artifactPaths } from '../../skills/questionnaire/scripts/questionnaire.mjs'
+import { compose } from '../../tools/prompt-compose/cli.mjs'
+import { artifactPaths } from '../../lib/questionnaire.mjs'
 
 test('artifact destinations cannot overwrite inputs through directory aliases', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'artifact-alias-'))

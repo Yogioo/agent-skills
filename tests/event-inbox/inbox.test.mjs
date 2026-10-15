@@ -8,9 +8,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -20,10 +20,10 @@ import {
   getEvent,
   listEvents,
   writeEvent,
-} from '../../skills/event-inbox/scripts/inbox.mjs'
+} from '../../lib/event-inbox.mjs'
+import { createRuntimeCopy } from '../support/runtime-package.mjs'
 
-const skill = fileURLToPath(new URL('../../skills/event-inbox/', import.meta.url))
-const cli = join(skill, 'scripts', 'inbox.mjs')
+const cli = fileURLToPath(new URL('../../tools/event-inbox/cli.mjs', import.meta.url))
 
 function tempDir(t, prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix))
@@ -223,26 +223,26 @@ test('records persist across separate processes', (t) => {
   assert.equal(success(invoke(['ack', '--dir', dir, '--id', emitted.id, '--state', 'done'])).state, 'done')
 })
 
-test('packaged skill runs alone with no old sibling skills', (t) => {
+test('copied runtime runs alone with no legacy skills', (t) => {
   const home = tempDir(t, 'event-inbox-copy-')
-  const installed = join(home, 'install', 'event-inbox')
-  cpSync(skill, installed, { recursive: true })
-  assert.equal(existsSync(join(dirname(installed), 'afk-run')), false)
-  const executable = join(installed, 'scripts', 'inbox.mjs')
+  const rt = createRuntimeCopy('event-inbox-runtime-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  assert.equal(existsSync(join(rt.root, 'skills')), false)
+  const executable = rt.cli('event-inbox')
   const store = join(home, 'store')
   const record = success(invoke(['emit', '--dir', store, '--stdin'], { executable, cwd: home, input: JSON.stringify({ kind: 'run-end' }) }))
   assert.equal(record.kind, 'run-end')
   assert.equal(success(invoke(['list', '--dir', store], { executable, cwd: home })).items.length, 1)
 })
 
-test('installed directory junction executes help and emit', function (t) {
+test('installed runtime directory junction executes help and emit', function (t) {
   if (process.platform !== 'win32') t.skip('Windows junction test')
   const home = tempDir(t, 'event-inbox-junction-')
-  const target = join(home, 'skill-source')
-  const installed = join(home, 'installed-skill')
-  cpSync(skill, target, { recursive: true })
-  symlinkSync(target, installed, 'junction')
-  const executable = join(installed, 'scripts', 'inbox.mjs')
+  const rt = createRuntimeCopy('event-inbox-junction-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  const installed = join(home, 'installed-runtime')
+  symlinkSync(rt.root, installed, 'junction')
+  const executable = join(installed, 'tools', 'event-inbox', 'cli.mjs')
   const help = invoke(['--help'], { executable, cwd: home })
   assert.equal(help.status, 0, help.stderr)
   assert.match(help.stdout, /emit/)

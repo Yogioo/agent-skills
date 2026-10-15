@@ -9,9 +9,9 @@ import assert from 'node:assert/strict'
 import { appendFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { appendEvent, readEvents } from '../../skills/run-runtime/scripts/progress.mjs'
-import { createViewerServer } from '../../skills/run-runtime/scripts/viewer.mjs'
-import { CliError } from '../../skills/run-runtime/scripts/util.mjs'
+import { appendEvent, readEvents } from '../../lib/run-runtime/progress.mjs'
+import { createViewerServer } from '../../lib/run-runtime/viewer.mjs'
+import { CliError } from '../../lib/run-runtime/util.mjs'
 import { cleanup, tempDir } from './helpers.mjs'
 
 test('append and read persist records with stable fields', () => {

@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { skill, serve, poll, tempDir, startServer, invoke, json } from './helpers.mjs'
+import { serve, poll, tempDir, startServer, invoke, json } from './helpers.mjs'
+import { createRuntimeCopy } from '../support/runtime-package.mjs'
 
 function writeForm(dir, name = 'form.md') {
   const file = join(dir, name)
@@ -162,13 +163,13 @@ test('a wrongly shaped status object is corrupt, not an empty session', (t) => {
   assert.equal(existsSync(join(outDir, 'form-status.json')), true)
 })
 
-test('packaged skill serves and polls alone outside the repository', async (t) => {
+test('copied runtime serves and polls outside the repository', async (t) => {
   const dir = tempDir(t)
-  const installed = join(dir, 'install', 'questionnaire')
-  cpSync(skill, installed, { recursive: true })
-  assert.equal(existsSync(join(dir, 'install', 'exec-review')), false)
-  const copiedServe = join(installed, 'scripts', 'serve.mjs')
-  const copiedPoll = join(installed, 'scripts', 'poll.mjs')
+  const rt = createRuntimeCopy('questionnaire-runtime-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  assert.equal(existsSync(join(rt.root, 'skills')), false)
+  const copiedServe = rt.toolFile('questionnaire', 'serve.mjs')
+  const copiedPoll = rt.toolFile('questionnaire', 'poll.mjs')
 
   const help = invoke(copiedServe, ['--help'], { cwd: dir })
   assert.equal(help.status, 0)
@@ -189,13 +190,13 @@ test('packaged skill serves and polls alone outside the repository', async (t) =
   assert.equal(invoke(copiedPoll, ['--status', started.statusFile], { cwd: dir }).status, 0)
 })
 
-test('installed directory junction runs help and a submission', async (t) => {
+test('installed runtime directory junction runs help and a submission', async (t) => {
   const dir = tempDir(t)
-  const target = join(dir, 'skill-source')
-  const installed = join(dir, 'installed-skill')
-  cpSync(skill, target, { recursive: true })
-  symlinkSync(target, installed, process.platform === 'win32' ? 'junction' : 'dir')
-  const junctionServe = join(installed, 'scripts', 'serve.mjs')
+  const rt = createRuntimeCopy('questionnaire-junction-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  const installed = join(dir, 'installed-runtime')
+  symlinkSync(rt.root, installed, process.platform === 'win32' ? 'junction' : 'dir')
+  const junctionServe = join(installed, 'tools', 'questionnaire', 'serve.mjs')
   const help = invoke(junctionServe, ['--help'], { cwd: dir })
   assert.equal(help.status, 0, help.stderr)
   assert.match(help.stdout, /questionnaire/)

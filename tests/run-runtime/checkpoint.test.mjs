@@ -13,8 +13,8 @@ import {
   checkpointStatus,
   createCheckpoint,
   restoreCheckpoint,
-} from '../../skills/run-runtime/scripts/checkpoint.mjs'
-import { CliError } from '../../skills/run-runtime/scripts/util.mjs'
+} from '../../lib/run-runtime/checkpoint.mjs'
+import { CliError } from '../../lib/run-runtime/util.mjs'
 import { cleanup, commitAll, git, makeRepo, tempDir } from './helpers.mjs'
 
 function expectCode(code) {

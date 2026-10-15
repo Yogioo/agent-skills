@@ -17,15 +17,15 @@ import {
   buildAgentPromptArg,
   createAgentRunner,
   mapAgentSandbox,
-} from '../../skills/agent-run/scripts/runners/agent.mjs'
-import { createCodexRunner } from '../../skills/agent-run/scripts/runners/codex.mjs'
-import { createPiRunner } from '../../skills/agent-run/scripts/runners/pi.mjs'
+} from '../../lib/agent-run/runners/agent.mjs'
+import { createCodexRunner } from '../../lib/agent-run/runners/codex.mjs'
+import { createPiRunner } from '../../lib/agent-run/runners/pi.mjs'
 import {
   RUNNERS,
   capabilities,
   createRunner,
   runnerSessionMode,
-} from '../../skills/agent-run/scripts/runners/index.mjs'
+} from '../../lib/agent-run/runners/index.mjs'
 
 /** dry-run writes the full command line into the log, so argv is observable. */
 async function argvOf(runner, dir, tag, extra = {}) {

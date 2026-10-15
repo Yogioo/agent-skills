@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import {
   QuestionnaireError, artifactPaths, buildResponseMarkdown, lanAddresses,
   parseQuestionnaire, readStatusFile, validateSubmission, writeFileAtomic, writeJsonAtomic,
-} from '../../skills/questionnaire/scripts/questionnaire.mjs'
+} from '../../lib/questionnaire.mjs'
 
 const MARKDOWN = `# 封面问卷
 

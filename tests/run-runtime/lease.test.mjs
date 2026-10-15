@@ -22,8 +22,8 @@ import {
   releaseLease,
   statusLease,
   validateLeaseRecord,
-} from '../../skills/run-runtime/scripts/lease.mjs'
-import { CliError } from '../../skills/run-runtime/scripts/util.mjs'
+} from '../../lib/run-runtime/lease.mjs'
+import { CliError } from '../../lib/run-runtime/util.mjs'
 import { CLI, cleanup, runNode, tempDir } from './helpers.mjs'
 
 const DEAD_PID = 2147483646

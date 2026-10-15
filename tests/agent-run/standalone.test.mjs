@@ -1,21 +1,23 @@
 /**
- * Standalone-skill test: copy only skills/agent-run to a temp dir (no old
- * siblings) and exercise the CLI through a real Node process, including a
- * Windows directory junction entry point for the direct-main guard.
+ * Runtime-package test: copy the tool runtime (lib/, tools/, and bin/package
+ * when present) to a temp dir with no legacy skills alongside and exercise the
+ * CLI through a real Node process, including a Windows directory junction entry
+ * point for the direct-main guard.
  *
  *   node --test tests/agent-run/standalone.test.mjs
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 
+import { createRuntimeCopy } from '../support/runtime-package.mjs'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const SKILL = join(__dirname, '..', '..', 'skills', 'agent-run')
 const FIXTURE = join(__dirname, 'fixtures', 'agent-stream.jsonl')
 
 function runNode(args, cwd) {
@@ -30,50 +32,45 @@ function runNode(args, cwd) {
   })
 }
 
-test('copied skill CLI runs without old siblings', async () => {
-  const tmp = mkdtempSync(join(tmpdir(), 'ar-standalone-'))
-  const copy = join(tmp, 'agent-run')
-  cpSync(SKILL, copy, { recursive: true })
-  const cli = join(copy, 'scripts', 'cli.mjs')
-  try {
-    const help = await runNode([cli, '--help'], tmp)
-    assert.equal(help.code, 0)
-    assert.match(help.stdout, /agent-run/)
+test('copied runtime CLI runs without legacy skills', async (t) => {
+  const rt = createRuntimeCopy('ar-runtime-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true }))
+  const cli = rt.cli('agent-run')
+  assert.equal(existsSync(join(rt.root, 'skills')), false)
 
-    const caps = await runNode([cli, 'capabilities'], tmp)
-    assert.equal(caps.code, 0)
-    const parsed = JSON.parse(caps.stdout.trim())
-    assert.equal(parsed.runners.length, 3)
+  const help = await runNode([cli, '--help'], rt.root)
+  assert.equal(help.code, 0)
+  assert.match(help.stdout, /agent-run/)
 
-    const input = join(tmp, 'in.jsonl')
-    const output = join(tmp, 'out.jsonl')
-    writeFileSync(input, readFileSync(FIXTURE, 'utf8'))
-    const norm = await runNode([cli, 'normalize', '--runner', 'agent', '--input', input, '--output', output], tmp)
-    assert.equal(norm.code, 0)
-    assert.equal(JSON.parse(norm.stdout.trim()).eventCount, 7)
-    assert.ok(readFileSync(output, 'utf8').includes('"kind"'))
-  } finally {
-    rmSync(tmp, { recursive: true, force: true })
-  }
+  const caps = await runNode([cli, 'capabilities'], rt.root)
+  assert.equal(caps.code, 0)
+  const parsed = JSON.parse(caps.stdout.trim())
+  assert.equal(parsed.runners.length, 3)
+
+  const input = join(rt.root, 'in.jsonl')
+  const output = join(rt.root, 'out.jsonl')
+  writeFileSync(input, readFileSync(FIXTURE, 'utf8'))
+  const norm = await runNode([cli, 'normalize', '--runner', 'agent', '--input', input, '--output', output], rt.root)
+  assert.equal(norm.code, 0)
+  assert.equal(JSON.parse(norm.stdout.trim()).eventCount, 7)
+  assert.ok(readFileSync(output, 'utf8').includes('"kind"'))
 })
 
 test('direct-main guard works through a directory junction', async (t) => {
-  const tmp = mkdtempSync(join(tmpdir(), 'ar-junction-'))
-  const link = join(tmp, 'linked-agent-run')
+  const rt = createRuntimeCopy('ar-junction-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true }))
+  const link = join(mkdtempSync(join(tmpdir(), 'ar-junction-link-')), 'linked-runtime')
+  t.after(() => rmSync(dirname(link), { recursive: true, force: true }))
   try {
-    try {
-      symlinkSync(SKILL, link, process.platform === 'win32' ? 'junction' : 'dir')
-    } catch (error) {
-      t.skip(`junction unavailable: ${error.message}`)
-      return
-    }
-    const cli = join(link, 'scripts', 'cli.mjs')
-    const help = await runNode([cli, '--help'], tmp)
-    assert.equal(help.code, 0)
-    const caps = await runNode([cli, 'capabilities', '--runner', 'pi'], tmp)
-    assert.equal(caps.code, 0)
-    assert.equal(JSON.parse(caps.stdout.trim()).runners[0].name, 'pi')
-  } finally {
-    rmSync(tmp, { recursive: true, force: true })
+    symlinkSync(rt.root, link, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    t.skip(`junction unavailable: ${error.message}`)
+    return
   }
+  const cli = join(link, 'tools', 'agent-run', 'cli.mjs')
+  const help = await runNode([cli, '--help'], dirname(link))
+  assert.equal(help.code, 0)
+  const caps = await runNode([cli, 'capabilities', '--runner', 'pi'], dirname(link))
+  assert.equal(caps.code, 0)
+  assert.equal(JSON.parse(caps.stdout.trim()).runners[0].name, 'pi')
 })

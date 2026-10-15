@@ -14,8 +14,8 @@ import {
   mergeConfigFiles,
   projectIdentity,
   redactSecrets,
-} from '../../skills/run-runtime/scripts/config.mjs'
-import { workdirHash } from '../../skills/run-runtime/scripts/util.mjs'
+} from '../../lib/run-runtime/config.mjs'
+import { workdirHash } from '../../lib/run-runtime/util.mjs'
 import { CLI, cleanup, git, makeRepo, runNode, tempDir } from './helpers.mjs'
 
 function writeJson(file, value) {

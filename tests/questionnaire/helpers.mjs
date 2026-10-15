@@ -4,9 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const skill = fileURLToPath(new URL('../../skills/questionnaire/', import.meta.url))
-export const serve = join(skill, 'scripts', 'serve.mjs')
-export const poll = join(skill, 'scripts', 'poll.mjs')
+export const serve = fileURLToPath(new URL('../../tools/questionnaire/serve.mjs', import.meta.url))
+export const poll = fileURLToPath(new URL('../../tools/questionnaire/poll.mjs', import.meta.url))
 
 export function tempDir(t, prefix = 'questionnaire-') {
   const dir = mkdtempSync(join(tmpdir(), prefix))

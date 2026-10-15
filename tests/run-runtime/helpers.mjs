@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const ROOT = join(HERE, '..', '..')
-export const SKILL = join(ROOT, 'skills', 'run-runtime')
-export const CLI = join(SKILL, 'scripts', 'cli.mjs')
+export const RUNTIME = join(ROOT, 'tools', 'run-runtime')
+export const CLI = join(RUNTIME, 'cli.mjs')
 
 /** Disposable OS temp directory; caller must clean it. */
 export function tempDir(prefix = 'rr-test-') {

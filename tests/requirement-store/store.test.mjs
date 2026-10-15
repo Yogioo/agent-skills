@@ -9,9 +9,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -30,10 +30,10 @@ import {
   setSession,
   whereWorkItem,
   workItemKey,
-} from '../../skills/requirement-store/scripts/store.mjs'
+} from '../../lib/requirement-store.mjs'
+import { createRuntimeCopy } from '../support/runtime-package.mjs'
 
-const skill = fileURLToPath(new URL('../../skills/requirement-store/', import.meta.url))
-const cli = join(skill, 'scripts', 'store.mjs')
+const cli = fileURLToPath(new URL('../../tools/requirement-store/cli.mjs', import.meta.url))
 
 function tempDir(t, prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix))
@@ -252,25 +252,25 @@ test('CLI set-session, heartbeat and ambiguous where are explicit', (t) => {
   failure(invoke(['heartbeat', '--dir', dir, '--id', 'req-missing']), 1)
 })
 
-test('packaged skill runs alone with no old sibling skills', (t) => {
+test('copied runtime runs alone with no legacy skills', (t) => {
   const home = tempDir(t, 'requirement-store-copy-')
-  const installed = join(home, 'install', 'requirement-store')
-  cpSync(skill, installed, { recursive: true })
-  assert.equal(existsSync(join(dirname(installed), 'afk-run')), false)
-  const executable = join(installed, 'scripts', 'store.mjs')
+  const rt = createRuntimeCopy('requirement-store-runtime-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  assert.equal(existsSync(join(rt.root, 'skills')), false)
+  const executable = rt.cli('requirement-store')
   const store = join(home, 'store')
   const created = success(invoke(['create', '--dir', store, '--project', 'p1'], { executable, cwd: home }))
   assert.equal(success(invoke(['get', '--dir', store, '--id', created.id], { executable, cwd: home })).id, created.id)
 })
 
-test('installed directory junction executes help and create', function (t) {
+test('installed runtime directory junction executes help and create', function (t) {
   if (process.platform !== 'win32') t.skip('Windows junction test')
   const home = tempDir(t, 'requirement-store-junction-')
-  const target = join(home, 'skill-source')
-  const installed = join(home, 'installed-skill')
-  cpSync(skill, target, { recursive: true })
-  symlinkSync(target, installed, 'junction')
-  const executable = join(installed, 'scripts', 'store.mjs')
+  const rt = createRuntimeCopy('requirement-store-junction-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  const installed = join(home, 'installed-runtime')
+  symlinkSync(rt.root, installed, 'junction')
+  const executable = join(installed, 'tools', 'requirement-store', 'cli.mjs')
   const help = invoke(['--help'], { executable, cwd: home })
   assert.equal(help.status, 0, help.stderr)
   assert.match(help.stdout, /create/)

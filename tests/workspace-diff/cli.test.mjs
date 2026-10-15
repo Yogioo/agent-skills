@@ -2,15 +2,16 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import {
-  cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync,
   realpathSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const skill = fileURLToPath(new URL('../../skills/workspace-diff/', import.meta.url))
-const cli = join(skill, 'scripts', 'cli.mjs')
+import { createRuntimeCopy } from '../support/runtime-package.mjs'
+
+const cli = fileURLToPath(new URL('../../tools/workspace-diff/cli.mjs', import.meta.url))
 const defaultSkip = ['.git', '.hg', '.svn']
 
 function fixture(t) {
@@ -146,13 +147,12 @@ test('document edits and unchanged snapshots work with auto/walk and repeated sk
   })
 })
 
-test('packaged skill runs alone outside the repository on a document folder', (t) => {
+test('copied runtime runs alone outside the repository on a document folder', (t) => {
   const { temp, root } = fixture(t)
-  const installed = join(temp, 'install', 'workspace-diff')
-  cpSync(skill, installed, { recursive: true })
-  const options = { executable: join(installed, 'scripts', 'cli.mjs'), cwd: temp }
-  assert.equal(existsSync(join(dirname(installed), 'exec-review')), false)
-  assert.equal(existsSync(join(dirname(installed), 'afk-run')), false)
+  const rt = createRuntimeCopy('workspace-diff-runtime-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  const options = { executable: rt.cli('workspace-diff'), cwd: temp }
+  assert.equal(existsSync(join(rt.root, 'skills')), false)
   put(root, 'notes.md', '# Notes\n')
   const before = join(temp, 'before.json')
   snapshot(root, before, [], options)
@@ -164,13 +164,13 @@ test('packaged skill runs alone outside the repository on a document folder', (t
   })
 })
 
-test('installed directory junction or symlink executes help and snapshot', (t) => {
+test('installed runtime directory junction or symlink executes help and snapshot', (t) => {
   const { temp, root } = fixture(t)
-  const target = join(temp, 'skill-source')
-  const installed = join(temp, 'installed-skill')
-  cpSync(skill, target, { recursive: true })
-  symlinkSync(target, installed, process.platform === 'win32' ? 'junction' : 'dir')
-  const options = { executable: join(installed, 'scripts', 'cli.mjs'), cwd: temp }
+  const rt = createRuntimeCopy('workspace-diff-junction-')
+  t.after(() => rmSync(rt.root, { recursive: true, force: true, maxRetries: 3 }))
+  const installed = join(temp, 'installed-runtime')
+  symlinkSync(rt.root, installed, process.platform === 'win32' ? 'junction' : 'dir')
+  const options = { executable: join(installed, 'tools', 'workspace-diff', 'cli.mjs'), cwd: temp }
   const help = invoke(['--help'], options)
   assert.equal(help.status, 0, help.stderr)
   assert.equal(help.stderr, '')

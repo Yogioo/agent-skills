@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { startOwnedProcess } from '../../skills/run-runtime/scripts/child-process.mjs'
+import { startOwnedProcess } from '../../lib/run-runtime/child-process.mjs'
 import { cleanup, tempDir } from './helpers.mjs'
 
 test('wait reports a normal child exit', async () => {
