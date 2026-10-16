@@ -6,7 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -368,6 +368,77 @@ test('run 拒绝非 pi runner 上的 --provider，也拒绝重复臂名', async 
     )
     assert.equal(dupCode, 1)
     assert.match(dupCap.stderr(), /臂名重复/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('doctor：坏表报 error 并退出 1，且一个字节都不写', async () => {
+  const dir = workspace()
+  writeFileSync(
+    join(dir, 'broken.md'),
+    '# budget: large (xhigh)\n# runner: pi\nfeature: model-a-high\nhow explainer: anthropic/opus-9.9-xhigh\n',
+  )
+  writeFileSync(join(dir, 'models.txt'), 'provider model\nalpha model-a\nbeta model-b\n')
+  const before = readFileSync(join(dir, 'broken.md'), 'utf8')
+  const listings = () => readdirSync(dir).sort().join(',')
+  const beforeFiles = listings()
+  const cap = capture()
+  try {
+    const code = await runCli(
+      ['doctor', '--roles-file', join(dir, 'broken.md'), '--models-file', join(dir, 'models.txt'), '--runner', 'pi'],
+      cap.io,
+    )
+    assert.equal(code, 1)
+    const report = JSON.parse(cap.stdout().trim())
+    assert.equal(report.ok, false)
+    assert.equal(report.runner, 'pi')
+    assert.equal(report.modelsSource, join(dir, 'models.txt'))
+    assert.equal(report.counts.errors, 1)
+    assert.equal(report.counts.warnings, 1, 'feature 的 effort 低于预算 xhigh')
+    assert.equal(report.findings.find((item) => item.level === 'error').code, 'unknown-model')
+    assert.equal(readFileSync(join(dir, 'broken.md'), 'utf8'), before, 'doctor 只读')
+    assert.equal(listings(), beforeFiles, 'doctor 不添文件')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('doctor：干净表退出 0', async () => {
+  const dir = workspace()
+  writeFileSync(
+    join(dir, 'clean.md'),
+    '# budget: medium (high)\n# runner: pi\nhow explorer: model-a-high\nswarm workers: model-b-high\n',
+  )
+  const cap = capture()
+  try {
+    const code = await runCli(
+      ['doctor', '--roles-file', join(dir, 'clean.md'), '--models-file', join(dir, 'models.txt')],
+      cap.io,
+    )
+    assert.equal(code, 0)
+    const report = JSON.parse(cap.stdout().trim())
+    assert.equal(report.ok, true)
+    assert.equal(report.counts.errors, 0)
+    assert.equal(report.roles[0].values[0].provider, 'alpha')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('doctor：拿不到模型清单时报 error，不顺下去', async () => {
+  const dir = workspace()
+  const cap = capture()
+  try {
+    const code = await runCli(
+      ['doctor', '--roles-file', join(dir, 'roles.md'), '--runner', 'codex', '--bin', join(dir, 'nope.mjs')],
+      cap.io,
+    )
+    // runner 不是 pi 时不去拉模型清单，因此无从核对，必须报出来。
+    assert.equal(code, 1)
+    const report = JSON.parse(cap.stdout().trim())
+    assert.equal(report.ok, false)
+    assert.equal(report.findings.some((item) => item.code === 'no-model-list'), true)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -156,15 +156,43 @@ test('parseModelList 跳过表头，解析 provider 与 model 两列', () => {
 
 test('resolveProvider 只在唯一匹配时自动定，多义交给调用方拒绝', () => {
   const models = parseModelList('provider model\ndeepseek deepseek-flash\nother deepseek-flash\nsolo solo-model\n')
-  assert.deepEqual(resolveProvider({ model: 'solo-model', models }), { provider: 'solo', source: 'models-unique' })
+  assert.deepEqual(resolveProvider({ model: 'solo-model', models }), {
+    provider: 'solo',
+    model: 'solo-model',
+    source: 'models-unique',
+  })
   const ambiguous = resolveProvider({ model: 'deepseek-flash', models })
   assert.equal(ambiguous.source, 'unknown')
   assert.deepEqual(ambiguous.candidates, ['deepseek', 'other'])
   assert.deepEqual(resolveProvider({ model: 'deepseek-flash', provider: 'flag-wins', models }), {
     provider: 'flag-wins',
+    model: 'deepseek-flash',
     source: 'flag',
   })
-  assert.deepEqual(resolveProvider({ model: 'nope', models }), { source: 'unknown' })
+  assert.deepEqual(resolveProvider({ model: 'nope', models }), { model: 'nope', source: 'unknown' })
+})
+
+test('resolveProvider 认 provider/id 前缀，但不抢含斜杠的模型 id', () => {
+  const models = parseModelList(
+    ['provider     model', 'grok         grok-4.6', 'commandcode  deepseek/deepseek-v4.1-flash'].join('\n'),
+  )
+  // 拆开后真有这一行：前缀就是 provider
+  assert.deepEqual(resolveProvider({ model: 'grok/grok-4.6', models }), {
+    provider: 'grok',
+    model: 'grok-4.6',
+    source: 'prefix',
+  })
+  // 拆开后没这一行：整串就是模型 id（它自己含斜杠），再按唯一匹配定
+  assert.deepEqual(resolveProvider({ model: 'deepseek/deepseek-v4.1-flash', models }), {
+    provider: 'commandcode',
+    model: 'deepseek/deepseek-v4.1-flash',
+    source: 'models-unique',
+  })
+  // 两边都对不上：unknown，不硬猜
+  assert.deepEqual(resolveProvider({ model: 'grok/grok-9.9', models }), {
+    model: 'grok/grok-9.9',
+    source: 'unknown',
+  })
 })
 
 test('classifyTurn 从记录判定，不采信 exitCode', () => {

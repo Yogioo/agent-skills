@@ -10,7 +10,9 @@ import { pathToFileURL } from 'node:url'
 import { realpathSync, writeFileSync } from 'node:fs'
 
 import { RUNNERS, capabilities } from '../../lib/agent-run/runners/index.mjs'
+import { resolveBin } from '../../lib/agent-run/runners/resolve-bin.mjs'
 import {
+  diagnose,
   loadRoleTable,
   parseModelList,
   parseRoleTable,
@@ -37,6 +39,7 @@ const USAGE = `subagent - run one or more agent turns from a pstack role table
 
   roles  [--roles-file <path>]
   models --runner pi [--bin <path>]
+  doctor [--roles-file <path>] [--models-file <file>] [--runner pi] [--bin <path>]
 
 Role table defaults to ~/.agents/pstack-models.md, then
 ~/.cursor/rules/pstack-models.mdc. A value in the table is a pstack slug:
@@ -54,6 +57,10 @@ serves that model id. An ambiguous id is rejected, never guessed.
 object with per-arm facts and a status of ok, empty, error, timeout or aborted.
 status comes from events.jsonl and output.txt; the child exit code is reported
 but never decides status. Exit: 0 all arms ok, 1 some arm not ok, 2 invalid.
+
+doctor checks a role table against the runner's model list and pstack's
+canonical role names. It only reads and reports. Exit: 0 no errors,
+1 findings include errors, 2 invalid.
 `
 
 const STATUS_ORDER = ['ok', 'empty', 'error', 'timeout', 'aborted']
@@ -175,7 +182,16 @@ function parseArgs(argv) {
     const options = parseFlags(rest, { '--runner': 'runner', '--bin': 'bin' })
     return { command: 'models', runner: options.runner || 'pi', bin: options.bin }
   }
-  invalid('Expected run, plan, roles or models; use --help')
+  if (command === 'doctor') {
+    const options = parseFlags(rest, {
+      '--roles-file': 'rolesFile',
+      '--models-file': 'modelsFile',
+      '--runner': 'runner',
+      '--bin': 'bin',
+    })
+    return { command: 'doctor', ...options }
+  }
+  invalid('Expected run, plan, roles, models or doctor; use --help')
 }
 
 const LABEL_PATTERN = /^[A-Za-z0-9._-]+$/
@@ -196,14 +212,24 @@ function readTable(options) {
   return { ...table, file: loaded.file }
 }
 
-function loadModels(options) {
+/** Windows 上 npm 装的是 .cmd/.ps1 壳，直接 spawn 会 EINVAL；用仓库已有的解析器。 */
+function runBin(bin, args) {
+  const resolved = resolveBin(bin, { knownName: bin })
+  return spawnSync(resolved.command, [...(resolved.argsPrefix || []), ...args], {
+    encoding: 'utf8',
+    windowsHide: true,
+    shell: resolved.shell === true,
+  })
+}
+
+function loadModels(options, runner = options.runner) {
   if (options.modelsFile) {
     if (!existsSync(options.modelsFile)) invalid(`--models-file is not readable: ${options.modelsFile}`)
     return { models: parseModelList(readFileSync(options.modelsFile, 'utf8')), source: options.modelsFile }
   }
-  if (options.runner !== 'pi') return { models: [], source: null }
+  if (runner !== 'pi') return { models: [], source: null }
   const bin = options.bin || 'pi'
-  const result = spawnSync(bin, ['--list-models'], { encoding: 'utf8', windowsHide: true })
+  const result = runBin(bin, ['--list-models'])
   if (result.error || result.status !== 0) return { models: [], source: null, error: `无法运行 ${bin} --list-models` }
   return { models: parseModelList(result.stdout || ''), source: `${bin} --list-models` }
 }
@@ -214,9 +240,11 @@ function applyProvider(arm, models) {
   if (arm.runner !== 'pi' || !arm.model) return arm
   const resolved = resolveProvider({ model: arm.model, provider: arm.provider, models })
   if (resolved.candidates) {
-    invalid(`模型 ${arm.model} 同时挂在 ${resolved.candidates.join(', ')} 下，请显式指定 --provider`)
+    invalid(
+      `模型 ${arm.model} 同时挂在 ${resolved.candidates.join(', ')} 下，请写成 <provider>/${arm.model} 或显式指定 --provider`,
+    )
   }
-  return { ...arm, provider: resolved.provider, providerSource: resolved.source }
+  return { ...arm, provider: resolved.provider, model: resolved.model ?? arm.model, providerSource: resolved.source }
 }
 
 function resolveOneRole(role, index, override, table, defaultRunner) {
@@ -308,8 +336,8 @@ async function run(options) {
   const outDir = resolve(options.outDir)
   requireNewPath(outDir, '--out-dir')
   const table = readTable(options)
-  const loaded = loadModels(options)
   const defaultRunner = options.runner || table.runner || 'pi'
+  const loaded = loadModels(options, defaultRunner)
   const override = {
     runner: options.runner,
     provider: options.provider,
@@ -360,8 +388,8 @@ async function run(options) {
 
 function plan(options) {
   const table = readTable(options)
-  const loaded = loadModels(options)
   const defaultRunner = options.runner || table.runner || 'pi'
+  const loaded = loadModels(options, defaultRunner)
   const arms = options.roles.flatMap((role) =>
     expandRole(role, { runner: options.runner }, table, defaultRunner).map((arm) => applyProvider(arm, loaded.models)),
   )
@@ -391,14 +419,38 @@ function plan(options) {
 function listRoles(options) {
   const table = readTable(options)
   return {
-    result: { rolesFile: table.file, budget: table.budget, count: table.entries.length, entries: table.entries, errors: table.errors },
+    result: {
+      rolesFile: table.file,
+      budget: table.budget,
+      runner: table.runner || null,
+      count: table.entries.length,
+      entries: table.entries,
+      errors: table.errors,
+    },
     exitCode: 0,
   }
 }
 
+/** 只读体检。exit 1 表示有 error 级发现。 */
+function doctor(options) {
+  const table = readTable(options)
+  const defaultRunner = options.runner || table.runner || 'pi'
+  const loaded = loadModels(options, defaultRunner)
+  const report = diagnose({
+    table,
+    models: loaded.models,
+    runner: defaultRunner,
+    rolesFile: table.file,
+    modelsSource: loaded.source,
+    modelsError: loaded.error,
+    parseErrors: table.errors,
+  })
+  return { result: { ...report, formatFailures: report.findings.filter((item) => item.level !== 'info').length }, exitCode: report.ok ? 0 : 1 }
+}
+
 function listModels(options) {
   const bin = options.bin || 'pi'
-  const result = spawnSync(bin, ['--list-models'], { encoding: 'utf8', windowsHide: true })
+  const result = runBin(bin, ['--list-models'])
   if (result.error) {
     const error = new Error(`无法运行 ${bin} --list-models：${result.error.message}`)
     error.exitCode = 1
@@ -429,7 +481,9 @@ export async function runCli(argv, io = {}) {
           ? plan(options)
           : options.command === 'roles'
             ? listRoles(options)
-            : listModels(options)
+            : options.command === 'doctor'
+              ? doctor(options)
+              : listModels(options)
     stdout(`${JSON.stringify(outcome.result)}\n`)
     return outcome.exitCode
   } catch (error) {

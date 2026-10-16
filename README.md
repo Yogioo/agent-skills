@@ -72,7 +72,7 @@ agent-tools xlsx-cell-diff --help
 
 ## Skills
 
-Skills are routing instructions for an agent. The four toolkit wrappers call the
+Skills are routing instructions for an agent. The six toolkit wrappers call the
 installed `agent-tools` command; they contain no implementation and assume the
 runtime is installed separately. A copied wrapper alone does **not** include the
 runtime.
@@ -88,6 +88,7 @@ npx skills add Yogioo/agent-skills --skill questionnaire -g -y
 |-------|-----------|
 | [agent-run](./skills/agent-run/SKILL.md) | one agent turn + event normalization |
 | [subagent-run](./skills/subagent-run/SKILL.md) | one or more turns from a pstack role table |
+| [setup-yogioo](./skills/setup-yogioo/SKILL.md) | post-install setup: pstack models, then doctor |
 | [work-items](./skills/work-items/SKILL.md) | beads / GitHub / TAPD work items |
 | [questionnaire](./skills/questionnaire/SKILL.md) | local web form, one submission |
 | [xlsx-cell-diff](./skills/xlsx-cell-diff/SKILL.md) | xlsx display-value diff / merge |
