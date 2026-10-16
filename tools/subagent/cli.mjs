@@ -9,7 +9,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { realpathSync, writeFileSync } from 'node:fs'
 
-import { RUNNERS, capabilities } from '../../lib/agent-run/runners/index.mjs'
+import { CAPABILITIES, RUNNERS, capabilities } from '../../lib/agent-run/runners/index.mjs'
 import { resolveBin } from '../../lib/agent-run/runners/resolve-bin.mjs'
 import {
   diagnose,
@@ -152,6 +152,7 @@ function parsePlan(rest) {
     '--runner': 'runner',
     '--workdir': 'workdir',
     '--models-file': 'modelsFile',
+    '--sandbox': 'sandbox',
     '--bin': 'bin',
   }
   for (let i = 0; i < rest.length; i++) {
@@ -234,8 +235,16 @@ function loadModels(options, runner = options.runner) {
   return { models: parseModelList(result.stdout || ''), source: `${bin} --list-models` }
 }
 
-/** provider 只能猜错，不能猜。pi 以外不传 provider；pi 里多义就必须显式指定。 */
-function applyProvider(arm, models) {
+/**
+ * provider 只能猜错，不能猜；sandbox 拼错会静默放权，所以两个都必须在起臂前挡掉。
+ * 实测：`--sandbox red-only` 本来会落到 runner 的默认放权模式。
+ */
+function finalizeArm(arm, models) {
+  const caps = CAPABILITIES[arm.runner]
+  if (!caps) invalid(`未知 runner: ${arm.runner}`)
+  if (arm.sandbox !== undefined && !caps.sandboxModes.includes(arm.sandbox)) {
+    invalid(`runner ${arm.runner} 不支持 --sandbox ${arm.sandbox}（可选：${caps.sandboxModes.join(' / ')}）`)
+  }
   if (arm.provider && arm.runner !== 'pi') invalid(`runner ${arm.runner} 不支持 --provider（只有 pi 有）`)
   if (arm.runner !== 'pi' || !arm.model) return arm
   const resolved = resolveProvider({ model: arm.model, provider: arm.provider, models })
@@ -286,7 +295,7 @@ function buildSingleArm(options, table, models, override, defaultRunner) {
   arm.promptFile = resolve(options.promptFile)
   arm.workdir = resolve(options.workdir || process.cwd())
   arm.label = checkLabel(options.label || sanitizeLabel(options.roles[0] || 'inline'))
-  return [applyProvider(arm, models)]
+  return [finalizeArm(arm, models)]
 }
 
 /** manifest 模式：一臂一个 label 与 prompt，面板角色按取值顺序分派。 */
@@ -327,7 +336,7 @@ function buildManifestArms(options, table, models, override, defaultRunner) {
     arm.prompt = raw.prompt
     arm.workdir = resolve(raw.workdir || manifest.workdir || options.workdir || process.cwd())
     arm.label = checkLabel(raw.label || `${sanitizeLabel(role)}-${i + 1}`)
-    return applyProvider(arm, models)
+    return finalizeArm(arm, models)
   })
   return { arms, concurrency: manifest.concurrency }
 }
@@ -391,7 +400,9 @@ function plan(options) {
   const defaultRunner = options.runner || table.runner || 'pi'
   const loaded = loadModels(options, defaultRunner)
   const arms = options.roles.flatMap((role) =>
-    expandRole(role, { runner: options.runner }, table, defaultRunner).map((arm) => applyProvider(arm, loaded.models)),
+    expandRole(role, { runner: options.runner, sandbox: options.sandbox }, table, defaultRunner).map((arm) =>
+      finalizeArm(arm, loaded.models),
+    ),
   )
   return {
     result: {

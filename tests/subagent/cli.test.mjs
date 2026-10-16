@@ -426,6 +426,108 @@ test('doctor：干净表退出 0', async () => {
   }
 })
 
+test('拼错的 --sandbox 必须在起臂前被拦下，不能静默放权', async () => {
+  const dir = workspace()
+  const cap = capture()
+  try {
+    // 打过这个错：`red-only` 之前会落到 runner 的默认放权模式。
+    const bad = await runCli(
+      [
+        'run', '--role', 'how explorer', '--prompt-file', join(dir, 'brief-a.md'),
+        '--out-dir', join(dir, 'o-bad'), '--sandbox', 'red-only',
+        '--runner', 'agent', '--bin', join(dir, 'ok.mjs'), ...rolesArgs(dir),
+      ],
+      cap.io,
+    )
+    assert.equal(bad, 2)
+    assert.match(cap.stderr(), /不支持 --sandbox red-only/)
+    assert.match(cap.stderr(), /read-only \/ workspace-write \/ danger-full-access/)
+    assert.equal(existsSync(join(dir, 'o-bad')), false, '被拦下时不该建出目录')
+
+    const planCap = capture()
+    const planCode = await runCli(
+      ['plan', '--role', 'how explorer', '--sandbox', 'nonsense', ...rolesArgs(dir)],
+      planCap.io,
+    )
+    assert.equal(planCode, 2)
+    assert.match(planCap.stderr(), /不支持 --sandbox nonsense/)
+
+    const good = capture()
+    const goodCode = await runCli(
+      [
+        'run', '--role', 'how explorer', '--prompt-file', join(dir, 'brief-a.md'),
+        '--out-dir', join(dir, 'o-good'), '--sandbox', 'read-only',
+        '--runner', 'agent', '--bin', join(dir, 'ok.mjs'), ...rolesArgs(dir),
+      ],
+      good.io,
+    )
+    assert.equal(goodCode, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('一臂起不来不能带走整批：其余臂的结果照交', async () => {
+  const dir = workspace()
+  writeFileSync(
+    join(dir, 'dead-arm.json'),
+    JSON.stringify({
+      role: 'how explorer',
+      runner: 'agent',
+      arms: [
+        { label: 'arm-ok', promptFile: 'brief-a.md' },
+        { label: 'arm-dead', promptFile: 'brief-b.md', workdir: join(dir, 'no such workdir') },
+      ],
+    }),
+  )
+  const outDir = join(dir, 'out partial')
+  const cap = capture()
+  try {
+    const code = await runCli(
+      [
+        'run', '--manifest', join(dir, 'dead-arm.json'), '--out-dir', outDir,
+        '--bin', join(dir, 'ok.mjs'), ...rolesArgs(dir),
+      ],
+      cap.io,
+    )
+    assert.equal(code, 1)
+    const result = JSON.parse(cap.stdout().trim())
+    assert.equal(result.ok, 1)
+    assert.equal(result.error, 1)
+    const byLabel = Object.fromEntries(result.arms.map((arm) => [arm.label, arm]))
+    assert.equal(byLabel['arm-ok'].status, 'ok')
+    assert.equal(readFileSync(byLabel['arm-ok'].outputFile, 'utf8').trim(), 'ARM-A')
+    assert.equal(byLabel['arm-dead'].status, 'error')
+
+    const records = readFileSync(result.reportFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+    assert.equal(records.length, 2, '报告必须完整交给调用方')
+    const dead = records.find((record) => record.label === 'arm-dead')
+    assert.match(dead.errorMessage, /启动失败/)
+    assert.equal(dead.exitCode, null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('嵌套的 --out-dir 会自动建父目录', async () => {
+  const dir = workspace()
+  const outDir = join(dir, 'deep', 'nested', 'out')
+  const cap = capture()
+  try {
+    const code = await runCli(
+      [
+        'run', '--role', 'how explorer', '--prompt-file', join(dir, 'brief-a.md'),
+        '--out-dir', outDir, '--runner', 'agent', '--bin', join(dir, 'ok.mjs'), ...rolesArgs(dir),
+      ],
+      cap.io,
+    )
+    assert.equal(code, 0)
+    assert.ok(existsSync(join(outDir, 'how-explorer', 'output.txt')))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('doctor：拿不到模型清单时报 error，不顺下去', async () => {
   const dir = workspace()
   const cap = capture()
