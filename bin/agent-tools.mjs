@@ -36,7 +36,7 @@ Usage: agent-tools <command> [options]
 
 Commands:
   agent-run          run one agent turn and normalize its events
-  subagent           role-table agent turns: run, plan, roles, models, doctor
+  subagent           role-table agent turns: run, plan, roles, models, doctor, init, probe
   work-items         read and mutate beads, GitHub or TAPD work items
   run-runtime        leases, progress, config layers, checkpoints, children
   workspace-diff     snapshot and compare directory contents

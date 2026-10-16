@@ -12,15 +12,23 @@ import { realpathSync, writeFileSync } from 'node:fs'
 import { CAPABILITIES, RUNNERS, capabilities } from '../../lib/agent-run/runners/index.mjs'
 import { resolveBin } from '../../lib/agent-run/runners/resolve-bin.mjs'
 import {
+  BUDGET_EFFORT,
+  CANONICAL_ROLES,
+  CANONICAL_ROLE_GROUPS,
+  PROBE_THINKING,
+  SAFE_ROLE_VALUE,
   diagnose,
   loadRoleTable,
   parseModelList,
   parseRoleTable,
+  planProbes,
+  renderRoleTable,
   resolveArm,
   resolveProvider,
   roleLookup,
   roleNames,
   runArms,
+  runProbes,
   summarize,
 } from '../../lib/subagent/index.mjs'
 
@@ -40,6 +48,12 @@ const USAGE = `subagent - run one or more agent turns from a pstack role table
   roles  [--roles-file <path>]
   models --runner pi [--bin <path>]
   doctor [--roles-file <path>] [--models-file <file>] [--runner pi] [--bin <path>]
+
+  init [--out <path>] [--budget large] [--runner pi] [--value inherit-parent] [--force]
+
+  probe --out-dir <new-dir> [--role <name> ...] [--model <slug> ...]
+        [--roles-file <path>] [--models-file <file>] [--runner pi] [--bin <path>]
+        [--thinking low] [--concurrency 4] [--timeout <ms>] [--workdir <dir>]
 
 Role table defaults to ~/.agents/pstack-models.md, then
 ~/.cursor/rules/pstack-models.mdc. A value in the table is a pstack slug:
@@ -61,6 +75,15 @@ but never decides status. Exit: 0 all arms ok, 1 some arm not ok, 2 invalid.
 doctor checks a role table against the runner's model list and pstack's
 canonical role names. It only reads and reports. Exit: 0 no errors,
 1 findings include errors, 2 invalid.
+
+init writes a valid role table. Every role starts on inherit-parent, which runs
+on the parent chat's model, so the table is usable before you know which models
+this machine can reach. An existing --out needs --force.
+
+probe runs one cheap read-only turn per distinct target and reports which ones
+actually worked. Model ids existing in the model list is not evidence: a provider
+with no subscription answers 403. With no --role and no --model it probes every
+distinct value in the table. Exit: 0 every target ok, 1 some target not ok, 2 invalid.
 `
 
 const STATUS_ORDER = ['ok', 'empty', 'error', 'timeout', 'aborted']
@@ -170,11 +193,78 @@ function parsePlan(rest) {
   return options
 }
 
+function parseInit(rest) {
+  const options = { command: 'init', budget: 'large', runner: 'pi', value: SAFE_ROLE_VALUE, force: false }
+  const seen = new Set()
+  for (let i = 0; i < rest.length; i++) {
+    const flag = rest[i]
+    if (flag === '--force') {
+      options.force = true
+      continue
+    }
+    const key = { '--out': 'out', '--budget': 'budget', '--runner': 'runner', '--value': 'value' }[flag]
+    if (!key) invalid(`Unknown option: ${flag}`)
+    // 不能拿 options 自己判重：budget/runner/value 有默认值，永远存在。
+    if (seen.has(key)) invalid(`Duplicate option: ${flag}`)
+    seen.add(key)
+    options[key] = takeValue(rest, i, flag)
+    i++
+  }
+  if (!options.out) invalid('Missing --out')
+  if (!BUDGET_EFFORT[options.budget]) {
+    invalid(`未知 --budget ${options.budget}（可选：${Object.keys(BUDGET_EFFORT).join(' / ')}）`)
+  }
+  if (!RUNNERS.includes(options.runner)) invalid(`Invalid --runner: ${options.runner}`)
+  return options
+}
+
+function parseProbe(rest) {
+  const options = { command: 'probe', roles: [], models: [] }
+  const allowed = {
+    '--out-dir': 'outDir',
+    '--roles-file': 'rolesFile',
+    '--models-file': 'modelsFile',
+    '--runner': 'runner',
+    '--bin': 'bin',
+    '--thinking': 'thinking',
+    '--concurrency': 'concurrency',
+    '--timeout': 'timeout',
+    '--workdir': 'workdir',
+    '--role': 'role',
+    '--model': 'model',
+  }
+  for (let i = 0; i < rest.length; i++) {
+    const key = allowed[rest[i]]
+    if (!key) invalid(`Unknown option: ${rest[i]}`)
+    const value = takeValue(rest, i, rest[i])
+    if (key === 'role') options.roles.push(value)
+    else if (key === 'model') options.models.push(value)
+    else {
+      if (Object.hasOwn(options, key)) invalid(`Duplicate option: ${rest[i]}`)
+      options[key] = value
+    }
+    i++
+  }
+  if (!options.outDir) invalid('Missing --out-dir')
+  if (options.runner !== undefined && !RUNNERS.includes(options.runner)) {
+    invalid(`Invalid --runner: ${options.runner}`)
+  }
+  for (const key of ['timeout', 'concurrency']) {
+    if (options[key] === undefined) continue
+    const value = Number(options[key])
+    if (!Number.isInteger(value) || value <= 0) invalid(`--${key} must be a positive integer`)
+    options[key] = value
+  }
+  return options
+}
+
 function parseArgs(argv) {
   if (argv.length === 1 && ['--help', '-h'].includes(argv[0])) return { command: 'help' }
   const [command, ...rest] = argv
   if (command === 'run') return parseRun(rest)
   if (command === 'plan') return parsePlan(rest)
+  if (command === 'init') return parseInit(rest)
+  if (command === 'probe') return parseProbe(rest)
   if (command === 'roles') {
     const options = parseFlags(rest, { '--roles-file': 'rolesFile' })
     return { command: 'roles', ...options }
@@ -477,6 +567,107 @@ function listModels(options) {
   return { result: { runner: options.runner, count: models.length, models }, exitCode: 0 }
 }
 
+/** 写一张开箱合法的表：所有角色先钉在父会话模型上。 */
+function init(options) {
+  const out = resolve(options.out)
+  if (existsSync(out) && !options.force) invalid(`--out 已存在：${out}（要覆盖就加 --force）`)
+  writeFileSync(out, renderRoleTable({ budget: options.budget, runner: options.runner, value: options.value }), 'utf8')
+  return {
+    result: {
+      out,
+      budget: options.budget,
+      runner: options.runner,
+      value: options.value,
+      lines: CANONICAL_ROLE_GROUPS.length,
+      roles: CANONICAL_ROLES.length,
+    },
+    exitCode: 0,
+  }
+}
+
+/**
+ * 实测哪些模型真能跑。没有 --role 也没有 --model 时，探表里所有去重后的真实目标。
+ */
+async function probe(options) {
+  const outDir = resolve(options.outDir)
+  requireNewPath(outDir, '--out-dir')
+  const defaultRunner = options.runner || 'pi'
+  const loaded = loadModels(options, defaultRunner)
+  const values = []
+  const candidates = options.models.map((model) => ({ model }))
+  let table = null
+  if (options.roles.length > 0 || options.models.length === 0) {
+    table = readTable(options)
+    if (options.roles.length > 0) {
+      for (const role of options.roles) {
+        const resolved = roleLookup(table, role)
+        if (!resolved) {
+          const names = roleNames(table)
+          invalid(`角色表里没有 “${role}”；候选：${names.length ? names.join(', ') : '(表里没有任何角色)'}`)
+        }
+        values.push(...resolved)
+      }
+    } else {
+      for (const entry of table.entries) values.push(...entry.values)
+    }
+  }
+  const { targets, unresolved } = planProbes({
+    values,
+    candidates,
+    models: loaded.models,
+    runner: defaultRunner,
+    thinking: options.thinking || PROBE_THINKING,
+  })
+  if (targets.length === 0) {
+    return {
+      result: {
+        ok: unresolved.length === 0,
+        outDir,
+        reportFile: null,
+        rolesFile: table ? table.file : null,
+        modelsSource: loaded.source,
+        runner: defaultRunner,
+        note:
+          unresolved.length > 0
+            ? '没有可探测的目标：候选都没能在模型清单里定出 provider。'
+            : '没有可探测的目标：表里全是 inherit-parent，它们跟着父会话模型走。',
+        unresolved,
+        probes: [],
+        usable: [],
+        unusable: [],
+      },
+      exitCode: unresolved.length === 0 ? 0 : 1,
+    }
+  }
+  const outcome = await runProbes({
+    targets,
+    outDir,
+    concurrency: options.concurrency || 4,
+    workdir: options.workdir ? resolve(options.workdir) : process.cwd(),
+    timeoutMs: options.timeout,
+    bin: options.bin,
+  })
+  const reportFile = join(outDir, 'report.jsonl')
+  writeFileSync(reportFile, `${outcome.probes.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8')
+  const ok = outcome.unusable.length === 0 && unresolved.length === 0
+  return {
+    result: {
+      ok,
+      outDir,
+      reportFile,
+      rolesFile: table ? table.file : null,
+      modelsSource: loaded.source,
+      runner: defaultRunner,
+      counts: { ...outcome.summary, unresolved: unresolved.length },
+      unresolved,
+      probes: outcome.probes,
+      usable: outcome.usable,
+      unusable: outcome.unusable,
+    },
+    exitCode: ok ? 0 : 1,
+  }
+}
+
 export async function runCli(argv, io = {}) {
   const stdout = io.stdout || ((text) => process.stdout.write(text))
   const stderr = io.stderr || ((text) => process.stderr.write(text))
@@ -486,16 +677,24 @@ export async function runCli(argv, io = {}) {
       stdout(USAGE)
       return 0
     }
-    const outcome =
-      options.command === 'run'
-        ? await run(options)
-        : options.command === 'plan'
-          ? plan(options)
-          : options.command === 'roles'
-            ? listRoles(options)
-            : options.command === 'doctor'
-              ? doctor(options)
-              : listModels(options)
+    const outcome = await (async () => {
+      switch (options.command) {
+        case 'run':
+          return run(options)
+        case 'probe':
+          return probe(options)
+        case 'plan':
+          return plan(options)
+        case 'roles':
+          return listRoles(options)
+        case 'doctor':
+          return doctor(options)
+        case 'init':
+          return init(options)
+        default:
+          return listModels(options)
+      }
+    })()
     stdout(`${JSON.stringify(outcome.result)}\n`)
     return outcome.exitCode
   } catch (error) {

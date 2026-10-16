@@ -528,6 +528,120 @@ test('嵌套的 --out-dir 会自动建父目录', async () => {
   }
 })
 
+test('init 写出的表直接通过 doctor，且不覆盖已有文件', async () => {
+  const dir = workspace()
+  const out = join(dir, 'fresh.md')
+  const cap = capture()
+  try {
+    const code = await runCli(['init', '--out', out, '--budget', 'medium', '--runner', 'agent'], cap.io)
+    assert.equal(code, 0)
+    const result = JSON.parse(cap.stdout().trim())
+    assert.equal(result.lines, 17)
+    assert.equal(result.roles, 20)
+    const text = readFileSync(out, 'utf8')
+    assert.match(text, /^# budget: medium \(high\)$/m)
+    assert.match(text, /^# runner: agent$/m)
+    assert.equal((text.match(/: inherit-parent$/gm) || []).length, 17)
+
+    const again = capture()
+    assert.equal(await runCli(['init', '--out', out], again.io), 2)
+    assert.match(again.stderr(), /已存在/)
+
+    const bad = capture()
+    assert.equal(await runCli(['init', '--out', join(dir, 'x.md'), '--budget', 'huge'], bad.io), 2)
+    assert.match(bad.stderr(), /未知 --budget huge/)
+
+    // "开箱可用"不是形容词：拿真 doctor 验一遍。
+    const doc = capture()
+    assert.equal(await runCli(['doctor', '--roles-file', out, '--models-file', join(dir, 'models.txt')], doc.io), 0)
+    const report = JSON.parse(doc.stdout().trim())
+    assert.equal(report.ok, true)
+    assert.equal(report.counts.errors, 0)
+    assert.equal(report.counts.warnings, 0)
+    assert.equal(report.roles.length, 17)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('probe 用真跑判定可用性，而不是看清单里有没有', async () => {
+  const dir = workspace()
+  writeFileSync(
+    join(dir, 'picky.mjs'),
+    "const a=process.argv.join(' ')\n" +
+      "if(a.includes('bad-model')){process.stderr.write('no subscription\\n');process.exit(3)}\n" +
+      "process.stdout.write(JSON.stringify({type:'result',subtype:'success',result:'PROBE-OK'})+'\\n')\n" +
+      'process.exit(0)\n',
+  )
+  writeFileSync(join(dir, 'probe-models.txt'), 'provider  model\nalpha     good-model\nbeta      bad-model\n')
+  const outDir = join(dir, 'out probe')
+  const cap = capture()
+  try {
+    const code = await runCli(
+      [
+        'probe', '--out-dir', outDir,
+        '--model', 'alpha/good-model',
+        '--model', 'beta/bad-model',
+        '--runner', 'agent', '--bin', join(dir, 'picky.mjs'),
+        '--models-file', join(dir, 'probe-models.txt'),
+      ],
+      cap.io,
+    )
+    assert.equal(code, 1, '有不可用的目标就该非 0')
+    const result = JSON.parse(cap.stdout().trim())
+    assert.equal(result.ok, false)
+    assert.deepEqual(result.usable.map((item) => item.model), ['good-model'])
+    assert.deepEqual(result.unusable.map((item) => item.model), ['bad-model'])
+    assert.ok(existsSync(result.reportFile))
+    assert.equal(result.probes.length, 2)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('probe 能从表里的角色取目标', async () => {
+  const dir = workspace()
+  const outDir = join(dir, 'out by role')
+  const cap = capture()
+  try {
+    const code = await runCli(
+      [
+        'probe', '--out-dir', outDir, '--role', 'interrogate reviewers',
+        '--runner', 'agent', '--bin', join(dir, 'ok.mjs'), ...rolesArgs(dir),
+      ],
+      cap.io,
+    )
+    assert.equal(code, 0)
+    const result = JSON.parse(cap.stdout().trim())
+    assert.deepEqual(result.usable.map((item) => item.model), ['model-a', 'model-b'])
+    assert.equal(result.unresolved.length, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('probe 对全 inherit-parent 的表没有可探目标，也不建目录', async () => {
+  const dir = workspace()
+  writeFileSync(join(dir, 'all-alias.md'), '# budget: large (xhigh)\n# runner: pi\nfeature, refactoring: inherit-parent\n')
+  const outDir = join(dir, 'out alias')
+  const cap = capture()
+  try {
+    const code = await runCli(
+      ['probe', '--out-dir', outDir, '--roles-file', join(dir, 'all-alias.md'), '--models-file', join(dir, 'models.txt')],
+      cap.io,
+    )
+    assert.equal(code, 0)
+    const result = JSON.parse(cap.stdout().trim())
+    assert.equal(result.ok, true)
+    assert.equal(result.probes.length, 0)
+    assert.equal(result.reportFile, null)
+    assert.match(result.note, /inherit-parent/)
+    assert.equal(existsSync(outDir), false, '没探就不该建目录')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('doctor：角色表不存在时报 no-role-file，不倒过来报 ok', async () => {
   const dir = workspace()
   const saved = process.env.USERPROFILE

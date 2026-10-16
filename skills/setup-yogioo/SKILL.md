@@ -1,26 +1,27 @@
 ---
 name: setup-yogioo
-description: Post-install setup for Yogioo's agent toolkit. Runs pstack's model setup, then validates the role table with `agent-tools subagent doctor` and fixes what it reports. Use after installing the toolkit, after `/setup-pstack`, when a subagent arm fails on an unknown model, or for "set up my toolkit".
+description: Post-install setup for Yogioo's agent toolkit. Writes a valid pstack role table for this harness, probes which models actually work, then verifies with `agent-tools subagent doctor`.
+disable-model-invocation: true
 ---
 
 # Setup Yogioo
 
-Two steps, in this order. First let pstack choose the roles, then let the toolkit
-check that the table it wrote can actually run.
+Configure the toolkit for this machine, in this order: pick the runner, write a
+table that is valid before you know which models work, probe the models you want,
+then verify.
 
-**Use when:** the toolkit was just installed, `/setup-pstack` was just run or
-re-run, an arm failed with an unknown model or an ambiguous provider, or the user
-asks to set up this toolkit.
+**Use when:** the toolkit was just installed, an arm failed with an unknown model,
+a 403, or an ambiguous provider, or the user asks to set up this toolkit.
 
-**Do not use for:** choosing the budget or the per-role models. That is pstack's
-job, and this skill must not duplicate it.
+**Do not use for:** inventing a model mapping. Which roles need which model
+strength comes from pstack. Which models actually work comes from `probe`.
 
 ## 1. Keep this skill current
 
 This skill is either a local checkout or a copy the skills CLI installed. Tell the
 two apart before touching anything. `npx skills add` replaces an existing symlink
 with a real directory, so running it on a development junction silently cuts the
-skill off from the checkout that was feeding it.
+skill off from the checkout feeding it.
 
 Resolve the path this SKILL.md was loaded from (usually
 `~/.agents/skills/setup-yogioo`, but a project `.pi/skills` or a plugin directory
@@ -53,38 +54,96 @@ If that fails, install it from the local checkout and stop if it still fails.
 npm install -g C:\projects\agent-skills
 ```
 
-## 3. Let pstack write the role table
+## 3. Ask three things before writing anything
 
-Invoke `/setup-pstack` and let it run its own steps. It writes
-`~/.agents/pstack-models.md` in a non-Cursor harness, and it is the only thing
-that should decide the budget and the per-role models. `large` is pstack's
-default budget.
+Ask these together, once. Do not decide any of them for the user.
 
-With no pstack installed, write the table yourself rather than skipping this
-step, because every later step checks it. `agent-tools subagent models` lists the
-real rows and doctor's `missing-roles` lists the canonical role names. Start from
-`# budget: large (xhigh)` and `# runner: pi`, then let doctor verify each line.
+**Runner.** Which CLI should the arms run on: `pi`, `codex` or `agent`. pstack has
+no concept of this, so nothing else will ask. The runner decides which model list
+is authoritative and which sandbox modes exist. It is recorded as `# runner:` and
+defaults to `pi`.
 
-## 4. Check the table
+**Budget.** Which reasoning budget: `unlimited` (max), `large` (xhigh, pstack's
+default), `medium` (high) or `small` (medium). This rewrites the effort token on
+every role, so it is the user's call, not yours.
+
+**Models.** Whether to use this chat's model for every role, or to probe real
+models and assign them per role. The default answer is this chat's model, written
+as `inherit-parent`. It needs no probe, costs nothing extra, and cannot 403.
+
+Two things are not evidence that a model works, and must never be presented as if
+they were:
+
+- The id appearing in `agent-tools subagent models`.
+- A credential existing in the harness's auth store.
+
+Both were true on this machine for two models that answer 403: one provider has no
+subscription, the other refuses the request outright. Only `probe` decides.
+
+## 4. Write a valid table
+
+Write the skeleton first, so the table is valid before any model is chosen:
+
+```powershell
+agent-tools subagent init --out $HOME\.agents\pstack-models.md --budget large --runner pi
+```
+
+Every role starts on `inherit-parent`, and `doctor` passes it with no errors. Add
+`--force` only to overwrite an existing table.
+
+pstack's own `/setup-pstack` writes this same file, and it is worth running when
+the user wants pstack's intent for which role needs which strength. Its default
+values are Cursor-shaped (`claude-opus-5-5-xhigh`), which do not exist in this
+harness, so treat its output as a list of roles to fill in, never as a table to
+keep. Probe before writing any real model it names.
+
+## 5. Probe before assigning a real model
+
+A model may be written into the table only if `probe` returned it in `usable`
+during this session.
+
+```powershell
+agent-tools subagent probe --out-dir cache\setup-probe `
+  --model <provider>/<model> --model <provider>/<model>
+```
+
+Probe the model this chat runs on first: it is the one target already known to
+work (`PI_PROVIDER` and `PI_MODEL` name it in pi). Then probe the candidates the
+user cares about. Read `usable` and
+`unusable` from the output; `unusable` carries the provider's own error, which is
+the reason to report. Exit 1 just means some candidate failed, which is the normal
+outcome of probing and is not a failure of this step.
+
+Probe spends one cheap read-only turn per distinct target, deduplicated, at the
+lowest reasoning level.
+
+## 6. Upgrade roles from the probed list
+
+Edit `~/.agents/pstack-models.md`, one line per role, using only values from
+`usable`. Write a real model as `<provider>/<model>-<effort>`. The provider prefix
+is not decoration: a bare model id that several providers serve is rejected, and a
+bare id that one provider serves can still be fuzzy-matched to another.
+
+Panel roles (`arena runners`, `arena cross-judge pool`, `architect runners`,
+`interrogate reviewers`) take one entry per model and should span providers.
+
+Leave a role on `inherit-parent` when nothing was probed for it. That is a correct
+end state, not an unfinished one.
+
+## 7. Check the table
 
 ```powershell
 agent-tools subagent doctor
 ```
 
-Exit 0 means no errors. Exit 1 means the table has errors, and every one of them
-is a run that would fail or misroute. Read the findings, do not skim them.
-
-A `no-role-file` finding means there is no table to check at all. Stop and go back
-to step 3. Do not report success from an empty check.
-
-## 5. Fix what it reports
-
-Change only the named line. Then run doctor again until it exits 0.
+Exit 0 means no errors. Exit 1 means the table has errors, and every one of them is
+a run that would fail or misroute. Fix, then run doctor again until it exits 0.
 
 | Finding | What to do |
 | --- | --- |
-| `unknown-model` | Pick a real row from `agent-tools subagent models` and rewrite that line. |
-| `ambiguous-provider` | Write it as `<provider>/<model>-<effort>`. Without a provider the harness fuzzy-matches and can route to another vendor. |
+| `no-role-file` | The table does not exist. Go back to step 4. Nothing else can be checked until it exists. |
+| `unknown-model` | Pick a real row from `agent-tools subagent models`, or fall back to `inherit-parent`. |
+| `ambiguous-provider` | Write it as `<provider>/<model>-<effort>`. A bare id can fuzzy-match to another vendor. |
 | `unknown-role` | Delete the line, or rename it to a canonical role from `missing-roles`. |
 | `duplicate-role` | Delete the later line. The first one wins, so the later one is dead. |
 | `below-budget` | Raise the effort to what the budget asks, or change the `# budget:` line if the lower effort is deliberate. |
@@ -92,25 +151,26 @@ Change only the named line. Then run doctor again until it exits 0.
 | `panel-duplicate`, `panel-same-provider` | Give each panel entry a different vendor. A panel of one family is not a panel. |
 | `no-model-list` | The runner could not list models. Check `pi --list-models` by hand, or pass `--models-file`. |
 | `bad-line` | Fix that line to `<role>: <value>`. |
-| `no-role-file` | The table does not exist. Run `/setup-pstack`, or pass `--roles-file`. Nothing else can be checked until it exists. |
 | `no-budget`, `unknown-budget` | Add or correct the `# budget:` line. |
-| `missing-roles` | Information only. Those roles fall back to the skill defaults. Add them to pin them. |
+| `missing-roles` | Information only. Those roles fall back to the skill defaults. |
 
-## 6. Prove one arm runs
+## 8. Prove one arm runs
 
 A clean doctor proves the table parses. It does not prove the runner and the
 credentials work. Spend one cheap turn on it.
 
 ```powershell
 agent-tools subagent run --role "swarm workers" --prompt-file <a one-line brief> `
-  --out-dir cache/setup-smoke --sandbox read-only
+  --out-dir cache\setup-smoke --sandbox read-only
 ```
 
 Read `status` in the output. `ok` means the arm produced text. Anything else is a
-failed setup, and the arm's `events.jsonl` names the reason.
+failed setup, and the arm's `events.jsonl` names the reason. This step is also the
+first real check of credentials, which is why a probed model in the table matters.
 
-## 7. Report
+## 9. Report
 
-Name the file written, the budget, each role as `provider/model@effort`, every
-finding that was fixed, and the smoke arm's status. If a line was left alone on
-purpose, say which and why.
+Name the runner, the budget, the file written, each role as
+`provider/model@effort` or `inherit-parent`, every probed target with its result,
+every finding that was fixed, and the smoke arm's status. Say which roles were
+left on `inherit-parent` on purpose.
