@@ -68,9 +68,14 @@ Write the choice into the value:
 
 | Value | Runs on |
 | --- | --- |
-| `cursor:composer-2.5` | the Cursor CLI (`cursor` is an alias for `agent`) |
+| `cursor:auto` | the Cursor CLI (`cursor` is an alias for `agent`) |
 | `codex:gpt-5.1-codex-xhigh` | the Codex CLI |
 | `opencode-go/grok-4.7-xhigh` | whatever `# runner:` names, here `pi` |
+
+If the user wants Cursor, write `cursor:auto` and move on. That is Cursor's own
+default model, so there is nothing to choose and nothing to keep in step with
+their subscription. Name a specific variant (`cursor:gpt-5.3-codex-high`) only
+when the user asks for one.
 
 The three do not behave alike, so the shape of a value differs:
 
@@ -82,8 +87,11 @@ The three do not behave alike, so the shape of a value differs:
 
 Never write an effort suffix on a Cursor value: `gpt-5.3-codex-xhigh` is one model
 id, and splitting it would spend the quota on a different model than the one the
-user picked. `cursor:auto` is Cursor's own `auto` model; a bare `auto` is the
-"run on this chat's model" alias.
+user picked.
+
+`auto` has two meanings, and the prefix decides which. A bare `auto` is the "run on
+this chat's model" alias; `cursor:auto` is Cursor's own `auto` model, which is what
+you want when the role should spend Cursor credits.
 
 **Budget.** Which reasoning budget: `unlimited` (max), `large` (xhigh, pstack's
 default), `medium` (high) or `small` (medium). This rewrites the effort token on
@@ -147,7 +155,7 @@ leaves every other line and the order alone.
 
 ```powershell
 agent-tools subagent set --role "interrogate reviewers" `
-  --value "cursor:claude-opus-5-thinking-high, commandcode/deepseek/deepseek-v4.1-flash-xhigh"
+  --value "cursor:auto, commandcode/deepseek/deepseek-v4.1-flash-xhigh"
 ```
 
 Then read the pool split back: `agent-tools subagent plan --role ...` reports

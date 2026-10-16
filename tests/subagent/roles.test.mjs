@@ -84,6 +84,8 @@ test('effortParam 为 null 的 runner：整串就是模型 id，但别名仍然�
   // 别名是“跟父会话模型”的说法，任何 runner 下都得能用。要拿同名的字面模型得写 `<runner>:auto`。
   assert.equal(parseSlug('auto', { effortParam: null }).alias, true)
   assert.equal(parseSlug('inherit-parent', { effortParam: null }).alias, true)
+  // 但是带 runner 前缀就是在指名那个 CLI 自己的模型，不再是别名。
+  assert.equal(parseSlug('auto', { effortParam: null, aliasAllowed: false }).model, 'auto')
   assert.equal(splitRunnerPrefix('cursor:auto', describeRunnerInRegistry).rest, 'auto', '前缀留给了字面模型 id')
 })
 
@@ -202,6 +204,23 @@ test('枚举型 runner 忽略值里的 effort 后缀，但显式覆盖仍然作�
   })
   assert.equal(withOverride.thinking, 'low', '人明确要的档位不能被规则吞掉')
   assert.equal(withOverride.sources.thinking, 'override')
+})
+
+test('cursor:auto 是 Cursor 自己的 auto 模型，裸 auto 是别名', () => {
+  const literal = resolveArm({ role: 'r', values: ['cursor:auto'], defaultRunner: 'pi' })
+  assert.equal(literal.runner, 'agent')
+  assert.equal(literal.alias, false, '带了前缀就不是别名')
+  assert.equal(literal.model, 'auto')
+
+  const alias = resolveArm({ role: 'r', values: ['auto'], defaultRunner: 'agent' })
+  assert.equal(alias.alias, true)
+  assert.equal(alias.model, undefined)
+  assert.equal(alias.runner, 'agent')
+
+  // 显式覆盖比别名强：调用方明说了 --model，不该被表里的别名呑掉
+  const overridden = resolveArm({ role: 'r', values: ['auto'], override: { model: 'x' }, defaultRunner: 'pi' })
+  assert.equal(overridden.model, 'x')
+  assert.equal(overridden.sources.model, 'override')
 })
 
 test('resolveArm 面板按取值顺序分派，超出就回环', () => {

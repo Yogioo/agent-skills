@@ -34,10 +34,10 @@ agent-tools subagent run --manifest arms.json --out-dir cache/review-1
 agent-tools subagent plan --role "interrogate reviewers"
 
 # which models actually answer, one cheap read-only turn each
-agent-tools subagent probe --out-dir cache/probe-1 --model cursor:composer-2.5
+agent-tools subagent probe --out-dir cache/probe-1 --model cursor:auto
 
 # change one role without hand-editing the table
-agent-tools subagent set --role "swarm workers" --value "cursor:composer-2.5"
+agent-tools subagent set --role "swarm workers" --value "cursor:auto"
 ```
 
 Every command prints one JSON object. `run` also writes `<out-dir>/report.jsonl`,
@@ -56,6 +56,10 @@ some credits cannot be reached any other way. Write it as a prefix:
 `cursor` is an alias for `agent`. A value with no prefix runs on the table's
 `# runner:`. A leading word is only read as a runner when it names one, so a model
 id that contains a colon stays intact.
+
+Cursor is the simple case: `cursor:auto` is Cursor's own default model, so for it
+nothing has to be chosen or kept in step with a subscription. Name a variant
+(`cursor:gpt-5.3-codex-high`) only when there is a reason to.
 
 | Runner | Effort | Provider |
 | --- | --- | --- |
@@ -76,6 +80,10 @@ spending any of it.
 `status` is the verdict, not `exitCode`. Usage is reported only by the runners that
 report it: a `pi` arm carries `tokens` and `cost`, a Cursor arm carries neither, so
 an absent `cost` means unmeasured rather than free.
+
+Every non-`ok` arm carries an `errorMessage`. When the CLI itself never reported a
+reason, the tail of its stderr is used, and the whole of it is in that arm's
+`log.txt`. So a failed arm is never a dead end.
 
 ## Mapping pstack's words to this command
 

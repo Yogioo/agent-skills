@@ -79,9 +79,12 @@ several quota pools:
 ```
 # runner: pi
 how explorer: opencode-go/grok-4.7-xhigh
-judgment and prose: cursor:claude-opus-5-thinking-high
+judgment and prose: cursor:auto
 swarm workers: codex:gpt-5.1-codex-xhigh
 ```
+
+For Cursor, `cursor:auto` is the whole story: it is Cursor's own default model, so
+nothing has to be chosen or kept in step with a subscription.
 
 Adding a fourth CLI means one entry in `CAPABILITIES`
 (`lib/agent-run/runners/index.mjs`) and a `createRunner` case. Everything else

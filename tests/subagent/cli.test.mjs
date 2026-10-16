@@ -267,6 +267,8 @@ test('run 把空产出与子进程失败都判成不过，退出 1', async () =>
   const record = JSON.parse(readFileSync(boomResult.reportFile, 'utf8').trim())
   assert.equal(record.exitCode, 3, 'exitCode 只上报')
   assert.equal(record.status, 'error', 'status 由证据决定，不由 exitCode 决定')
+  assert.match(record.errorMessage, /boom/, '失败必须带上一个可读的原因，不能只给一个 error')
+  assert.equal(boomResult.arms[0].errorMessage, record.errorMessage)
 
   rmSync(dir, { recursive: true, force: true })
 })

@@ -126,6 +126,20 @@ test('没有角色表时报 error，不让 ok 变假', () => {
   assert.match(item.message, /a\.md \/ b\.md/)
 })
 
+test('裸 auto 在枚举型 runner 下仍按别名处理，清单里真有同名模型就提醒', () => {
+  const models = parseModelList('provider model\nx auto\n')
+  const report = diagnose({
+    table: parseRoleTable('# budget: large (xhigh)\n# runner: agent\nswarm workers: auto\n'),
+    lists: { agent: { models, source: 'fixture' } },
+    runner: 'agent',
+    rolesFile: 'x.md',
+  })
+  const [item] = of(report, 'alias-shadowed')
+  assert.equal(item.level, 'warning')
+  assert.match(item.message, /agent:auto/, '告诉人怎么写那个字面模型')
+  assert.equal(report.roles[0].values[0].alias, true, '裸 auto 仍然是别名')
+})
+
 test('缺预算行、缺规范角色都是可读的提示', () => {
   const report = check('feature: grok-4.6-xhigh\n')
   assert.equal(of(report, 'no-budget').length, 1)
