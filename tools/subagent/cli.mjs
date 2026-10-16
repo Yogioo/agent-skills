@@ -210,7 +210,7 @@ function readTable(options) {
   const loaded = loadRoleTable({ file: options.rolesFile })
   if (options.rolesFile && !loaded.file) invalid(`找不到角色表：${options.rolesFile}`)
   const table = parseRoleTable(loaded.text)
-  return { ...table, file: loaded.file }
+  return { ...table, file: loaded.file, tried: loaded.tried }
 }
 
 /** Windows 上 npm 装的是 .cmd/.ps1 壳，直接 spawn 会 EINVAL；用仓库已有的解析器。 */
@@ -455,6 +455,7 @@ function doctor(options) {
     modelsSource: loaded.source,
     modelsError: loaded.error,
     parseErrors: table.errors,
+    triedPaths: table.tried,
   })
   return { result: { ...report, formatFailures: report.findings.filter((item) => item.level !== 'info').length }, exitCode: report.ok ? 0 : 1 }
 }

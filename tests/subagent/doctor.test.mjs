@@ -115,6 +115,15 @@ test('表里的坏行也算 error，并带上行号', () => {
   assert.equal(of(report, 'bad-line').length, 1)
 })
 
+test('没有角色表时报 error，不让 ok 变假', () => {
+  const report = diagnose({ table: parseRoleTable(''), models: MODELS, runner: 'pi', triedPaths: ['a.md', 'b.md'] })
+  assert.equal(report.ok, false)
+  assert.equal(report.counts.roles, 0)
+  const [item] = of(report, 'no-role-file')
+  assert.equal(item.level, 'error')
+  assert.match(item.message, /a\.md \/ b\.md/)
+})
+
 test('缺预算行、缺规范角色都是可读的提示', () => {
   const report = check('feature: grok-4.6-xhigh\n')
   assert.equal(of(report, 'no-budget').length, 1)

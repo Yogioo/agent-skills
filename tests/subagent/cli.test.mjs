@@ -528,6 +528,27 @@ test('嵌套的 --out-dir 会自动建父目录', async () => {
   }
 })
 
+test('doctor：角色表不存在时报 no-role-file，不倒过来报 ok', async () => {
+  const dir = workspace()
+  const saved = process.env.USERPROFILE
+  const emptyHome = join(dir, 'empty-home')
+  mkdirSync(emptyHome, { recursive: true })
+  process.env.USERPROFILE = emptyHome
+  const cap = capture()
+  try {
+    const code = await runCli(['doctor', '--models-file', join(dir, 'models.txt'), '--runner', 'pi'], cap.io)
+    assert.equal(code, 1)
+    const report = JSON.parse(cap.stdout().trim())
+    assert.equal(report.rolesFile, null)
+    assert.equal(report.ok, false)
+    assert.equal(report.findings.some((item) => item.code === 'no-role-file'), true)
+  } finally {
+    if (saved === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = saved
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('doctor：拿不到模型清单时报 error，不顺下去', async () => {
   const dir = workspace()
   const cap = capture()
