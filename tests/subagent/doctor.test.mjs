@@ -40,12 +40,14 @@ cheap: auto
   // provider 前缀被拆开，裸 id 靠唯一匹配定
   assert.deepEqual(report.roles[0].values[0], {
     value: 'grok/grok-4.6-xhigh',
+    runner: 'pi',
     alias: false,
     model: 'grok-4.6',
     provider: 'grok',
     providerSource: 'prefix',
     thinking: 'xhigh',
     fast: false,
+    verbatim: false,
     verified: true,
   })
   assert.equal(report.roles[1].values[0].provider, 'grok')
@@ -90,10 +92,10 @@ test('effort 低于预算、以及 -fast 都会被点出来', () => {
   assert.equal(of(report, 'fast-unsupported').length, 1)
 })
 
-test('面板里重复的模型和单一 provider 都会被点出来', () => {
+test('面板里重复的模型和单一厂商都会被点出来', () => {
   const report = check('# budget: large (xhigh)\ninterrogate reviewers: grok/grok-4.6-xhigh, grok-4.6-xhigh, grok-4.6-medium\n')
   assert.equal(of(report, 'panel-duplicate').length, 2, '后两个都跟第一个撞车')
-  assert.equal(of(report, 'panel-same-provider').length, 1)
+  assert.equal(of(report, 'panel-same-vendor').length, 1)
 })
 
 test('拿不到模型清单时报 error，不假装绿，也不派生假警报', () => {

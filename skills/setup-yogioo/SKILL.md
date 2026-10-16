@@ -58,10 +58,32 @@ npm install -g C:\projects\agent-skills
 
 Ask these together, once. Do not decide any of them for the user.
 
-**Runner.** Which CLI should the arms run on: `pi`, `codex` or `agent`. pstack has
-no concept of this, so nothing else will ask. The runner decides which model list
-is authoritative and which sandbox modes exist. It is recorded as `# runner:` and
-defaults to `pi`.
+**Runner.** Which CLI should the arms run on: `pi`, `codex` or `agent` (Cursor).
+Ask **per role family**, not once, because the three CLIs spend three different
+quota pools, and one of them cannot be reached any other way: a Cursor
+subscription is not a provider `pi` can route to, so Cursor credits can only be
+spent by running the Cursor CLI.
+
+Write the choice into the value:
+
+| Value | Runs on |
+| --- | --- |
+| `cursor:composer-2.5` | the Cursor CLI (`cursor` is an alias for `agent`) |
+| `codex:gpt-5.1-codex-xhigh` | the Codex CLI |
+| `opencode-go/grok-4.7-xhigh` | whatever `# runner:` names, here `pi` |
+
+The three do not behave alike, so the shape of a value differs:
+
+| Runner | Models come from | Reasoning effort | Provider |
+| --- | --- | --- | --- |
+| `pi` | `pi --list-models` | a separate flag, so write the `-xhigh` suffix | has providers |
+| `codex` | nothing to list, probe is the only check | a separate parameter | no providers |
+| `agent` / `cursor` | `agent --list-models` | part of the model id, so write the id whole | no providers |
+
+Never write an effort suffix on a Cursor value: `gpt-5.3-codex-xhigh` is one model
+id, and splitting it would spend the quota on a different model than the one the
+user picked. `cursor:auto` is Cursor's own `auto` model; a bare `auto` is the
+"run on this chat's model" alias.
 
 **Budget.** Which reasoning budget: `unlimited` (max), `large` (xhigh, pstack's
 default), `medium` (high) or `small` (medium). This rewrites the effort token on
@@ -119,10 +141,18 @@ lowest reasoning level.
 
 ## 6. Upgrade roles from the probed list
 
-Edit `~/.agents/pstack-models.md`, one line per role, using only values from
-`usable`. Write a real model as `<provider>/<model>-<effort>`. The provider prefix
-is not decoration: a bare model id that several providers serve is rejected, and a
-bare id that one provider serves can still be fuzzy-matched to another.
+Edit `~/.agents/pstack-models.md`. Prefer `set` over rewriting the file by hand:
+it touches only the roles you name, splits a shared line when it has to, and
+leaves every other line and the order alone.
+
+```powershell
+agent-tools subagent set --role "interrogate reviewers" `
+  --value "cursor:claude-opus-5-thinking-high, commandcode/deepseek/deepseek-v4.1-flash-xhigh"
+```
+
+Then read the pool split back: `agent-tools subagent plan --role ...` reports
+`byRunner`, which says how many arms each CLI will spend. Use only values from
+`usable`, in a shape that runner accepts (the table in step 3).
 
 Panel roles (`arena runners`, `arena cross-judge pool`, `architect runners`,
 `interrogate reviewers`) take one entry per model and should span providers.
@@ -143,12 +173,15 @@ a run that would fail or misroute. Fix, then run doctor again until it exits 0.
 | --- | --- |
 | `no-role-file` | The table does not exist. Go back to step 4. Nothing else can be checked until it exists. |
 | `unknown-model` | Pick a real row from `agent-tools subagent models`, or fall back to `inherit-parent`. |
+| `unverified-runner` | That CLI has no model list to check against (Codex). Probe the role, or leave it undecided. |
+| `provider-unsupported` | The runner has no provider concept. Drop the `<provider>/` prefix. |
+| `alias-shadowed` | `auto` is also a real model id there. Write `<runner>:auto` for the literal model, or `pi:auto` for the alias. |
 | `ambiguous-provider` | Write it as `<provider>/<model>-<effort>`. A bare id can fuzzy-match to another vendor. |
 | `unknown-role` | Delete the line, or rename it to a canonical role from `missing-roles`. |
 | `duplicate-role` | Delete the later line. The first one wins, so the later one is dead. |
 | `below-budget` | Raise the effort to what the budget asks, or change the `# budget:` line if the lower effort is deliberate. |
 | `fast-unsupported` | Drop the `-fast` suffix. No runner here has a speed mode. |
-| `panel-duplicate`, `panel-same-provider` | Give each panel entry a different vendor. A panel of one family is not a panel. |
+| `panel-duplicate`, `panel-same-vendor` | Give each panel entry a different vendor. A panel of one family is not a panel. |
 | `no-model-list` | The runner could not list models. Check `pi --list-models` by hand, or pass `--models-file`. |
 | `bad-line` | Fix that line to `<role>: <value>`. |
 | `no-budget`, `unknown-budget` | Add or correct the `# budget:` line. |

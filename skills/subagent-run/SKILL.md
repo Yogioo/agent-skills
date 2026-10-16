@@ -21,23 +21,61 @@ It never means the work is correct.
 ## Command
 
 ```powershell
-agent-tools subagent roles|plan|run ...
+agent-tools subagent roles|plan|run|probe|doctor|init|set ...
 
 # one arm
 agent-tools subagent run --role "how explorer" --prompt-file brief.md `
   --out-dir cache/run-1 --sandbox read-only
 
-# a panel or a fan-out: one arm per brief, optionally one model per arm
+# a panel or a fan-out: one arm per brief, optionally one model or CLI per arm
 agent-tools subagent run --manifest arms.json --out-dir cache/review-1
 
-# resolve without spawning, to check the table and the model routing
+# resolve without spawning: the table, the routing, and how each pool is spent
 agent-tools subagent plan --role "interrogate reviewers"
-agent-tools subagent roles
+
+# which models actually answer, one cheap read-only turn each
+agent-tools subagent probe --out-dir cache/probe-1 --model cursor:composer-2.5
+
+# change one role without hand-editing the table
+agent-tools subagent set --role "swarm workers" --value "cursor:composer-2.5"
 ```
 
 Every command prints one JSON object. `run` also writes `<out-dir>/report.jsonl`,
 one record per arm, and `<out-dir>/<label>/` holds that arm's `output.txt`,
 `events.jsonl` and `log.txt`.
+
+## Which CLI runs an arm
+
+Each role can name its own CLI, because each CLI spends a different quota pool and
+some credits cannot be reached any other way. Write it as a prefix:
+
+```
+<value> := [<runner>:]<model>[-<effort>]
+```
+
+`cursor` is an alias for `agent`. A value with no prefix runs on the table's
+`# runner:`. A leading word is only read as a runner when it names one, so a model
+id that contains a colon stays intact.
+
+| Runner | Effort | Provider |
+| --- | --- | --- |
+| `pi` | split off the value's `-xhigh` suffix and passed as a flag | has providers, resolved from `pi --list-models` |
+| `codex` | split off and passed as a parameter | none |
+| `agent` (alias `cursor`) | **part of the model id**: write it whole, or you spend quota on another model | none |
+
+Two things the runner decides, not the caller: which model list is authoritative,
+and whether a value is passed through untouched. `agent` has no separate effort
+parameter, so `cursor:gpt-5.3-codex-xhigh` is passed as one string, and an explicit
+`--thinking` is the only way to move its level.
+
+`plan` prints `byRunner`, so you can see how many arms each pool will spend before
+spending any of it.
+
+## Reading the result
+
+`status` is the verdict, not `exitCode`. Usage is reported only by the runners that
+report it: a `pi` arm carries `tokens` and `cost`, a Cursor arm carries neither, so
+an absent `cost` means unmeasured rather than free.
 
 ## Mapping pstack's words to this command
 

@@ -70,6 +70,31 @@ agent-tools questionnaire serve --help   # or: poll --help
 agent-tools xlsx-cell-diff --help
 ```
 
+## Runners
+
+`agent-tools subagent` runs each arm on a CLI: `pi`, `codex`, or `agent` (Cursor).
+A role names its own runner in the role table, so one table can spread work across
+several quota pools:
+
+```
+# runner: pi
+how explorer: opencode-go/grok-4.7-xhigh
+judgment and prose: cursor:claude-opus-5-thinking-high
+swarm workers: codex:gpt-5.1-codex-xhigh
+```
+
+Adding a fourth CLI means one entry in `CAPABILITIES`
+(`lib/agent-run/runners/index.mjs`) and a `createRunner` case. Everything else
+reads that declaration: the aliases that name the runner, whether reasoning effort
+is a separate parameter or part of the model id, whether it has providers, and how
+it lists its own models. `lib/subagent` receives the declaration as an argument, so
+it hardcodes no runner names.
+
+`agent-tools subagent doctor` checks every value against its own runner's model
+list, and `probe` spends one cheap read-only turn per distinct target to find out
+which ones actually answer. An id that exists is not an id that works: a provider
+with no subscription answers 403.
+
 ## Skills
 
 Skills are routing instructions for an agent. The six toolkit wrappers call the

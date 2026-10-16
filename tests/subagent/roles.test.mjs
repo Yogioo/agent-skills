@@ -8,11 +8,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  describeRunnerInRegistry,
   parseSlug,
   parseRoleTable,
   roleLookup,
   roleNames,
   resolveArm,
+  splitRunnerPrefix,
 } from '../../lib/subagent/roles.mjs'
 import { parseModelList, resolveProvider, classifyTurn, summarize } from '../../lib/subagent/turns.mjs'
 
@@ -39,6 +41,7 @@ test('parseSlug 把 effort 从最后一段拆出来，或从 -fast 前一段拆'
     model: 'grok-4.7',
     thinking: 'xhigh',
     fast: true,
+    verbatim: false,
   })
   assert.deepEqual(parseSlug('claude-opus-5-5-xhigh'), {
     slug: 'claude-opus-5-5-xhigh',
@@ -46,6 +49,7 @@ test('parseSlug 把 effort 从最后一段拆出来，或从 -fast 前一段拆'
     model: 'claude-opus-5-5',
     thinking: 'xhigh',
     fast: false,
+    verbatim: false,
   })
   assert.equal(parseSlug('claude-opus-5-5-max').thinking, 'max')
 })
@@ -57,6 +61,7 @@ test('parseSlug 不碰 flash、版本号与含 / 的模型 id', () => {
     model: 'deepseek/deepseek-v4.1-flash',
     thinking: undefined,
     fast: false,
+    verbatim: false,
   })
   assert.deepEqual(parseSlug('grok-composer-2.5-fast'), {
     slug: 'grok-composer-2.5-fast',
@@ -64,8 +69,42 @@ test('parseSlug 不碰 flash、版本号与含 / 的模型 id', () => {
     model: 'grok-composer-2.5',
     thinking: undefined,
     fast: true,
+    verbatim: false,
   })
   assert.equal(parseSlug('gpt-4').model, 'gpt-4')
+})
+
+test('effortParam 为 null 的 runner：整串就是模型 id，但别名仍然是别名', () => {
+  const parsed = parseSlug('gpt-5.3-codex-xhigh', { effortParam: null })
+  assert.equal(parsed.model, 'gpt-5.3-codex-xhigh', '拆了就等于拿钱去跑另一个模型')
+  assert.equal(parsed.thinking, undefined)
+  assert.equal(parsed.fast, false)
+  assert.equal(parsed.verbatim, true)
+  assert.equal(parseSlug('claude-opus-5-thinking-high-fast', { effortParam: null }).model, 'claude-opus-5-thinking-high-fast')
+  // 别名是“跟父会话模型”的说法，任何 runner 下都得能用。要拿同名的字面模型得写 `<runner>:auto`。
+  assert.equal(parseSlug('auto', { effortParam: null }).alias, true)
+  assert.equal(parseSlug('inherit-parent', { effortParam: null }).alias, true)
+  assert.equal(splitRunnerPrefix('cursor:auto', describeRunnerInRegistry).rest, 'auto', '前缀留给了字面模型 id')
+})
+
+test('splitRunnerPrefix 只认认得出的 runner 名，不误拆模型 id 里的冒号', () => {
+  assert.deepEqual(splitRunnerPrefix('pi:opencode-go/grok-4.7-xhigh'), {
+    runner: 'pi',
+    rest: 'opencode-go/grok-4.7-xhigh',
+    explicit: true,
+  })
+  assert.deepEqual(splitRunnerPrefix('cursor:gpt-5.3-codex-xhigh'), {
+    runner: 'agent',
+    rest: 'gpt-5.3-codex-xhigh',
+    explicit: true,
+  })
+  // 首段不是 runner 名：整串当模型 id，包括它自己的冒号
+  const batch = splitRunnerPrefix('anthropic/claude-opus-5.5:batch')
+  assert.equal(batch.explicit, false)
+  assert.equal(batch.rest, 'anthropic/claude-opus-5.5:batch')
+  const bare = splitRunnerPrefix('opencode-go/grok-4.7-xhigh')
+  assert.equal(bare.explicit, false)
+  assert.equal(bare.rest, 'opencode-go/grok-4.7-xhigh')
 })
 
 test('parseSlug 认识两个别名', () => {
@@ -107,12 +146,12 @@ test('parseRoleTable 收下 CRLF、空值与坏行', () => {
   assert.equal(table.errors[1].includes('没有取值'), true)
 })
 
-test('resolveArm 优先级：显式覆盖 > 角色表 > 默认', () => {
+test('resolveArm 优先级：显式覆盖 > 值里的 runner 前缀 > 默认', () => {
   const table = parseRoleTable(TABLE)
-  const fromRole = resolveArm({ role: 'how explorer', values: roleLookup(table, 'how explorer') })
+  const fromRole = resolveArm({ role: 'how explorer', values: roleLookup(table, 'how explorer'), defaultRunner: 'pi' })
   assert.equal(fromRole.model, 'claude-opus-5-5')
   assert.equal(fromRole.thinking, 'xhigh')
-  assert.equal(fromRole.runner, 'agent')
+  assert.equal(fromRole.runner, 'pi')
   assert.equal(fromRole.sources.model, 'role')
   assert.equal(fromRole.sources.runner, 'default')
 
@@ -128,13 +167,50 @@ test('resolveArm 优先级：显式覆盖 > 角色表 > 默认', () => {
   assert.equal(overridden.sources.model, 'override')
 })
 
+test('值里的 runner 前缀生效，且显式 runner 能盖过它', () => {
+  const values = ['cursor:composer-2.5', 'pi:opencode-go/grok-4.7-xhigh']
+  const cursor = resolveArm({ role: 'r', values, index: 0, defaultRunner: 'pi' })
+  assert.equal(cursor.runner, 'agent', 'cursor 是 agent 的别名')
+  assert.equal(cursor.model, 'composer-2.5', '枚举型 runner 原样传')
+  assert.equal(cursor.thinking, undefined)
+  assert.equal(cursor.runnerExplicit, true)
+  assert.equal(cursor.sources.runner, 'value')
+
+  const pi = resolveArm({ role: 'r', values, index: 1, defaultRunner: 'agent' })
+  assert.equal(pi.runner, 'pi', '值里的前缀比表里的默认 runner 优先')
+  assert.equal(pi.model, 'opencode-go/grok-4.7')
+  assert.equal(pi.thinking, 'xhigh')
+
+  const forced = resolveArm({ role: 'r', values, index: 0, override: { runner: 'codex' }, defaultRunner: 'pi' })
+  assert.equal(forced.runner, 'codex')
+  assert.equal(forced.sources.runner, 'override')
+  assert.equal(forced.model, 'composer-2.5', '换 runner 不改模型字符串')
+})
+
+test('枚举型 runner 忽略值里的 effort 后缀，但显式覆盖仍然作数', () => {
+  const arm = resolveArm({ role: 'r', values: ['cursor:gpt-5.3-codex-xhigh'], defaultRunner: 'pi' })
+  assert.equal(arm.model, 'gpt-5.3-codex-xhigh')
+  assert.equal(arm.thinking, undefined)
+  assert.equal(arm.verbatim, true)
+  assert.equal(arm.sources.thinking, 'in-model-id')
+
+  const withOverride = resolveArm({
+    role: 'r',
+    values: ['cursor:gpt-5.3-codex-xhigh'],
+    override: { thinking: 'low' },
+    defaultRunner: 'pi',
+  })
+  assert.equal(withOverride.thinking, 'low', '人明确要的档位不能被规则吞掉')
+  assert.equal(withOverride.sources.thinking, 'override')
+})
+
 test('resolveArm 面板按取值顺序分派，超出就回环', () => {
   const table = parseRoleTable(TABLE)
   const values = roleLookup(table, 'interrogate reviewers')
-  assert.equal(resolveArm({ role: 'r', values, index: 0 }).model, 'deepseek/deepseek-v4.1-flash')
-  assert.equal(resolveArm({ role: 'r', values, index: 0 }).thinking, 'medium')
-  assert.equal(resolveArm({ role: 'r', values, index: 1 }).model, 'grok-composer-2.5')
-  assert.equal(resolveArm({ role: 'r', values, index: 2 }).model, 'deepseek/deepseek-v4.1-flash')
+  assert.equal(resolveArm({ role: 'r', values, index: 0, defaultRunner: 'pi' }).model, 'deepseek/deepseek-v4.1-flash')
+  assert.equal(resolveArm({ role: 'r', values, index: 0, defaultRunner: 'pi' }).thinking, 'medium')
+  assert.equal(resolveArm({ role: 'r', values, index: 1, defaultRunner: 'pi' }).model, 'grok-composer-2.5')
+  assert.equal(resolveArm({ role: 'r', values, index: 2, defaultRunner: 'pi' }).model, 'deepseek/deepseek-v4.1-flash')
 })
 
 test('resolveArm 对别名不给模型，跑父会话的', () => {

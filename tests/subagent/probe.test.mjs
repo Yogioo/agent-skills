@@ -43,14 +43,14 @@ test('别名不探；定不出 provider 的进 unresolved 并说明原因', () =
     targets.map((target) => target.model),
     ['grok-4.6'],
   )
-  assert.deepEqual(unresolved, [{ value: 'nope-model-high', model: 'nope-model', reason: 'unknown' }])
+  assert.deepEqual(unresolved, [{ value: 'nope-model-high', runner: 'pi', model: 'nope-model', reason: 'unknown' }])
 })
 
 test('多义走 unresolved，不猜 provider', () => {
   const models = parseModelList('provider model\nalpha dup\ntest dup\n')
   const { targets, unresolved } = planProbes({ values: ['dup-high'], models })
   assert.equal(targets.length, 0)
-  assert.deepEqual(unresolved, [{ value: 'dup-high', model: 'dup', reason: 'ambiguous' }])
+  assert.deepEqual(unresolved, [{ value: 'dup-high', runner: 'pi', model: 'dup', reason: 'ambiguous', candidates: ['alpha', 'test'] }])
 })
 
 test('显式候选走同一个解析链，含斜杠的模型 id 不被拆错', () => {

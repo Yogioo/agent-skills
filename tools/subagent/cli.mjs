@@ -9,7 +9,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { realpathSync, writeFileSync } from 'node:fs'
 
-import { CAPABILITIES, RUNNERS, capabilities } from '../../lib/agent-run/runners/index.mjs'
+import { CAPABILITIES, RUNNERS, capabilities, resolveRunnerName } from '../../lib/agent-run/runners/index.mjs'
 import { resolveBin } from '../../lib/agent-run/runners/resolve-bin.mjs'
 import {
   BUDGET_EFFORT,
@@ -18,6 +18,7 @@ import {
   PROBE_THINKING,
   SAFE_ROLE_VALUE,
   diagnose,
+  loadModelLists,
   loadRoleTable,
   parseModelList,
   parseRoleTable,
@@ -29,6 +30,7 @@ import {
   roleNames,
   runArms,
   runProbes,
+  splitRunnerPrefix,
   summarize,
 } from '../../lib/subagent/index.mjs'
 
@@ -50,6 +52,9 @@ const USAGE = `subagent - run one or more agent turns from a pstack role table
   doctor [--roles-file <path>] [--models-file <file>] [--runner pi] [--bin <path>]
 
   init [--out <path>] [--budget large] [--runner pi] [--value inherit-parent] [--force]
+
+  set --role <name> --value <value> [--role <name> --value <value> ...]
+      [--roles-file <path>] [--dry-run]
 
   probe --out-dir <new-dir> [--role <name> ...] [--model <slug> ...]
         [--roles-file <path>] [--models-file <file>] [--runner pi] [--bin <path>]
@@ -79,6 +84,10 @@ canonical role names. It only reads and reports. Exit: 0 no errors,
 init writes a valid role table. Every role starts on inherit-parent, which runs
 on the parent chat's model, so the table is usable before you know which models
 this machine can reach. An existing --out needs --force.
+
+set rewrites named roles in place and leaves every other line, comment and the
+order alone. A role sharing a line with others is split out. --dry-run prints the
+result without writing.
 
 probe runs one cheap read-only turn per distinct target and reports which ones
 actually worked. Model ids existing in the model list is not evidence: a provider
@@ -258,12 +267,47 @@ function parseProbe(rest) {
   return options
 }
 
+function parseSet(rest) {
+  const options = { command: 'set', pairs: [], dryRun: false }
+  for (let i = 0; i < rest.length; i++) {
+    const flag = rest[i]
+    if (flag === '--dry-run') {
+      options.dryRun = true
+      continue
+    }
+    const key = { '--roles-file': 'rolesFile', '--role': 'role', '--value': 'value' }[flag]
+    if (!key) invalid(`Unknown option: ${flag}`)
+    const value = takeValue(rest, i, flag)
+    i++
+    if (key === 'rolesFile') {
+      options.rolesFile = value
+      continue
+    }
+    if (key === 'role') {
+      // 允许一次性给一组角色同一个值：表里本来就写成 `feature, refactoring: ...`。
+      const names = value.split(',').map((name) => name.trim()).filter(Boolean)
+      if (names.length === 0) invalid('--role 是空的')
+      options.pairs.push({ roles: names, value: undefined })
+      continue
+    }
+    const last = options.pairs.at(-1)
+    if (!last || last.value !== undefined) invalid('--value 必须跟在一个 --role 后面')
+    last.value = value
+  }
+  if (options.pairs.length === 0) invalid('Missing --role')
+  for (const pair of options.pairs) {
+    if (pair.value === undefined) invalid(`--role ${pair.roles.join(', ')} 缺少对应的 --value`)
+  }
+  return options
+}
+
 function parseArgs(argv) {
   if (argv.length === 1 && ['--help', '-h'].includes(argv[0])) return { command: 'help' }
   const [command, ...rest] = argv
   if (command === 'run') return parseRun(rest)
   if (command === 'plan') return parsePlan(rest)
   if (command === 'init') return parseInit(rest)
+  if (command === 'set') return parseSet(rest)
   if (command === 'probe') return parseProbe(rest)
   if (command === 'roles') {
     const options = parseFlags(rest, { '--roles-file': 'rolesFile' })
@@ -313,31 +357,60 @@ function runBin(bin, args) {
   })
 }
 
-function loadModels(options, runner = options.runner) {
-  if (options.modelsFile) {
-    if (!existsSync(options.modelsFile)) invalid(`--models-file is not readable: ${options.modelsFile}`)
-    return { models: parseModelList(readFileSync(options.modelsFile, 'utf8')), source: options.modelsFile }
+/** 表里用到的 runner 集合：默认 runner + 值里的前缀 + 显式候选里的前缀。 */
+function runnersInUse(table, defaultRunner, extraValues = []) {
+  const names = new Set([defaultRunner])
+  const scan = (value) => {
+    const split = splitRunnerPrefix(value, (name) => CAPABILITIES[resolveRunnerName(name)] || null)
+    if (split.runner) names.add(split.runner)
   }
-  if (runner !== 'pi') return { models: [], source: null }
-  const bin = options.bin || 'pi'
-  const result = runBin(bin, ['--list-models'])
-  if (result.error || result.status !== 0) return { models: [], source: null, error: `无法运行 ${bin} --list-models` }
-  return { models: parseModelList(result.stdout || ''), source: `${bin} --list-models` }
+  for (const entry of table ? table.entries : []) for (const value of entry.values) scan(value)
+  for (const value of extraValues) scan(value)
+  return [...names]
+}
+
+/** 按需取每个 runner 自己的模型清单（每个 runner 的命令与输出格式不同）。 */
+function loadLists({ options, defaultRunner, table, extraValues = [] }) {
+  return loadModelLists({
+    runners: runnersInUse(table, defaultRunner, extraValues),
+    defaultRunner,
+    modelsText: options.modelsFile ? readFileSync(options.modelsFile, 'utf8') : undefined,
+    modelsPath: options.modelsFile,
+    bin: options.bin,
+    run: (command, args) => runBin(command, args),
+  })
+}
+
+/** 清单状态摘到报告里，免得调用方以为“没报错”就是“全验过了”。 */
+function listSummary(lists) {
+  return Object.fromEntries(
+    Object.entries(lists).map(([name, list]) => [
+      name,
+      { source: list.source ?? null, count: list.models.length, error: list.error ?? null, declared: list.declared !== false },
+    ]),
+  )
 }
 
 /**
  * provider 只能猜错，不能猜；sandbox 拼错会静默放权，所以两个都必须在起臂前挡掉。
- * 实测：`--sandbox red-only` 本来会落到 runner 的默认放权模式。
+ * 同时也按 runner 的声明决定它有没有 provider 概念。
  */
-function finalizeArm(arm, models) {
+function finalizeArm(arm, lists) {
   const caps = CAPABILITIES[arm.runner]
   if (!caps) invalid(`未知 runner: ${arm.runner}`)
   if (arm.sandbox !== undefined && !caps.sandboxModes.includes(arm.sandbox)) {
     invalid(`runner ${arm.runner} 不支持 --sandbox ${arm.sandbox}（可选：${caps.sandboxModes.join(' / ')}）`)
   }
-  if (arm.provider && arm.runner !== 'pi') invalid(`runner ${arm.runner} 不支持 --provider（只有 pi 有）`)
-  if (arm.runner !== 'pi' || !arm.model) return arm
-  const resolved = resolveProvider({ model: arm.model, provider: arm.provider, models })
+  if (arm.provider && caps.providerParam === false) {
+    invalid(`runner ${arm.runner} 没有 provider 概念，不能指定 --provider`)
+  }
+  if (!arm.model || caps.providerParam === false) return { ...arm, providerSource: caps.providerParam === false ? 'not-applicable' : arm.providerSource }
+  const list = lists[arm.runner] || { models: [] }
+  if (list.models.length === 0) {
+    // 清单拿不到时不猜 provider，留给 doctor / probe 报出来。
+    return { ...arm, providerSource: list.error ? 'list-failed' : 'unlisted' }
+  }
+  const resolved = resolveProvider({ model: arm.model, provider: arm.provider, models: list.models })
   if (resolved.candidates) {
     invalid(
       `模型 ${arm.model} 同时挂在 ${resolved.candidates.join(', ')} 下，请写成 <provider>/${arm.model} 或显式指定 --provider`,
@@ -436,7 +509,7 @@ async function run(options) {
   requireNewPath(outDir, '--out-dir')
   const table = readTable(options)
   const defaultRunner = options.runner || table.runner || 'pi'
-  const loaded = loadModels(options, defaultRunner)
+  const lists = loadLists({ options, defaultRunner, table, extraValues: options.model ? [options.model] : [] })
   const override = {
     runner: options.runner,
     provider: options.provider,
@@ -445,8 +518,8 @@ async function run(options) {
     sandbox: options.sandbox,
   }
   const built = options.manifest
-    ? buildManifestArms(options, table, loaded.models, override, defaultRunner)
-    : { arms: buildSingleArm(options, table, loaded.models, override, defaultRunner), concurrency: undefined }
+    ? buildManifestArms(options, table, lists, override, defaultRunner)
+    : { arms: buildSingleArm(options, table, lists, override, defaultRunner), concurrency: undefined }
   const concurrency = options.concurrency || built.concurrency || 1
   const results = await runArms({
     arms: built.arms,
@@ -464,7 +537,7 @@ async function run(options) {
       reportFile,
       rolesFile: table.file,
       runner: defaultRunner,
-      modelsSource: loaded.source,
+      modelLists: listSummary(lists),
       concurrency,
       ...summary,
       arms: results.map((record) => ({
@@ -488,18 +561,24 @@ async function run(options) {
 function plan(options) {
   const table = readTable(options)
   const defaultRunner = options.runner || table.runner || 'pi'
-  const loaded = loadModels(options, defaultRunner)
+  const lists = loadLists({ options, defaultRunner, table })
   const arms = options.roles.flatMap((role) =>
     expandRole(role, { runner: options.runner, sandbox: options.sandbox }, table, defaultRunner).map((arm) =>
-      finalizeArm(arm, loaded.models),
+      finalizeArm(arm, lists),
     ),
   )
+  const byRunner = [...new Set(arms.map((arm) => arm.runner))].sort().map((name) => ({
+    runner: name,
+    arms: arms.filter((arm) => arm.runner === name).length,
+    roles: [...new Set(arms.filter((arm) => arm.runner === name).map((arm) => arm.role))],
+  }))
   return {
     result: {
       rolesFile: table.file,
       budget: table.budget,
       runner: defaultRunner,
-      modelsSource: loaded.source,
+      modelLists: listSummary(lists),
+      byRunner,
       arms: arms.map((arm) => ({
         role: arm.role,
         slug: arm.slug,
@@ -536,14 +615,12 @@ function listRoles(options) {
 function doctor(options) {
   const table = readTable(options)
   const defaultRunner = options.runner || table.runner || 'pi'
-  const loaded = loadModels(options, defaultRunner)
+  const lists = loadLists({ options, defaultRunner, table })
   const report = diagnose({
     table,
-    models: loaded.models,
+    lists,
     runner: defaultRunner,
     rolesFile: table.file,
-    modelsSource: loaded.source,
-    modelsError: loaded.error,
     parseErrors: table.errors,
     triedPaths: table.tried,
   })
@@ -592,7 +669,6 @@ async function probe(options) {
   const outDir = resolve(options.outDir)
   requireNewPath(outDir, '--out-dir')
   const defaultRunner = options.runner || 'pi'
-  const loaded = loadModels(options, defaultRunner)
   const values = []
   const candidates = options.models.map((model) => ({ model }))
   let table = null
@@ -611,11 +687,12 @@ async function probe(options) {
       for (const entry of table.entries) values.push(...entry.values)
     }
   }
+  const lists = loadLists({ options, defaultRunner, table, extraValues: options.models })
   const { targets, unresolved } = planProbes({
     values,
     candidates,
-    models: loaded.models,
-    runner: defaultRunner,
+    lists,
+    defaultRunner,
     thinking: options.thinking || PROBE_THINKING,
   })
   if (targets.length === 0) {
@@ -625,7 +702,7 @@ async function probe(options) {
         outDir,
         reportFile: null,
         rolesFile: table ? table.file : null,
-        modelsSource: loaded.source,
+        modelLists: listSummary(lists),
         runner: defaultRunner,
         note:
           unresolved.length > 0
@@ -656,7 +733,7 @@ async function probe(options) {
       outDir,
       reportFile,
       rolesFile: table ? table.file : null,
-      modelsSource: loaded.source,
+      modelLists: listSummary(lists),
       runner: defaultRunner,
       counts: { ...outcome.summary, unresolved: unresolved.length },
       unresolved,
@@ -665,6 +742,60 @@ async function probe(options) {
       unusable: outcome.unusable,
     },
     exitCode: ok ? 0 : 1,
+  }
+}
+
+/**
+ * 就地改角色表里几个角色的取值。注释、其他行、行的先后顺序都不动；一条线上与别人
+ * 共用的角色会被拆出来单独一行。额度有限时这是最常用的一个命令。
+ */
+function setRoles(options) {
+  const loaded = loadRoleTable({ file: options.rolesFile })
+  if (!loaded.file) {
+    invalid(`找不到角色表${loaded.tried.length ? `，试过 ${loaded.tried.join(' / ')}` : ''}`)
+  }
+  const table = parseRoleTable(loaded.text)
+  const canonicalName = new Map()
+  for (const entry of table.entries) for (const name of entry.names) canonicalName.set(name.toLowerCase(), name)
+  const assignments = options.pairs.flatMap((pair) => pair.roles.map((role) => ({ role, value: pair.value })))
+  const wanted = new Map(assignments.map((item) => [item.role.toLowerCase(), item]))
+  const missing = [...wanted.keys()].filter((key) => !canonicalName.has(key))
+  if (missing.length > 0) {
+    const names = roleNames(table)
+    invalid(`角色表里没有 ${missing.join(', ')}；候选：${names.length ? names.join(', ') : '(表里没有任何角色)'}`)
+  }
+  const kept = []
+  for (const line of String(loaded.text).split(/\r?\n/)) {
+    const trimmed = line.trim()
+    const colon = trimmed.indexOf(':')
+    if (trimmed === '' || trimmed.startsWith('#') || colon < 0) {
+      kept.push(line)
+      continue
+    }
+    const names = trimmed
+      .slice(0, colon)
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean)
+    if (!names.some((name) => wanted.has(name.toLowerCase()))) {
+      kept.push(line)
+      continue
+    }
+    const remaining = names.filter((name) => !wanted.has(name.toLowerCase()))
+    if (remaining.length > 0) kept.push(`${remaining.join(', ')}: ${trimmed.slice(colon + 1).trim()}`)
+  }
+  while (kept.length > 0 && kept.at(-1).trim() === '') kept.pop()
+  for (const item of assignments) kept.push(`${canonicalName.get(item.role.toLowerCase())}: ${item.value}`)
+  const text = `${kept.join('\n')}\n`
+  if (!options.dryRun) writeFileSync(loaded.file, text, 'utf8')
+  return {
+    result: {
+      file: loaded.file,
+      dryRun: options.dryRun === true,
+      changed: assignments.map((item) => `${canonicalName.get(item.role.toLowerCase())}: ${item.value}`),
+      ...(options.dryRun ? { text } : {}),
+    },
+    exitCode: 0,
   }
 }
 
@@ -691,6 +822,8 @@ export async function runCli(argv, io = {}) {
           return doctor(options)
         case 'init':
           return init(options)
+        case 'set':
+          return setRoles(options)
         default:
           return listModels(options)
       }

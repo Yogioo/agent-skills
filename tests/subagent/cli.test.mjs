@@ -77,15 +77,55 @@ test('plan 把面板角色展开成每个取值一臂，并定出 provider', asy
   const dir = workspace()
   const cap = capture()
   try {
-    const code = await runCli(['plan', '--role', 'interrogate reviewers', ...rolesArgs(dir)], cap.io)
+    // 执行用 agent runner（有假 CLI），但解析语义由**生效的 runner** 决定，所以这里
+    // 用 pi 来看 effort 拆分与 provider 归属。
+    const code = await runCli(
+      ['plan', '--role', 'interrogate reviewers', '--runner', 'pi', ...rolesArgs(dir)],
+      cap.io,
+    )
     assert.equal(code, 0)
     const result = JSON.parse(cap.stdout().trim())
-    assert.equal(result.runner, 'agent')
+    assert.equal(result.runner, 'pi')
     assert.equal(result.arms.length, 2)
     const [first, second] = result.arms
     assert.equal(first.model, 'model-a')
     assert.equal(first.thinking, 'xhigh')
+    assert.equal(first.provider, 'alpha')
     assert.deepEqual(second.slug, 'model-b-medium')
+    assert.equal(second.provider, 'beta')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('plan 对枚举型 runner 原样传模型 id，也不去定 provider', async () => {
+  const dir = workspace()
+  writeFileSync(
+    join(dir, 'cursor-table.md'),
+    [
+      '# budget: large (xhigh)',
+      '# runner: pi',
+      'swarm workers: cursor:gpt-5.3-codex-xhigh',
+      'interrogate reviewers: cursor:claude-opus-5-thinking-high, pi:model-b-high',
+    ].join('\n'),
+  )
+  const cap = capture()
+  try {
+    const code = await runCli(
+      ['plan', '--role', 'swarm workers', '--role', 'interrogate reviewers', '--roles-file', join(dir, 'cursor-table.md'), '--models-file', join(dir, 'models.txt')],
+      cap.io,
+    )
+    assert.equal(code, 0)
+    const [cursorArm, panelCursor, panelPi] = JSON.parse(cap.stdout().trim()).arms
+    assert.equal(cursorArm.runner, 'agent', 'cursor 是 agent 的别名')
+    assert.equal(cursorArm.model, 'gpt-5.3-codex-xhigh', '枚举型的 id 不能被拆后缀')
+    assert.equal(cursorArm.thinking, undefined)
+    assert.equal(cursorArm.provider, undefined, 'agent runner 没有 provider 概念')
+    assert.equal(panelCursor.runner, 'agent')
+    assert.equal(panelCursor.model, 'claude-opus-5-thinking-high')
+    assert.equal(panelPi.runner, 'pi', '同一个面板里不同角色可以走不同 CLI')
+    assert.equal(panelPi.model, 'model-b')
+    assert.equal(panelPi.provider, 'beta')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -144,8 +184,9 @@ test('run 单臂：拿到结果、写出 report.jsonl、退出 0', async () => {
     const [arm] = result.arms
     assert.equal(arm.status, 'ok')
     assert.equal(arm.label, 'how-explorer')
-    assert.equal(arm.model, 'model-b')
-    assert.equal(arm.thinking, 'medium')
+    // 表里的默认 runner 是 agent，而它把推理强度放在模型 id 里，所以整串原样传
+    assert.equal(arm.model, 'model-b-medium')
+    assert.equal(arm.thinking, undefined)
     assert.equal(readFileSync(arm.outputFile, 'utf8').trim(), 'ARM-A')
     const records = readFileSync(result.reportFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
     assert.equal(records.length, 1)
@@ -187,8 +228,8 @@ test('run manifest：两臂并发、各自独占目录、退出 0', async () => 
     const result = JSON.parse(cap.stdout().trim())
     assert.equal(result.ok, 2)
     assert.equal(result.concurrency, 2)
-    assert.deepEqual(result.arms.map((arm) => arm.model), ['model-a', 'model-b'])
-    assert.deepEqual(result.arms.map((arm) => arm.thinking), ['xhigh', 'low'])
+    assert.deepEqual(result.arms.map((arm) => arm.model), ['model-a-xhigh', 'model-b-medium'])
+    assert.deepEqual(result.arms.map((arm) => arm.thinking), [undefined, 'low'], '枚举型 runner 忽略值里的后缀，但显式覆盖作数')
     assert.ok(existsSync(join(outDir, 'arm-a', 'output.txt')))
     assert.ok(existsSync(join(outDir, 'arm-b', 'output.txt')))
   } finally {
@@ -323,8 +364,8 @@ test('从家目录的默认位置找角色表', async () => {
     )
     assert.equal(code, 0)
     const result = JSON.parse(cap.stdout().trim())
-    assert.equal(result.arms[0].model, 'model-a')
-    assert.equal(result.arms[0].thinking, 'xhigh')
+    assert.equal(result.arms[0].model, 'model-a-xhigh', 'agent runner 不改模型 id')
+    assert.equal(result.arms[0].thinking, undefined)
     assert.match(result.rolesFile, /pstack-models\.md$/)
   } finally {
     if (saved === undefined) delete process.env.USERPROFILE
@@ -356,7 +397,7 @@ test('run 拒绝非 pi runner 上的 --provider，也拒绝重复臂名', async 
       cap.io,
     )
     assert.equal(providerCode, 2)
-    assert.match(cap.stderr(), /不支持 --provider/)
+    assert.match(cap.stderr(), /没有 provider 概念/)
 
     const dupCap = capture()
     const dupCode = await runCli(
@@ -393,7 +434,7 @@ test('doctor：坏表报 error 并退出 1，且一个字节都不写', async ()
     const report = JSON.parse(cap.stdout().trim())
     assert.equal(report.ok, false)
     assert.equal(report.runner, 'pi')
-    assert.equal(report.modelsSource, join(dir, 'models.txt'))
+    assert.equal(report.modelLists.pi.source, join(dir, 'models.txt'))
     assert.equal(report.counts.errors, 1)
     assert.equal(report.counts.warnings, 1, 'feature 的 effort 低于预算 xhigh')
     assert.equal(report.findings.find((item) => item.level === 'error').code, 'unknown-model')
@@ -564,6 +605,90 @@ test('init 写出的表直接通过 doctor，且不覆盖已有文件', async ()
   }
 })
 
+test('set 就地改角色：拆共用行、保注释、值里的冒号不受影响', async () => {
+  const dir = workspace()
+  const file = join(dir, 'edit-me.md')
+  writeFileSync(
+    file,
+    [
+      '# budget: medium (high)',
+      '# runner: agent',
+      '# 我自己加的注释',
+      'feature, refactoring: model-a-xhigh',
+      'how explorer: model-b-medium',
+      'interrogate reviewers: model-a-xhigh',
+      '',
+    ].join('\n'),
+  )
+  const before = readFileSync(file, 'utf8')
+  const cap = capture()
+  try {
+    // dry-run 一个字节都不能写
+    const dryCap = capture()
+    const dryCode = await runCli(
+      ['set', '--roles-file', file, '--role', 'feature', '--value', 'cursor:composer-2.5', '--dry-run'],
+      dryCap.io,
+    )
+    assert.equal(dryCode, 0)
+    assert.equal(readFileSync(file, 'utf8'), before)
+    const dry = JSON.parse(dryCap.stdout().trim())
+    assert.equal(dry.dryRun, true)
+    assert.match(dry.text, /^feature: cursor:composer-2\.5$/m)
+
+    const code = await runCli(
+      [
+        'set', '--roles-file', file,
+        '--role', 'feature', '--value', 'cursor:composer-2.5',
+        '--role', 'interrogate reviewers', '--value', 'cursor:claude-opus-5-thinking-high, model-b-xhigh',
+      ],
+      cap.io,
+    )
+    assert.equal(code, 0)
+    const after = readFileSync(file, 'utf8')
+    // 共用行被拆开，另一个角色原样留下
+    assert.match(after, /^refactoring: model-a-xhigh$/m)
+    assert.ok(!after.includes('feature, refactoring'), '拆开后不该再留着共用行')
+    assert.match(after, /^feature: cursor:composer-2\.5$/m, '枚举型 runner 的值带冒号也得完整写回')
+    assert.match(after, /^interrogate reviewers: cursor:claude-opus-5-thinking-high, model-b-xhigh$/m)
+    // 注释与顺序不动
+    assert.match(after, /^# 我自己加的注释$/m)
+    assert.ok(after.indexOf('# budget') < after.indexOf('refactoring:'))
+    assert.ok(after.indexOf('how explorer:') < after.indexOf('feature:'), '新行追加在尾部')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('set 拒绝未知角色与落单的 --value', async () => {
+  const dir = workspace()
+  const file = join(dir, 'edit-me.md')
+  writeFileSync(file, '# runner: agent\nfeature: model-a-xhigh\n')
+  const cap = capture()
+  try {
+    const unknown = capture()
+    const unknownCode = await runCli(
+      ['set', '--roles-file', file, '--role', 'nope-role', '--value', 'x'],
+      unknown.io,
+    )
+    assert.equal(unknownCode, 2)
+    assert.match(unknown.stderr(), /角色表里没有 nope-role/)
+
+    const lonely = capture()
+    assert.equal(await runCli(['set', '--roles-file', file, '--value', 'x'], lonely.io), 2)
+    assert.match(lonely.stderr(), /必须跟在一个 --role 后面/)
+
+    const trailing = capture()
+    assert.equal(await runCli(['set', '--roles-file', file, '--role', 'feature', '--value', 'x', '--value', 'y'], trailing.io), 2)
+    assert.match(trailing.stderr(), /必须跟在一个 --role 后面/)
+
+    const noValue = capture()
+    assert.equal(await runCli(['set', '--roles-file', file, '--role', 'feature'], noValue.io), 2)
+    assert.match(noValue.stderr(), /缺少对应的 --value/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('probe 用真跑判定可用性，而不是看清单里有没有', async () => {
   const dir = workspace()
   writeFileSync(
@@ -599,21 +724,25 @@ test('probe 用真跑判定可用性，而不是看清单里有没有', async ()
   }
 })
 
-test('probe 能从表里的角色取目标', async () => {
+test('probe 能从表里的角色取目标（清单走 JSON 逐 runner 形式）', async () => {
   const dir = workspace()
+  // agent runner 的模型 id 就是枚举变体，所以清单里得写全名。
+  writeFileSync(join(dir, 'agent-models.json'), JSON.stringify({ agent: ['model-a-xhigh', 'model-b-medium'] }))
   const outDir = join(dir, 'out by role')
   const cap = capture()
   try {
     const code = await runCli(
       [
         'probe', '--out-dir', outDir, '--role', 'interrogate reviewers',
-        '--runner', 'agent', '--bin', join(dir, 'ok.mjs'), ...rolesArgs(dir),
+        '--runner', 'agent', '--bin', join(dir, 'ok.mjs'),
+        '--roles-file', join(dir, 'roles.md'), '--models-file', join(dir, 'agent-models.json'),
       ],
       cap.io,
     )
     assert.equal(code, 0)
     const result = JSON.parse(cap.stdout().trim())
-    assert.deepEqual(result.usable.map((item) => item.model), ['model-a', 'model-b'])
+    assert.deepEqual(result.usable.map((item) => item.model), ['model-a-xhigh', 'model-b-medium'])
+    assert.deepEqual(result.probes.map((item) => item.runner), ['agent', 'agent'])
     assert.equal(result.unresolved.length, 0)
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -663,19 +792,36 @@ test('doctor：角色表不存在时报 no-role-file，不倒过来报 ok', asyn
   }
 })
 
-test('doctor：拿不到模型清单时报 error，不顺下去', async () => {
+test('doctor：runner 声明了清单却拉不到 = error；声明没有清单 = 未核实', async () => {
   const dir = workspace()
+  writeFileSync(
+    join(dir, 'codex-table.md'),
+    '# budget: large (xhigh)\n# runner: codex\nswarm workers: gpt-5.1-codex-xhigh\n',
+  )
   const cap = capture()
   try {
-    const code = await runCli(
-      ['doctor', '--roles-file', join(dir, 'roles.md'), '--runner', 'codex', '--bin', join(dir, 'nope.mjs')],
-      cap.io,
+    // pi 声明了 --list-models，所以拉不到就是真故障。
+    const piCap = capture()
+    const piCode = await runCli(
+      ['doctor', '--roles-file', join(dir, 'roles.md'), '--runner', 'pi', '--bin', join(dir, 'nope.mjs')],
+      piCap.io,
     )
-    // runner 不是 pi 时不去拉模型清单，因此无从核对，必须报出来。
-    assert.equal(code, 1)
-    const report = JSON.parse(cap.stdout().trim())
-    assert.equal(report.ok, false)
-    assert.equal(report.findings.some((item) => item.code === 'no-model-list'), true)
+    assert.equal(piCode, 1)
+    const piReport = JSON.parse(piCap.stdout().trim())
+    assert.equal(piReport.ok, false)
+    assert.equal(piReport.findings.some((item) => item.code === 'no-model-list'), true)
+
+    // codex 没有这种命令，所以只能标未核实，不能假绿也不能假报错。
+    const codexCap = capture()
+    const codexCode = await runCli(
+      ['doctor', '--roles-file', join(dir, 'codex-table.md'), '--runner', 'codex'],
+      codexCap.io,
+    )
+    assert.equal(codexCode, 0)
+    const codexReport = JSON.parse(codexCap.stdout().trim())
+    assert.equal(codexReport.ok, true)
+    assert.equal(codexReport.findings.some((item) => item.code === 'unverified-runner'), true)
+    assert.equal(codexReport.roles[0].values[0].verified, false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
