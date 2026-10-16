@@ -15,6 +15,7 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 const TOOL_COMMANDS = {
   'agent-run': ['tools/agent-run/cli.mjs'],
+  subagent: ['tools/subagent/cli.mjs'],
   'work-items': ['tools/work-items/cli.mjs'],
   'run-runtime': ['tools/run-runtime/cli.mjs'],
   'workspace-diff': ['tools/workspace-diff/cli.mjs'],
@@ -35,6 +36,7 @@ Usage: agent-tools <command> [options]
 
 Commands:
   agent-run          run one agent turn and normalize its events
+  subagent           run one or more agent turns from a pstack role table
   work-items         read and mutate beads, GitHub or TAPD work items
   run-runtime        leases, progress, config layers, checkpoints, children
   workspace-diff     snapshot and compare directory contents

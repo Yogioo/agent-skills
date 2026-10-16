@@ -13,6 +13,7 @@
   "exports": {
     "./agent-events": "./lib/agent-events.mjs",
     "./agent-run": "./lib/agent-run/run-agent-turn.mjs",
+    "./subagent": "./lib/subagent/index.mjs",
     "./agent-run/runners": "./lib/agent-run/runners/index.mjs",
     "./work-items": "./lib/work-items/index.mjs",
     "./runtime": "./lib/run-runtime/index.mjs",

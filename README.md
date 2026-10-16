@@ -48,6 +48,7 @@ npm install .\yogioo-agent-tools-0.1.0.tgz         # packed tarball
 
 ```js
 import { runAgentTurn } from '@yogioo/agent-tools/agent-run'
+import { runArms, parseRoleTable, classifyTurn } from '@yogioo/agent-tools/subagent'
 import { capabilities } from '@yogioo/agent-tools/agent-run/runners'
 import { normalizeEvent } from '@yogioo/agent-tools/agent-events'
 import { acquireLease, mergeConfigFiles } from '@yogioo/agent-tools/runtime'
@@ -63,6 +64,7 @@ Each component's exact options and exit codes are authoritative in its CLI help:
 
 ```powershell
 agent-tools agent-run --help
+agent-tools subagent --help
 agent-tools work-items --help
 agent-tools questionnaire serve --help   # or: poll --help
 agent-tools xlsx-cell-diff --help
@@ -85,6 +87,7 @@ npx skills add Yogioo/agent-skills --skill questionnaire -g -y
 | Skill | Routes to |
 |-------|-----------|
 | [agent-run](./skills/agent-run/SKILL.md) | one agent turn + event normalization |
+| [subagent-run](./skills/subagent-run/SKILL.md) | one or more turns from a pstack role table |
 | [work-items](./skills/work-items/SKILL.md) | beads / GitHub / TAPD work items |
 | [questionnaire](./skills/questionnaire/SKILL.md) | local web form, one submission |
 | [xlsx-cell-diff](./skills/xlsx-cell-diff/SKILL.md) | xlsx display-value diff / merge |
@@ -117,7 +120,7 @@ pwsh -File .\scripts\sync-links.ps1 -Destination $env:TEMP\agents-skills   # iso
 
 ```powershell
 npm test
-node scripts/test-components.mjs agent-run work-items questionnaire xlsx-cell-diff
+node scripts/test-components.mjs agent-run subagent work-items questionnaire xlsx-cell-diff
 node scripts/test-components.mjs components layers
 node scripts/test-components.mjs packaging
 ```
