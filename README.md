@@ -120,11 +120,12 @@ npx skills add Yogioo/agent-skills --skill questionnaire -g -y
 | [work-items](./skills/work-items/SKILL.md) | beads / GitHub / TAPD work items |
 | [questionnaire](./skills/questionnaire/SKILL.md) | local web form, one submission |
 | [xlsx-cell-diff](./skills/xlsx-cell-diff/SKILL.md) | xlsx display-value diff / merge |
-| [yogioo-mode](./skills/yogioo-mode/SKILL.md) | a poteto-mode playbook, delegated through the toolkit |
+| [yogioo-mode](./skills/yogioo-mode/SKILL.md) | a full workflow: its own playbooks and principles, arms through the toolkit |
 
-The last one is not a wrapper and calls no CLI of its own. It is a workflow
-overlay. It loads a poteto-mode playbook and routes that playbook's `Task` steps
-through `agent-tools subagent`, which Pi has no native tool for.
+The last one is not a wrapper and calls no CLI of its own beyond `agent-tools`. It
+is a self-contained workflow: playbooks, principles and reply rules live under
+`skills/yogioo-mode/`, and every delegated step runs as an `agent-tools subagent`
+arm because Pi has no native subagent tool.
 
 The six legacy workflow skills keep their existing implementations and
 configuration. They are unrelated to the toolkit runtime and are not migrated by
