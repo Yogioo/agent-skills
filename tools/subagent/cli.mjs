@@ -599,6 +599,17 @@ async function openObservation(outDir, arms) {
       progressFile: join(outDir, 'progress.jsonl'),
       labels: arms.map((arm) => arm.label),
       runner: arms[0]?.runner,
+      // 每个臂用的是什么 cli / 模型 / 思考等级：progress 的尾巴不一定还留着 arm_start，
+      // 所以记录里必须自带一份。
+      arms: arms.map((arm) => ({
+        label: arm.label,
+        runner: arm.runner,
+        model: arm.model,
+        provider: arm.provider,
+        thinking: arm.thinking,
+      })),
+      // 提示词进记录：页面在跑完之后也要能看到“这轮被要求干什么”。
+      inputs: arms.map((arm) => ({ label: arm.label, ...describeArmPrompt(arm) })),
     })
   } catch {
     /* 登记簿写不了，执行照跑 */

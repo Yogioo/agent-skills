@@ -170,6 +170,54 @@ test('registerRun 把每个臂的输入写进记录（历史页靠它回答“�
   assert.equal(record.inputs[1].prompt, undefined)
 })
 
+test('registerRun 记下每个臂用的 cli / 模型 / 思考等级', (t) => {
+  withHome(t)
+  const { record } = registerRun({
+    workdir: 'C:/projects/Demo', outDir: 'C:/projects/Demo/cache/run-1', pid: process.pid,
+    labels: ['feature', 'review'],
+    arms: [
+      { label: 'feature', runner: 'pi', model: 'deepseek-flash', provider: 'sub2api-lan', thinking: 'xhigh' },
+      { label: 'review', runner: 'codex', model: '', thinking: null },
+    ],
+  })
+  assert.equal(record.arms.length, 2)
+  assert.deepEqual(record.arms[0], {
+    label: 'feature', runner: 'pi', model: 'deepseek-flash', provider: 'sub2api-lan', thinking: 'xhigh',
+  })
+  assert.deepEqual(record.arms[1], { label: 'review', runner: 'codex' }, '空值不写，别在页面上留空位')
+})
+
+test('adopt 从 log.txt 第一行读回 runner / 模型 / 思考等级', (t) => {
+  withHome(t)
+  const root = mkdtempSync(join(tmpdir(), 'afk-adopt-runner-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const outDir = join(root, 'run-1')
+  mkdirSync(join(outDir, 'feature'), { recursive: true })
+  const started = Date.now() - 300000
+  writeFileSync(
+    join(outDir, 'progress.jsonl'),
+    [
+      { t: started, level: 1, event: 'arm_start', arm: 'feature', at: started },
+      { t: started + 240000, level: 1, event: 'arm_end', arm: 'feature', status: 'ok' },
+    ].map((line) => JSON.stringify(line)).join('\n') + '\n',
+  )
+  // subagent 把实际命令行写成日志第一行；pi 自己的 events 里不记模型。
+  writeFileSync(
+    join(outDir, 'feature', 'log.txt'),
+    [
+      '$ pi -p --no-session --mode json --approve --provider sub2api-lan --model deepseek-flash --thinking xhigh @C:/briefs/x.md',
+      '{"type":"session"}',
+      ''
+    ].join(String.fromCharCode(10)),
+  )
+
+  const { record } = adoptRun({ outDir, workdir: 'C:/projects/Demo' })
+  assert.deepEqual(record.arms, [
+    { label: 'feature', runner: 'pi', model: 'deepseek-flash', provider: 'sub2api-lan', thinking: 'xhigh' },
+  ])
+  assert.equal(record.runner, 'pi', '记录顶层的 runner 跟着臂走')
+})
+
 test('adopt 从各臂 events.jsonl 找回提示词，连原 brief 路径一起', (t) => {
   withHome(t)
   const root = mkdtempSync(join(tmpdir(), 'afk-adopt-input-'))
