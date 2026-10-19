@@ -100,13 +100,18 @@ read-only page (one per machine, shared by every project) — it lists every liv
 run with its current phase and elapsed time. If it is not running yet, `run`
 starts it; you never have to start it by hand.
 
+There is **no per-run flag to switch this off** — by design. `--no-board` used to
+exist and it meant "the human cannot see this run", which no arm ever needed and
+which left the page silently empty. A machine that should not serve a board at
+all (CI, sandbox) sets `AGENT_TOOLS_BOARD=off` in its environment; never pass a
+flag on someone else's behalf to hide a run.
+
 - **Never `cat` an arm's `events.jsonl`.** One turn writes megabytes there. If you
   need the mid-run state, call the board's API instead: `GET /api/runs` (one line
   per run) or `GET /api/runs/<runId>` (last 40 progress records).
 - Mid-run progress the user asked about is answered from `progress.jsonl`
   (`agent-tools run-runtime progress read --file <out-dir>/progress.jsonl`), which
   only holds `arm_start` / `tool` / `arm_end`.
-- `--no-board` (or `AGENT_TOOLS_BOARD=off`) skips registration and the board.
 - Board lifecycle: `agent-tools run-runtime board ensure|status|stop`. Only the
   `close`d run disappears from the page; a run whose process died is shown as
   **stale**, never as running.

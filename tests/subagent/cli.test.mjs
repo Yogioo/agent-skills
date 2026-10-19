@@ -510,6 +510,29 @@ test('拼错的 --sandbox 必须在起臂前被拦下，不能静默放权', asy
   }
 })
 
+test('--no-board 已移除：拒绝得明白，且不许静默起臂', async () => {
+  const dir = workspace()
+  const cap = capture()
+  try {
+    // 打过这个错：这个按次开关一开，人的看板就空了，而调用方什么提示都收不到。
+    // 现在必须硬拒，并把“整机不要看板”指到环境变量上。
+    const code = await runCli(
+      [
+        'run', '--role', 'how explorer', '--prompt-file', join(dir, 'brief-a.md'),
+        '--out-dir', join(dir, 'o-noboard'), '--no-board',
+        '--runner', 'agent', '--bin', join(dir, 'ok.mjs'), ...rolesArgs(dir),
+      ],
+      cap.io,
+    )
+    assert.equal(code, 2)
+    assert.match(cap.stderr(), /--no-board 已移除/)
+    assert.match(cap.stderr(), /AGENT_TOOLS_BOARD=off/)
+    assert.equal(existsSync(join(dir, 'o-noboard')), false, '被拦下时不该建出目录')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('一臂起不来不能带走整批：其余臂的结果照交', async () => {
   const dir = workspace()
   writeFileSync(

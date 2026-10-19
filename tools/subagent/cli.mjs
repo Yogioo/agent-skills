@@ -42,7 +42,6 @@ const USAGE = `subagent - run one or more agent turns from a pstack role table
       [--roles-file <path>] [--runner pi|codex|agent] [--provider <id>]
       [--model <id>] [--thinking <level>] [--sandbox <mode>]
       [--workdir <dir>] [--timeout <ms>] [--bin <path>] [--models-file <file>]
-      [--no-board]
 
   run --manifest <arms.json> --out-dir <new-dir> [--concurrency <n>]
       [same options as above; the manifest wins for every key it sets]
@@ -50,7 +49,9 @@ const USAGE = `subagent - run one or more agent turns from a pstack role table
   Default: the run is registered under <AFK home>/runs/ and the always-on
   board is started if it is not running yet; the result carries
   {"board":{"url","runId"}}. That URL is the one to hand to a human.
-  --no-board (or AGENT_TOOLS_BOARD=off) skips both.
+  There is deliberately no per-run switch to turn this off: the board is the
+  human's only window into a running arm. A machine that should not serve one
+  at all (CI, sandbox) sets AGENT_TOOLS_BOARD=off in its environment instead.
 
   plan --role <name> [--role <name> ...] [--roles-file <path>] [--runner ...]
        [--models-file <file>] [--workdir <dir>]
@@ -154,17 +155,14 @@ function parseFlags(rest, allowed) {
 }
 
 function parseRun(rest) {
-  // `--no-board` 是布尔开关：不登记 run、也不拉起常驻看板。
-  const options = { command: 'run', approve: true, board: true }
-  const filtered = []
-  for (const arg of rest) {
-    if (arg === '--no-board') {
-      options.board = false
-      continue
-    }
-    filtered.push(arg)
+  // 曾经有过 `--no-board`：按次关掉登记与看板。删掉是因为它把「人看得到这次 run」
+  // 变成了某个调用方（往往是个 agent）一次性的、静默的副作用。整机不要看板请用
+  // 环境变量 AGENT_TOOLS_BOARD=off —— 那是运维决策，不该藏在一次命令里。
+  if (rest.includes('--no-board')) {
+    invalid('--no-board 已移除：登记与看板默认开启；整机不要看板请设 AGENT_TOOLS_BOARD=off')
   }
-  const parsed = parseFlags(filtered, RUN_FLAGS)
+  const options = { command: 'run', approve: true }
+  const parsed = parseFlags(rest, RUN_FLAGS)
   for (const [key, value] of Object.entries(parsed)) if (value !== undefined) options[key] = value
   if (!options.outDir) invalid('Missing --out-dir')
   if (!options.manifest) {
@@ -539,7 +537,7 @@ async function run(options) {
     : { arms: buildSingleArm(options, table, lists, override, defaultRunner), concurrency: undefined }
   const concurrency = options.concurrency || built.concurrency || 1
   // 观察端一律 best-effort：登记失败、看板起不来都不允许影响这次执行。
-  const observe = options.board === false || process.env.AGENT_TOOLS_BOARD === 'off' ? null : await openObservation(outDir, built.arms)
+  const observe = process.env.AGENT_TOOLS_BOARD === 'off' ? null : await openObservation(outDir, built.arms)
   let results
   try {
     results = await runArms({
