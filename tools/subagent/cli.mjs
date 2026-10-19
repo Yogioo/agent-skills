@@ -11,7 +11,7 @@ import { realpathSync, writeFileSync } from 'node:fs'
 
 import { CAPABILITIES, RUNNERS, capabilities, resolveRunnerName } from '../../lib/agent-run/runners/index.mjs'
 import { ensureBoard } from '../../lib/run-runtime/board.mjs'
-import { registerRun, unregisterRun } from '../../lib/run-runtime/run-registry.mjs'
+import { finishRun, registerRun } from '../../lib/run-runtime/run-registry.mjs'
 import { resolveBin } from '../../lib/agent-run/runners/resolve-bin.mjs'
 import {
   BUDGET_EFFORT,
@@ -548,7 +548,8 @@ async function run(options) {
       bin: options.bin,
     })
   } finally {
-    observe?.close()
+    // 收尾是“记账”，不是“删账”：历史留在看板上，`runs forget` 才是显式删除。
+    observe?.close({ outcome: results ? (results.every((record) => record.status === 'ok') ? 'ok' : 'failed') : 'error' })
   }
   const reportFile = join(outDir, 'report.jsonl')
   writeFileSync(reportFile, `${results.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8')
@@ -610,11 +611,11 @@ async function openObservation(outDir, arms) {
   return {
     board,
     runId: registered?.runId,
-    close: () => {
+    close: (facts = {}) => {
       try {
-        if (registered) unregisterRun(registered.runId)
+        if (registered) finishRun(registered.runId, facts)
       } catch {
-        /* 注销失败由 runs list --prune 兜底 */
+        /* 收尾失败由下次 `runs list --prune` 兜底 */
       }
     },
   }

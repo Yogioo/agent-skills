@@ -22,7 +22,7 @@ import { createViewerServer } from '../../lib/run-runtime/viewer.mjs'
 import { mergeConfigFiles, projectIdentity, redactSecrets } from '../../lib/run-runtime/config.mjs'
 import { checkpointStatus, createCheckpoint, restoreCheckpoint } from '../../lib/run-runtime/checkpoint.mjs'
 import { currentBoard, ensureBoard, readBoardState, startBoardServer, stopBoard } from '../../lib/run-runtime/board.mjs'
-import { listRuns, pruneStale } from '../../lib/run-runtime/run-registry.mjs'
+import { adoptRun, listRuns, pruneRuns, unregisterRun } from '../../lib/run-runtime/run-registry.mjs'
 
 const BOOLEAN = new Set(['help', 'h', 'steal-stale', 'show-secrets', 'clean-untracked', 'version'])
 
@@ -43,7 +43,10 @@ Usage:
   node cli.mjs board stop                            关掉常驻看板
   node cli.mjs board serve     [--host H] [--port N]  前台起看板（调试用）
 
-  node cli.mjs runs list       [--prune]             当前登记的 run（跨项目）
+  node cli.mjs runs list       [--days N] [--all] [--alive]   当前登记的 run（跨项目，默认全部）
+  node cli.mjs runs adopt      --out-dir DIR [--workdir DIR]  把已跑完的目录补登记成历史
+  node cli.mjs runs forget     --run-id ID                     显式删掉一条记录
+  node cli.mjs runs prune      [--older-than N]                删 N 天前的已结束记录（默认 30）
 
   node cli.mjs config merge    --file A.json [--file B.json ...] [--output OUT.json] [--show-secrets]
   node cli.mjs config identity --workdir DIR
@@ -60,6 +63,8 @@ Notes:
   - checkpoint restore refuses a HEAD mismatch; untracked cleanup requires --clean-untracked.
   - checkpoint state must be new and live outside the target worktree; restore refuses
     untracked/ignored paths that obstruct tracked paths (reset would delete them).
+  - runs list reads the registry; the board page applies a 7-day window by default,
+    but nothing is deleted by a window. Only 'runs forget' and 'runs prune' delete.
 `
 
 function requireFlag(flags, name) {
@@ -217,25 +222,48 @@ async function runBoardServe(flags) {
   })
 }
 
-/** 当前登记的 run；`--prune` 顺手清掉进程已死的记录。 */
+/** 登记的 run；窗口与筛选只影响输出，不删任何记录。 */
 function runRuns(action, flags) {
+  if (action === 'prune') {
+    const days = optionalNumber(flags, 'older-than')
+    const pruned = pruneRuns(days === undefined ? {} : { olderThanMs: days * 24 * 60 * 60 * 1000 })
+    return pruned
+  }
+  if (action === 'forget') {
+    return unregisterRun(requireFlag(flags, 'run-id'))
+  }
+  if (action === 'adopt') {
+    const outDir = requireFlag(flags, 'out-dir')
+    const adopted = adoptRun({ outDir, workdir: flag(flags, 'workdir') || process.cwd() })
+    if (!adopted.adopted) {
+      throw new CliError(`无法补登记 ${outDir}: ${adopted.reason}`, 2, 'ADOPT_FAILED')
+    }
+    return { runId: adopted.record.runId, record: adopted.record }
+  }
   if (action !== 'list') throw new CliError(`unknown runs action: ${action}`, 2, 'UNKNOWN_ACTION')
-  const pruned = boolFlag(flags, 'prune') ? pruneStale() : null
-  const listed = listRuns()
+  const days = optionalNumber(flags, 'days')
+  const since = boolFlag(flags, 'all') || days === 0 || days === undefined
+    ? 0
+    : Date.now() - days * 24 * 60 * 60 * 1000
+  const listed = listRuns({ since, includeFinished: !boolFlag(flags, 'alive') })
   return {
     dir: listed.dir,
-    stale: listed.stale,
+    finished: listed.finished,
+    crashed: listed.crashed,
     malformed: listed.malformed,
     runs: listed.runs.map((run) => ({
       runId: run.runId,
       workdir: run.workdir,
+      outDir: run.outDir,
       labels: run.labels,
       alive: run.alive,
+      outcome: run.outcome,
+      crashed: run.crashed,
       startedAt: run.startedAt,
+      endedAt: run.endedAt,
       elapsedMs: run.elapsedMs,
       progressFile: run.progressFile,
     })),
-    ...(pruned ? { pruned: pruned.removed } : {}),
   }
 }
 
@@ -286,7 +314,10 @@ export async function main(argv = process.argv.slice(2)) {
       'board status': [],
       'board stop': [],
       'board serve': ['host', 'port'],
-      'runs list': ['prune'],
+      'runs list': ['days', 'all', 'alive'],
+      'runs adopt': ['out-dir', 'workdir'],
+      'runs forget': ['run-id'],
+      'runs prune': ['older-than'],
     }[group === 'serve' ? group : `${group} ${action}`]
     if (!allowed || positionals.length !== (group === 'serve' ? 1 : 2)) {
       throw new CliError('unknown command or extra positional arguments', 2, 'INVALID_ARG')

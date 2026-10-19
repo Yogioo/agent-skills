@@ -115,8 +115,21 @@ survives any single run. `subagent run` calls `ensure` for you and puts
 `{"board":{"url","runId"}}` in its result — that URL is what to hand a human.
 It listens on `0.0.0.0` and prints the LAN address, so a teammate can open it; the
 port is remembered in `<AFK home>/board/state.json` so the link keeps working.
-It reads no config and exposes no write endpoint. A run whose process died is
-marked **stale**, never shown as running.
+It reads no config and exposes no write endpoint. A run whose process died without
+finishing is marked **中断**, never shown as running.
+
+Runs are **history, not a live list**: finishing marks the record `endedAt` and
+leaves it in place, so yesterday's run is still there today. The page defaults to
+a 7-day window (`近 1 天 / 近 7 天 / 近 30 天 / 全部`, plus `只看运行中`), and the
+window only filters what is served — the records stay on disk. Deleting is always
+explicit:
+
+```
+agent-tools run-runtime runs list --days 7 | --all | --alive
+agent-tools run-runtime runs adopt  --out-dir <dir> --workdir <dir>   # backfill a dir into history
+agent-tools run-runtime runs forget --run-id <id>
+agent-tools run-runtime runs prune  --older-than 30                    # days, default 30
+```
 
 Each run also writes `<out-dir>/progress.jsonl` with only `arm_start`, `think`,
 `say`, `tool` and `arm_end` — a turn's `events.jsonl` runs to megabytes and is not

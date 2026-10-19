@@ -120,9 +120,10 @@ flag on someone else's behalf to hide a run.
   the input (`prompt`, `promptChars`, `promptFile`) and `tool` carries `detail`.
   Quote that `detail` when telling the human what is happening; do not summarise
   it into "doing something".
-- Board lifecycle: `agent-tools run-runtime board ensure|status|stop`. Only the
-  `close`d run disappears from the page; a run whose process died is shown as
-  **stale**, never as running.
+- Board lifecycle: `agent-tools run-runtime board ensure|status|stop`. A finished run
+  stays on the page as history (marked 完成 / 失败 / 中断), and the page defaults to a
+  7-day window — switching the window never deletes anything. Only `runs forget`
+  and `runs prune` remove records; never delete one to "clean up".
 
 ## Mapping pstack's words to this command
 
