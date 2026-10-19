@@ -97,7 +97,10 @@ already open when the work starts:
 
 The `run` result carries `{"board":{"url","runId"}}`. The board is an always-on
 read-only page (one per machine, shared by every project) — it lists every live
-run with its current phase and elapsed time. If it is not running yet, `run`
+run with its current phase and elapsed time, and one click shows the full
+timeline: wall-clock time, offset from arm start, what the tool actually touched
+(*读 …/DeathSystem.cs*, *命令 dotnet build*, *搜 sceneLayout in …/UI*), how long it
+took, and the agent's own one-line narration. If it is not running yet, `run`
 starts it; you never have to start it by hand.
 
 There is **no per-run flag to switch this off** — by design. `--no-board` used to
@@ -108,10 +111,13 @@ flag on someone else's behalf to hide a run.
 
 - **Never `cat` an arm's `events.jsonl`.** One turn writes megabytes there. If you
   need the mid-run state, call the board's API instead: `GET /api/runs` (one line
-  per run) or `GET /api/runs/<runId>` (last 40 progress records).
+  per run, with a raw `lastEvent`) or `GET /api/runs/<runId>` (last 60 progress
+  records).
 - Mid-run progress the user asked about is answered from `progress.jsonl`
   (`agent-tools run-runtime progress read --file <out-dir>/progress.jsonl`), which
-  only holds `arm_start` / `tool` / `arm_end`.
+  only holds `arm_start` / `say` / `tool` / `arm_end` — `tool` carries `detail`.
+  Quote that `detail` when telling the human what is happening; do not summarise
+  it into "doing something".
 - Board lifecycle: `agent-tools run-runtime board ensure|status|stop`. Only the
   `close`d run disappears from the page; a run whose process died is shown as
   **stale**, never as running.

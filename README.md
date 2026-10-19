@@ -118,8 +118,13 @@ port is remembered in `<AFK home>/board/state.json` so the link keeps working.
 It reads no config and exposes no write endpoint. A run whose process died is
 marked **stale**, never shown as running.
 
-Each run also writes `<out-dir>/progress.jsonl` with only `arm_start`, `tool` and
-`arm_end` — a turn's `events.jsonl` runs to megabytes and is not a progress feed.
+Each run also writes `<out-dir>/progress.jsonl` with only `arm_start`, `say`, `tool`
+and `arm_end` — a turn's `events.jsonl` runs to megabytes and is not a progress
+feed. `tool` lines carry a `detail` (the file, the command, the pattern) so the
+page can say *读 …/DeathSystem.cs* instead of `name=read`, and `say` holds one
+truncated line per completed assistant message (streaming deltas are dropped).
+The board renders all of it as a timeline: wall-clock time, offset from the arm's
+start, the action, and how long the tool took.
 
 ## Skills
 
