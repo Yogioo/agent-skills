@@ -98,6 +98,29 @@ list, and `probe` spends one cheap read-only turn per distinct target to find ou
 which ones actually answer. An id that exists is not an id that works: a provider
 with no subscription answers 403.
 
+## Watching a run
+
+A `subagent run` takes minutes and whoever started it is usually talking to an
+agent, not watching a terminal. So the runtime keeps one always-on, read-only
+board per machine, and every run registers itself in it:
+
+```
+agent-tools run-runtime board ensure    # idempotent; prints {"url": ...}
+agent-tools run-runtime board status
+agent-tools run-runtime board stop
+```
+
+The board scans `<AFK home>/runs/*.json`, so it shows every project at once and
+survives any single run. `subagent run` calls `ensure` for you and puts
+`{"board":{"url","runId"}}` in its result — that URL is what to hand a human.
+It listens on `0.0.0.0` and prints the LAN address, so a teammate can open it; the
+port is remembered in `<AFK home>/board/state.json` so the link keeps working.
+It reads no config and exposes no write endpoint. A run whose process died is
+marked **stale**, never shown as running.
+
+Each run also writes `<out-dir>/progress.jsonl` with only `arm_start`, `tool` and
+`arm_end` — a turn's `events.jsonl` runs to megabytes and is not a progress feed.
+
 ## Skills
 
 Skills are routing instructions for an agent. The toolkit wrappers call the

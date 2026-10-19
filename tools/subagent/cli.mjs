@@ -10,6 +10,8 @@ import { pathToFileURL } from 'node:url'
 import { realpathSync, writeFileSync } from 'node:fs'
 
 import { CAPABILITIES, RUNNERS, capabilities, resolveRunnerName } from '../../lib/agent-run/runners/index.mjs'
+import { ensureBoard } from '../../lib/run-runtime/board.mjs'
+import { registerRun, unregisterRun } from '../../lib/run-runtime/run-registry.mjs'
 import { resolveBin } from '../../lib/agent-run/runners/resolve-bin.mjs'
 import {
   BUDGET_EFFORT,
@@ -40,9 +42,15 @@ const USAGE = `subagent - run one or more agent turns from a pstack role table
       [--roles-file <path>] [--runner pi|codex|agent] [--provider <id>]
       [--model <id>] [--thinking <level>] [--sandbox <mode>]
       [--workdir <dir>] [--timeout <ms>] [--bin <path>] [--models-file <file>]
+      [--no-board]
 
   run --manifest <arms.json> --out-dir <new-dir> [--concurrency <n>]
       [same options as above; the manifest wins for every key it sets]
+
+  Default: the run is registered under <AFK home>/runs/ and the always-on
+  board is started if it is not running yet; the result carries
+  {"board":{"url","runId"}}. That URL is the one to hand to a human.
+  --no-board (or AGENT_TOOLS_BOARD=off) skips both.
 
   plan --role <name> [--role <name> ...] [--roles-file <path>] [--runner ...]
        [--models-file <file>] [--workdir <dir>]
@@ -146,8 +154,17 @@ function parseFlags(rest, allowed) {
 }
 
 function parseRun(rest) {
-  const options = { command: 'run', approve: true }
-  const parsed = parseFlags(rest, RUN_FLAGS)
+  // `--no-board` 是布尔开关：不登记 run、也不拉起常驻看板。
+  const options = { command: 'run', approve: true, board: true }
+  const filtered = []
+  for (const arg of rest) {
+    if (arg === '--no-board') {
+      options.board = false
+      continue
+    }
+    filtered.push(arg)
+  }
+  const parsed = parseFlags(filtered, RUN_FLAGS)
   for (const [key, value] of Object.entries(parsed)) if (value !== undefined) options[key] = value
   if (!options.outDir) invalid('Missing --out-dir')
   if (!options.manifest) {
@@ -521,13 +538,20 @@ async function run(options) {
     ? buildManifestArms(options, table, lists, override, defaultRunner)
     : { arms: buildSingleArm(options, table, lists, override, defaultRunner), concurrency: undefined }
   const concurrency = options.concurrency || built.concurrency || 1
-  const results = await runArms({
-    arms: built.arms,
-    outDir,
-    concurrency,
-    timeoutMs: options.timeout,
-    bin: options.bin,
-  })
+  // 观察端一律 best-effort：登记失败、看板起不来都不允许影响这次执行。
+  const observe = options.board === false || process.env.AGENT_TOOLS_BOARD === 'off' ? null : await openObservation(outDir, built.arms)
+  let results
+  try {
+    results = await runArms({
+      arms: built.arms,
+      outDir,
+      concurrency,
+      timeoutMs: options.timeout,
+      bin: options.bin,
+    })
+  } finally {
+    observe?.close()
+  }
   const reportFile = join(outDir, 'report.jsonl')
   writeFileSync(reportFile, `${results.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8')
   const summary = summarize(results)
@@ -539,6 +563,7 @@ async function run(options) {
       runner: defaultRunner,
       modelLists: listSummary(lists),
       concurrency,
+      ...(observe?.board?.ok ? { board: { url: observe.board.url, runId: observe.runId } } : {}),
       ...summary,
       arms: results.map((record) => ({
         label: record.label,
@@ -557,6 +582,43 @@ async function run(options) {
       })),
     },
     exitCode: summary.ok === results.length ? 0 : 1,
+  }
+}
+
+/**
+ * 打开观察面：登记这次 run（跨项目可见），并确保常驻看板在跑。
+ * 两件事都是 best-effort —— 拿不到地址也必须让执行继续。
+ */
+async function openObservation(outDir, arms) {
+  const workdir = arms[0]?.workdir || process.cwd()
+  let registered = null
+  try {
+    registered = registerRun({
+      workdir,
+      outDir,
+      progressFile: join(outDir, 'progress.jsonl'),
+      labels: arms.map((arm) => arm.label),
+      runner: arms[0]?.runner,
+    })
+  } catch {
+    /* 登记簿写不了，执行照跑 */
+  }
+  let board = null
+  try {
+    board = await ensureBoard()
+  } catch (error) {
+    board = { ok: false, error: error && error.message ? error.message : String(error) }
+  }
+  return {
+    board,
+    runId: registered?.runId,
+    close: () => {
+      try {
+        if (registered) unregisterRun(registered.runId)
+      } catch {
+        /* 注销失败由 runs list --prune 兜底 */
+      }
+    },
   }
 }
 

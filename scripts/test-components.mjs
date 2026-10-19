@@ -14,6 +14,12 @@ if (selected.some((name) => !groups.includes(name))) {
 }
 const files = selected.flatMap((name) => readdirSync(join(root, 'tests', name))
   .filter((file) => file.endsWith('.test.mjs')).map((file) => join(root, 'tests', name, file)))
-const result = spawnSync(process.execPath, ['--test', ...files], { cwd: root, stdio: 'inherit', windowsHide: true })
+const result = spawnSync(process.execPath, ['--test', ...files], {
+  cwd: root,
+  stdio: 'inherit',
+  windowsHide: true,
+  // 测试里不许拉起常驻看板（也不许往真实 ~/.afk 里登记 run）。
+  env: { ...process.env, AGENT_TOOLS_BOARD: 'off' },
+})
 if (result.error) process.stderr.write(`${result.error.message}\n`)
 process.exitCode = result.status ?? 1

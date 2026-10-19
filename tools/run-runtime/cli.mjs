@@ -21,6 +21,8 @@ import { appendEvent, readEvents } from '../../lib/run-runtime/progress.mjs'
 import { createViewerServer } from '../../lib/run-runtime/viewer.mjs'
 import { mergeConfigFiles, projectIdentity, redactSecrets } from '../../lib/run-runtime/config.mjs'
 import { checkpointStatus, createCheckpoint, restoreCheckpoint } from '../../lib/run-runtime/checkpoint.mjs'
+import { currentBoard, ensureBoard, readBoardState, startBoardServer, stopBoard } from '../../lib/run-runtime/board.mjs'
+import { listRuns, pruneStale } from '../../lib/run-runtime/run-registry.mjs'
 
 const BOOLEAN = new Set(['help', 'h', 'steal-stale', 'show-secrets', 'clean-untracked', 'version'])
 
@@ -35,6 +37,13 @@ Usage:
   node cli.mjs progress append --file FILE --event NAME [--level N] [--data JSON] [--time MS]
   node cli.mjs progress read   --file FILE [--after N]
   node cli.mjs serve           --events-file FILE [--host 127.0.0.1] [--port 0]
+
+  node cli.mjs board ensure    [--host 0.0.0.0]      幂等拉起常驻看板（没在跑就起）
+  node cli.mjs board status                          在不在跑、地址是什么
+  node cli.mjs board stop                            关掉常驻看板
+  node cli.mjs board serve     [--host H] [--port N]  前台起看板（调试用）
+
+  node cli.mjs runs list       [--prune]             当前登记的 run（跨项目）
 
   node cli.mjs config merge    --file A.json [--file B.json ...] [--output OUT.json] [--show-secrets]
   node cli.mjs config identity --workdir DIR
@@ -179,6 +188,57 @@ function runCheckpoint(action, flags) {
   throw new CliError(`unknown checkpoint action: ${action}`, 2, 'UNKNOWN_ACTION')
 }
 
+/** 确保常驻看板在跑。幂等，输出单行 JSON（`url` 就是给人打开的地址）。 */
+async function runBoard(action, flags) {
+  if (action === 'ensure') {
+    return await ensureBoard({ host: flag(flags, 'host') || undefined })
+  }
+  if (action === 'status') {
+    const health = await currentBoard()
+    const state = readBoardState()
+    return { running: health.ok, ...(state || {}), ...(health.ok ? {} : { error: health.error }) }
+  }
+  if (action === 'stop') return stopBoard()
+  throw new CliError(`unknown board action: ${action}`, 2, 'UNKNOWN_ACTION')
+}
+
+async function runBoardServe(flags) {
+  const board = await startBoardServer({
+    host: flag(flags, 'host') || '127.0.0.1',
+    port: optionalNumber(flags, 'port') ?? 0,
+  })
+  writeStdout({ url: board.local, share: board.share, host: board.host, port: board.port })
+  await new Promise((done) => {
+    const stop = () => {
+      board.close().then(done)
+    }
+    process.once('SIGINT', stop)
+    process.once('SIGTERM', stop)
+  })
+}
+
+/** 当前登记的 run；`--prune` 顺手清掉进程已死的记录。 */
+function runRuns(action, flags) {
+  if (action !== 'list') throw new CliError(`unknown runs action: ${action}`, 2, 'UNKNOWN_ACTION')
+  const pruned = boolFlag(flags, 'prune') ? pruneStale() : null
+  const listed = listRuns()
+  return {
+    dir: listed.dir,
+    stale: listed.stale,
+    malformed: listed.malformed,
+    runs: listed.runs.map((run) => ({
+      runId: run.runId,
+      workdir: run.workdir,
+      labels: run.labels,
+      alive: run.alive,
+      startedAt: run.startedAt,
+      elapsedMs: run.elapsedMs,
+      progressFile: run.progressFile,
+    })),
+    ...(pruned ? { pruned: pruned.removed } : {}),
+  }
+}
+
 async function runServe(flags) {
   const eventsFile = requireFlag(flags, 'events-file')
   const viewer = await createViewerServer({
@@ -222,6 +282,11 @@ export async function main(argv = process.argv.slice(2)) {
       'checkpoint status': ['state', 'workdir'],
       'checkpoint restore': ['state', 'workdir', 'clean-untracked', 'exclude'],
       serve: ['events-file', 'host', 'port'],
+      'board ensure': ['host'],
+      'board status': [],
+      'board stop': [],
+      'board serve': ['host', 'port'],
+      'runs list': ['prune'],
     }[group === 'serve' ? group : `${group} ${action}`]
     if (!allowed || positionals.length !== (group === 'serve' ? 1 : 2)) {
       throw new CliError('unknown command or extra positional arguments', 2, 'INVALID_ARG')
@@ -236,9 +301,15 @@ export async function main(argv = process.argv.slice(2)) {
       await runServe(flags)
       return 0
     }
+    if (group === 'board' && action === 'serve') {
+      await runBoardServe(flags)
+      return 0
+    }
     let out
     if (group === 'lease') out = await runLease(action, flags)
     else if (group === 'progress') out = runProgress(action, flags)
+    else if (group === 'board') out = await runBoard(action, flags)
+    else if (group === 'runs') out = runRuns(action, flags)
     else if (group === 'config') out = runConfig(action, flags)
     else if (group === 'checkpoint') out = runCheckpoint(action, flags)
     else throw new CliError(`unknown command group: ${group}`, 2, 'UNKNOWN_ACTION')

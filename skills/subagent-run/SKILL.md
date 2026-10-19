@@ -85,6 +85,32 @@ Every non-`ok` arm carries an `errorMessage`. When the CLI itself never reported
 reason, the tail of its stderr is used, and the whole of it is in that arm's
 `log.txt`. So a failed arm is never a dead end.
 
+## Watching a run (this is for the human, not for you)
+
+A run takes minutes, and the human talking to you cannot see your terminal. Give
+them the board URL **in the message you send before the tool call**, so the page is
+already open when the work starts:
+
+```
+开跑了，进度在这里：http://192.168.18.34:7717/
+```
+
+The `run` result carries `{"board":{"url","runId"}}`. The board is an always-on
+read-only page (one per machine, shared by every project) — it lists every live
+run with its current phase and elapsed time. If it is not running yet, `run`
+starts it; you never have to start it by hand.
+
+- **Never `cat` an arm's `events.jsonl`.** One turn writes megabytes there. If you
+  need the mid-run state, call the board's API instead: `GET /api/runs` (one line
+  per run) or `GET /api/runs/<runId>` (last 40 progress records).
+- Mid-run progress the user asked about is answered from `progress.jsonl`
+  (`agent-tools run-runtime progress read --file <out-dir>/progress.jsonl`), which
+  only holds `arm_start` / `tool` / `arm_end`.
+- `--no-board` (or `AGENT_TOOLS_BOARD=off`) skips registration and the board.
+- Board lifecycle: `agent-tools run-runtime board ensure|status|stop`. Only the
+  `close`d run disappears from the page; a run whose process died is shown as
+  **stale**, never as running.
+
 ## Mapping pstack's words to this command
 
 | pstack says | here |
@@ -110,6 +136,9 @@ reason, the tail of its stderr is used, and the whole of it is in that arm's
 - **Prefer a native subagent when the harness has one and one model will do.** It
   is cheaper and shares context. Reach for this command for panels, for fan-out,
   and whenever the arms must differ by model family.
+- **A human watching a run gets a URL, not a summary.** `run` starts the board and
+  returns `board.url`; say it out loud before the turn starts. See
+  [Watching a run](#watching-a-run-this-is-for-the-human-not-for-you).
 - **Writing arms need separate workdirs.** Pass `--workdir` per arm, usually one
   git worktree each. Reading arms can share the workspace with `--sandbox read-only`.
 
