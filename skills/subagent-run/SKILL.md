@@ -120,6 +120,10 @@ flag on someone else's behalf to hide a run.
   the input (`prompt`, `promptChars`, `promptFile`) and `tool` carries `detail`.
   Quote that `detail` when telling the human what is happening; do not summarise
   it into "doing something".
+- The prompt for every arm is also stored on the run **record** (`inputs`), so
+  asking "what was this finished run asked to do?" is answered by
+  `GET /api/runs/<runId>` (or the page's 输入 block), not by digging into a
+  27MB `events.jsonl`. `runs adopt` backfills it for runs whose record was lost.
 - Board lifecycle: `agent-tools run-runtime board ensure|status|stop`. A finished run
   stays on the page as history (marked 完成 / 失败 / 中断), and the page defaults to a
   7-day window — switching the window never deletes anything. Only `runs forget`

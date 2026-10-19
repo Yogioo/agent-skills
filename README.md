@@ -126,7 +126,7 @@ explicit:
 
 ```
 agent-tools run-runtime runs list --days 7 | --all | --alive
-agent-tools run-runtime runs adopt  --out-dir <dir> --workdir <dir>   # backfill a dir into history
+agent-tools run-runtime runs adopt  --out-dir <dir> --workdir <dir>   # backfill a dir (and its prompts) into history
 agent-tools run-runtime runs forget --run-id <id>
 agent-tools run-runtime runs prune  --older-than 30                    # days, default 30
 ```
@@ -141,6 +141,13 @@ emits ~50k of them); `tool` lines carry a `detail` (the file relative to the
 workdir, the command, the pattern) so the page can say *读 …/TerrainConfigPage.cs*
 instead of `name=read`. The board renders all of it as a timeline: wall-clock
 time, offset from the arm's start, the action, and how long the tool took.
+
+The prompt is also copied into the run **record** (`inputs`, one entry per arm),
+not only into `progress.jsonl`: the board only reads the tail of the progress file,
+so on a long run the opening `arm_start` falls out of the window exactly when the
+finished run is most interesting. `runs adopt` rebuilds it from each arm's
+`events.jsonl` (the first `role: user` message, bounded to a 4MB head read), and
+picks the original brief path back out of the `<file name="...">` wrapper pi adds.
 
 ## Skills
 

@@ -151,6 +151,61 @@ test('adopt 从 progress.jsonl 补出历史，且重复执行是幂等的', (t) 
   assert.equal(listed.runs[0].outcome, 'ok')
 })
 
+test('registerRun 把每个臂的输入写进记录（历史页靠它回答“这轮在干什么”）', (t) => {
+  withHome(t)
+  const long = '把地形默认值改成从表里读。'.repeat(100)
+  const { record } = registerRun({
+    workdir: 'C:/projects/Demo', outDir: 'C:/projects/Demo/cache/run-1', pid: process.pid,
+    labels: ['feature', 'review'],
+    inputs: [
+      { label: 'feature', prompt: long, promptChars: long.length, promptFile: 'C:/briefs/f.md' },
+      { label: 'review', prompt: '', promptChars: 0 },
+    ],
+  })
+  assert.equal(record.inputs.length, 2, '空正文的臂也要留一条（至少知道它存在）')
+  assert.equal(record.inputs[0].label, 'feature')
+  assert.equal(record.inputs[0].promptChars, long.length)
+  assert.equal(record.inputs[0].promptFile, 'C:/briefs/f.md')
+  assert.equal(record.inputs[0].prompt.length, 701, '记录只存预览，不背全文')
+  assert.equal(record.inputs[1].prompt, undefined)
+})
+
+test('adopt 从各臂 events.jsonl 找回提示词，连原 brief 路径一起', (t) => {
+  withHome(t)
+  const root = mkdtempSync(join(tmpdir(), 'afk-adopt-input-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const outDir = join(root, 'run-1')
+  mkdirSync(join(outDir, 'feature'), { recursive: true })
+  const started = Date.now() - 120000
+  writeFileSync(
+    join(outDir, 'progress.jsonl'),
+    [
+      { t: started, level: 1, event: 'arm_start', arm: 'feature', at: started, runner: 'pi' },
+      { t: started + 90000, level: 1, event: 'arm_end', arm: 'feature', status: 'ok' },
+    ].map((line) => JSON.stringify(line)).join('\n') + '\n',
+  )
+  const brief = 'C:\\projects\\DigitDoor\\cache\\briefs\\terrain.md'
+  const userMessage = {
+    type: 'message_end',
+    message: { role: 'user', content: [{ type: 'text', text: `<file name="${brief}">\n# 任务：把 TerrainConfigPage 迁到 UI DSL\n` }] },
+  }
+  writeFileSync(
+    join(outDir, 'feature', 'events.jsonl'),
+    [JSON.stringify({ type: 'message_start' }), JSON.stringify(userMessage)].join('\n') + '\n',
+  )
+
+  const { record } = adoptRun({ outDir, workdir: 'C:/projects/Demo' })
+  assert.equal(record.inputs.length, 1)
+  assert.equal(record.inputs[0].label, 'feature')
+  assert.equal(record.inputs[0].promptFile, brief, '从 <file name="…"> 里取回原 brief 路径')
+  assert.match(record.inputs[0].prompt, /^<file name=/)
+  assert.match(record.inputs[0].prompt, /TerrainConfigPage/)
+
+  // 页面拿到的摘要里必须带着它
+  const listed = listRuns({ since: 0 })
+  assert.equal(listed.runs[0].inputs[0].promptFile, brief)
+})
+
 test('adopt 对没有 progress.jsonl 的目录给出理由，不写空记录', (t) => {
   withHome(t)
   const outDir = mkdtempSync(join(tmpdir(), 'afk-adopt-empty-'))

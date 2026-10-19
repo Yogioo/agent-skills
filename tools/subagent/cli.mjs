@@ -19,6 +19,7 @@ import {
   CANONICAL_ROLE_GROUPS,
   PROBE_THINKING,
   SAFE_ROLE_VALUE,
+  describeArmPrompt,
   diagnose,
   loadModelLists,
   loadRoleTable,
