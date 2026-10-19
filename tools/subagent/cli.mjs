@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 
 import { CAPABILITIES, RUNNERS, capabilities, resolveRunnerName } from '../../lib/agent-run/runners/index.mjs'
 import { ensureBoard } from '../../lib/run-runtime/board.mjs'
@@ -589,6 +589,16 @@ async function run(options) {
  * 打开观察面：登记这次 run（跨项目可见），并确保常驻看板在跑。
  * 两件事都是 best-effort —— 拿不到地址也必须让执行继续。
  */
+/**
+ * 看板深链：带上 runId，页面打开就选中这一次，而不是列表里的第一条。
+ * @param {string} url
+ * @param {string|undefined} runId
+ */
+function boardLinkFor(url, runId) {
+  if (!runId) return url
+  return url + (url.includes('?') ? '&' : '?') + 'run=' + encodeURIComponent(runId)
+}
+
 async function openObservation(outDir, arms) {
   const workdir = arms[0]?.workdir || process.cwd()
   let registered = null
@@ -619,6 +629,23 @@ async function openObservation(outDir, arms) {
     board = await ensureBoard()
   } catch (error) {
     board = { ok: false, error: error && error.message ? error.message : String(error) }
+  }
+  // 人得知道去哪儿看。链接写两处：stderr（直接跑命令的人立刻看到）和
+  // <out-dir>/board.url（事后想找回也不必猜端口）。
+  if (board?.ok && board.url) {
+    const deep = boardLinkFor(board.url, registered?.runId)
+    try {
+      process.stderr.write('board: ' + board.url + String.fromCharCode(10) + '  本次: ' + deep + String.fromCharCode(10))
+    } catch {
+      /* stderr 写不了不影响执行 */
+    }
+    try {
+      // outDir 这时还没建（各臂自己会建），所以先补一下再写。
+      mkdirSync(outDir, { recursive: true })
+      writeFileSync(join(outDir, 'board.url'), deep + String.fromCharCode(10), 'utf8')
+    } catch {
+      /* 目录还没建好也无所谓 */
+    }
   }
   return {
     board,

@@ -92,8 +92,14 @@ them the board URL **in the message you send before the tool call**, so the page
 already open when the work starts:
 
 ```
-开跑了，进度在这里：http://192.168.18.34:7717/
+开跑了，进度在这里：http://192.168.18.34:7717/?run=<runId>
 ```
+
+The command already does its own half of this: `subagent run` writes the board URL
+and a `?run=<runId>` deep link to **stderr** (so someone running the CLI directly
+sees it) and to `<out-dir>/board.url` (so it can be found afterwards even when the
+port was renegotiated). Pasting it into your message is still on you — the human
+talking to you does not see stderr.
 
 The `run` result carries `{"board":{"url","runId"}}`. The board is an always-on
 read-only page (one per machine, shared by every project) — it lists every live

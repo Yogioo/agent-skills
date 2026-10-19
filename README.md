@@ -113,10 +113,12 @@ agent-tools run-runtime board stop
 The board scans `<AFK home>/runs/*.json`, so it shows every project at once and
 survives any single run. `subagent run` calls `ensure` for you and puts
 `{"board":{"url","runId"}}` in its result — that URL is what to hand a human.
-It listens on `0.0.0.0` and prints the LAN address, so a teammate can open it; the
-port is remembered in `<AFK home>/board/state.json` so the link keeps working.
-It reads no config and exposes no write endpoint. A run whose process died without
-finishing is marked **中断**, never shown as running.
+It also prints it to stderr with a `?run=<runId>` deep link that preselects the run,
+and writes the same link to `<out-dir>/board.url`, because nobody reads a JSON
+result looking for a URL. It listens on `0.0.0.0` and prints the LAN address, so a
+teammate can open it; the port is remembered in `<AFK home>/board/state.json` so the
+link keeps working. It reads no config and exposes no write endpoint. A run whose
+process died without finishing is marked **中断**, never shown as running.
 
 Runs are **history, not a live list**: finishing marks the record `endedAt` and
 leaves it in place, so yesterday's run is still there today. The page defaults to
