@@ -89,6 +89,23 @@ test('normalizePiEvent maps tools and messages', () => {
   assert.equal(msg.kind, 'assistant')
 })
 
+test('normalizePiEvent 把 message_update 的思考/正文认出来', () => {
+  // 打过这个错：pi 的正文和思考都在 message_update 里，之前全落成 raw，
+  // 于是进度里一条 say/think 都没有，看板只能显示工具名。
+  const thinkingDelta = normalizePiEvent({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'Let' } })
+  assert.equal(thinkingDelta.kind, 'thinking_partial')
+  assert.equal(thinkingDelta.text, 'Let')
+  // end 事件带全文，不用自己拼 delta。
+  const thinkingEnd = normalizePiEvent({ type: 'message_update', assistantMessageEvent: { type: 'thinking_end', content: '先看看配置。' } })
+  assert.equal(thinkingEnd.kind, 'thinking')
+  assert.equal(thinkingEnd.text, '先看看配置。')
+  const textEnd = normalizePiEvent({ type: 'message_update', assistantMessageEvent: { type: 'text_end', content: '改好了。' } })
+  assert.equal(textEnd.kind, 'assistant')
+  assert.equal(textEnd.text, '改好了。')
+  const toolCallDelta = normalizePiEvent({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_delta', delta: '' } })
+  assert.equal(toolCallDelta.kind, 'raw')
+})
+
 test('fixtures produce stable normalized kinds', () => {
   const agent = loadFixture('agent-stream.jsonl').map((l) => normalizeEvent(JSON.parse(l), 'agent'))
   assert.deepEqual(agent.map((e) => e.kind), ['raw', 'raw', 'assistant', 'tool', 'tool', 'assistant', 'outcome'])

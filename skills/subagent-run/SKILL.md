@@ -98,10 +98,11 @@ already open when the work starts:
 The `run` result carries `{"board":{"url","runId"}}`. The board is an always-on
 read-only page (one per machine, shared by every project) — it lists every live
 run with its current phase and elapsed time, and one click shows the full
-timeline: wall-clock time, offset from arm start, what the tool actually touched
-(*读 …/DeathSystem.cs*, *命令 dotnet build*, *搜 sceneLayout in …/UI*), how long it
-took, and the agent's own one-line narration. If it is not running yet, `run`
-starts it; you never have to start it by hand.
+timeline: **the input the arm was given**, wall-clock time, offset from arm start,
+what the tool actually touched (*读 …/TerrainConfigPage.cs*, *命令 dotnet build
+(+2 行)*, *搜 sceneLayout in …/UI*), how long it took, the agent's own one-line
+narration and its reasoning blocks. If it is not running yet, `run` starts it; you
+never have to start it by hand.
 
 There is **no per-run flag to switch this off** — by design. `--no-board` used to
 exist and it meant "the human cannot see this run", which no arm ever needed and
@@ -115,7 +116,8 @@ flag on someone else's behalf to hide a run.
   records).
 - Mid-run progress the user asked about is answered from `progress.jsonl`
   (`agent-tools run-runtime progress read --file <out-dir>/progress.jsonl`), which
-  only holds `arm_start` / `say` / `tool` / `arm_end` — `tool` carries `detail`.
+  only holds `arm_start` / `think` / `say` / `tool` / `arm_end`. `arm_start` carries
+  the input (`prompt`, `promptChars`, `promptFile`) and `tool` carries `detail`.
   Quote that `detail` when telling the human what is happening; do not summarise
   it into "doing something".
 - Board lifecycle: `agent-tools run-runtime board ensure|status|stop`. Only the
