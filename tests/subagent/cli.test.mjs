@@ -533,6 +533,49 @@ test('--no-board 已移除：拒绝得明白，且不许静默起臂', async () 
   }
 })
 
+test('看板开着时也不许先建 out-dir：runArms 以它不存在为前提', async () => {
+  // 打过这个错：为了把 board.url 写进 run 目录，openObservation 先 mkdir 了 outDir，
+  // 于是每一次 subagent run 都在 runArms 里炸掉。而测试默认关着看板，抓不到。
+  const dir = workspace()
+  const cap = capture()
+  const home = mkdtempSync(join(tmpdir(), 'afk-board-test-'))
+  const saved = {}
+  for (const key of ['AFK_HOME', 'AGENT_TOOLS_BOARD', 'AGENT_TOOLS_BOARD_HOST']) saved[key] = process.env[key]
+  try {
+    process.env.AFK_HOME = home
+    process.env.AGENT_TOOLS_BOARD_HOST = '127.0.0.1'
+    delete process.env.AGENT_TOOLS_BOARD // 放开看板，走真实 ensureBoard
+    const code = await runCli(
+      [
+        'run', '--role', 'how explorer', '--prompt-file', join(dir, 'brief-a.md'),
+        '--out-dir', join(dir, 'o-board'), '--runner', 'agent', '--bin', join(dir, 'ok.mjs'),
+        ...rolesArgs(dir),
+      ],
+      cap.io,
+    )
+    assert.equal(code, 0, cap.stderr())
+    assert.match(cap.stderr(), /board: http/)
+    assert.equal(existsSync(join(dir, 'o-board', 'board.url')), true, 'run 结束后链接留在 out-dir 里')
+    const result = JSON.parse(cap.stdout().trim())
+    assert.match(result.board.deep, /[?&]run=/, 'JSON 里的链接要带 runId')
+  } finally {
+    // 收掉这次测试起的常驻看板，再把环境恢复原样。
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    process.env.AFK_HOME = home
+    const { stopBoard } = await import('../../lib/run-runtime/board.mjs')
+    stopBoard()
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('一臂起不来不能带走整批：其余臂的结果照交', async () => {
   const dir = workspace()
   writeFileSync(

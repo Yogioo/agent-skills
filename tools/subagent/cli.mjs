@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { realpathSync, writeFileSync } from 'node:fs'
 
 import { CAPABILITIES, RUNNERS, capabilities, resolveRunnerName } from '../../lib/agent-run/runners/index.mjs'
 import { ensureBoard } from '../../lib/run-runtime/board.mjs'
@@ -520,8 +520,10 @@ function buildManifestArms(options, table, models, override, defaultRunner) {
   return { arms, concurrency: manifest.concurrency }
 }
 
-async function run(options) {
+async function run(options, io = {}) {
   const outDir = resolve(options.outDir)
+  // 进度提示走调用方给的 stderr（测试能接住），默认就是真的 stderr。
+  const say = io.stderr || ((text) => process.stderr.write(text))
   requireNewPath(outDir, '--out-dir')
   const table = readTable(options)
   const defaultRunner = options.runner || table.runner || 'pi'
@@ -538,7 +540,7 @@ async function run(options) {
     : { arms: buildSingleArm(options, table, lists, override, defaultRunner), concurrency: undefined }
   const concurrency = options.concurrency || built.concurrency || 1
   // 观察端一律 best-effort：登记失败、看板起不来都不允许影响这次执行。
-  const observe = process.env.AGENT_TOOLS_BOARD === 'off' ? null : await openObservation(outDir, built.arms)
+  const observe = process.env.AGENT_TOOLS_BOARD === 'off' ? null : await openObservation(outDir, built.arms, say)
   let results
   try {
     results = await runArms({
@@ -563,7 +565,16 @@ async function run(options) {
       runner: defaultRunner,
       modelLists: listSummary(lists),
       concurrency,
-      ...(observe?.board?.ok ? { board: { url: observe.board.url, runId: observe.runId } } : {}),
+      ...(observe?.board?.ok
+        ? {
+          board: {
+            url: observe.board.url,
+            runId: observe.runId,
+            // 直接能发人的那条：带 ?run=<id>，打开就选中这次 run。
+            deep: boardLinkFor(observe.board.url, observe.runId),
+          },
+        }
+        : {}),
       ...summary,
       arms: results.map((record) => ({
         label: record.label,
@@ -599,7 +610,7 @@ function boardLinkFor(url, runId) {
   return url + (url.includes('?') ? '&' : '?') + 'run=' + encodeURIComponent(runId)
 }
 
-async function openObservation(outDir, arms) {
+async function openObservation(outDir, arms, say = (text) => process.stderr.write(text)) {
   const workdir = arms[0]?.workdir || process.cwd()
   let registered = null
   try {
@@ -635,17 +646,12 @@ async function openObservation(outDir, arms) {
   if (board?.ok && board.url) {
     const deep = boardLinkFor(board.url, registered?.runId)
     try {
-      process.stderr.write('board: ' + board.url + String.fromCharCode(10) + '  本次: ' + deep + String.fromCharCode(10))
+      say('board: ' + board.url + String.fromCharCode(10) + '  本次: ' + deep + String.fromCharCode(10))
     } catch {
       /* stderr 写不了不影响执行 */
     }
-    try {
-      // outDir 这时还没建（各臂自己会建），所以先补一下再写。
-      mkdirSync(outDir, { recursive: true })
-      writeFileSync(join(outDir, 'board.url'), deep + String.fromCharCode(10), 'utf8')
-    } catch {
-      /* 目录还没建好也无所谓 */
-    }
+    // 注意：outDir 必须留到 runArms 自己创建 —— 它以「目录不存在」为前提，
+    // 这里建了就会让整次 run 直接报 out-dir 已存在。文件在 close() 里补写。
   }
   return {
     board,
@@ -655,6 +661,14 @@ async function openObservation(outDir, arms) {
         if (registered) finishRun(registered.runId, facts)
       } catch {
         /* 收尾失败由下次 `runs list --prune` 兜底 */
+      }
+      // 这时 outDir 已经存在（runArms 建的），把链接留在 run 目录里最稳。
+      if (board?.ok && board.url) {
+        try {
+          writeFileSync(join(outDir, 'board.url'), boardLinkFor(board.url, registered?.runId) + String.fromCharCode(10), 'utf8')
+        } catch {
+          /* 写不了不影响结果 */
+        }
       }
     },
   }
@@ -913,7 +927,7 @@ export async function runCli(argv, io = {}) {
     const outcome = await (async () => {
       switch (options.command) {
         case 'run':
-          return run(options)
+          return run(options, io)
         case 'probe':
           return probe(options)
         case 'plan':
