@@ -100,7 +100,7 @@ with no subscription answers 403.
 
 ## Skills
 
-Skills are routing instructions for an agent. The six toolkit wrappers call the
+Skills are routing instructions for an agent. The toolkit wrappers call the
 installed `agent-tools` command; they contain no implementation and assume the
 runtime is installed separately. A copied wrapper alone does **not** include the
 runtime.
@@ -120,6 +120,11 @@ npx skills add Yogioo/agent-skills --skill questionnaire -g -y
 | [work-items](./skills/work-items/SKILL.md) | beads / GitHub / TAPD work items |
 | [questionnaire](./skills/questionnaire/SKILL.md) | local web form, one submission |
 | [xlsx-cell-diff](./skills/xlsx-cell-diff/SKILL.md) | xlsx display-value diff / merge |
+| [yogioo-mode](./skills/yogioo-mode/SKILL.md) | a poteto-mode playbook, delegated through the toolkit |
+
+The last one is not a wrapper and calls no CLI of its own. It is a workflow
+overlay. It loads a poteto-mode playbook and routes that playbook's `Task` steps
+through `agent-tools subagent`, which Pi has no native tool for.
 
 The six legacy workflow skills keep their existing implementations and
 configuration. They are unrelated to the toolkit runtime and are not migrated by
