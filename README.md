@@ -150,6 +150,9 @@ finished run is most interesting. `runs adopt` rebuilds the prompt from each arm
 `events.jsonl` (the first `role: user` message, bounded to a 4MB head read) and the
 knobs from the first line of its `log.txt` (the command line subagent actually ran),
 and picks the original brief path back out of the `<file name="...">` wrapper pi adds.
+A record written *before* those fields existed is backfilled on the fly from the head
+of `progress.jsonl` (first 64KB, cached by runId), which is why a run that is still
+running shows its brief even though nobody re-registered it.
 
 ## Skills
 
