@@ -1,0 +1,28 @@
+{
+  "task": {
+    "workspaceId": "",
+    "assignee": "彭云洁",
+    "commentAuthor": "彭云洁",
+    "statuses": ["developing", "status_11"],
+    "labels": {
+      "readyLabel": "ready-for-agent",
+      "claimedLabel": "afk-claimed",
+      "deliveredLabel": "afk-delivered",
+      "failedLabel": "afk-failed"
+    }
+  },
+  "run": {
+    "maxTasks": 1,
+    "maxFailures": 2,
+    "timeoutSec": 3600,
+    "verify": "",
+    "watch": false,
+    "pollSec": 60,
+    "skillPath": "C:/Users/EDY/.agents/skills/yogioo-mode",
+    "model": "",
+    "provider": "",
+    "thinking": "",
+    "cacheDir": "",
+    "stopFile": ""
+  }
+}
