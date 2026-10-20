@@ -17,6 +17,7 @@
     --git: #059669;
     --board: #64748b;
     --fail: #dc2626;
+    --tune: #b45309;
   }
   * { box-sizing: border-box; }
   body {
@@ -36,7 +37,7 @@
     padding: 1px 5px;
     color: #1e293b;
   }
-  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 34px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 30px; }
   .chip {
     border: 1px solid var(--line);
     border-radius: 999px;
@@ -49,7 +50,7 @@
   }
   .dot { width: 9px; height: 9px; border-radius: 50%; }
 
-  /* 一条直线的流程：编号、纵向轨道、阶段标记 */
+  /* 一条直线的流程 */
   .flow { list-style: none; margin: 0; padding: 0 0 0 52px; position: relative; }
   .flow::before {
     content: "";
@@ -97,14 +98,35 @@
     padding-left: 2px;
   }
 
+  /* 卡片：可点，点开是这个节点的内部 */
   .step {
+    position: relative;
     background: var(--card);
     border: 1px solid var(--line);
     border-left: 4px solid var(--line);
     border-radius: 9px;
-    padding: 13px 17px;
+    padding: 13px 42px 13px 17px;
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    cursor: pointer;
+    transition: box-shadow 0.12s, transform 0.12s, border-color 0.12s;
   }
+  .step:hover, .step:focus-visible {
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.1);
+    transform: translateY(-1px);
+    outline: none;
+  }
+  .step:focus-visible { box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35); }
+  .step::after {
+    content: "›";
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 22px;
+    line-height: 1;
+    color: #cbd5e1;
+  }
+  .step:hover::after { color: var(--outer); }
   .step.outer { border-left-color: var(--outer); }
   .step.inner { border-left-color: var(--inner); }
   .step.tapd { border-left-color: var(--tapd); }
@@ -146,7 +168,6 @@
   }
   .art b { color: #334155; font-weight: 600; }
 
-  /* 出口：每一步可能怎么离开主流程 */
   .exits { margin-top: 9px; display: flex; flex-direction: column; gap: 4px; }
   .exit {
     font-size: 13px;
@@ -158,7 +179,7 @@
   }
   .exit b { color: var(--fail); font-weight: 600; }
   .exit.warn { background: #fffbeb; border-color: #fde68a; border-left-color: #d97706; }
-  .exit.warn b { color: #b45309; }
+  .exit.warn b { color: var(--tune); }
 
   h2 { font-size: 17px; margin: 44px 0 12px; }
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; background: #fff; }
@@ -176,13 +197,88 @@
   }
   .note b { color: #92400e; }
   footer { margin-top: 40px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
+
+  /* 弹窗 */
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+    display: none;
+    z-index: 50;
+    padding: 4vh 16px;
+    overflow-y: auto;
+  }
+  .modal.show { display: block; }
+  .sheet {
+    max-width: 880px;
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.3);
+  }
+  .sheet-head {
+    position: sticky;
+    top: 0;
+    background: #fff;
+    border-bottom: 1px solid var(--line);
+    border-radius: 12px 12px 0 0;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .sheet-head h2 { margin: 0; font-size: 17px; flex: 1; }
+  .sheet-close {
+    border: 1px solid var(--line);
+    background: #fff;
+    border-radius: 7px;
+    padding: 4px 11px;
+    font-size: 13px;
+    cursor: pointer;
+    color: var(--muted);
+  }
+  .sheet-close:hover { border-color: var(--ink); color: var(--ink); }
+  .sheet-body { padding: 4px 22px 26px; }
+  .where {
+    margin: 12px 0 0;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .sec { margin-top: 20px; border-left: 3px solid var(--line); padding-left: 15px; }
+  .sec h4 {
+    margin: 0 0 7px;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .sec > ul, .sec > ol { margin: 0; padding-left: 20px; }
+  .sec li { margin: 4px 0; }
+  .sec p { margin: 4px 0; }
+  .sec.in { border-color: var(--outer); }
+  .sec.out { border-color: var(--git); }
+  .sec.do { border-color: var(--ink); }
+  .sec.exit { border-color: var(--fail); }
+  .sec.tune { border-color: #d97706; background: #fffbeb; padding: 10px 14px; border-radius: 0 8px 8px 0; }
+  .sec.tune h4 { color: var(--tune); }
+  .kbd {
+    display: inline-block;
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 0 5px;
+    font: 12px/1.6 "Cascadia Code", Consolas, monospace;
+    color: var(--muted);
+    background: #fff;
+  }
+  .hint { font-size: 13px; color: var(--muted); margin: 0 0 22px; }
 </style>
 </head>
 <body>
 <div class="wrap">
 
   <h1>tapd-loop 链路</h1>
-  <p class="sub">一条命令从读到配置，到一张卡被推上去、写回 TAPD，中间经过谁、动了什么、在哪判定。依据是当前的 <code>loop.mjs</code> / <code>turn.mjs</code> / <code>tapd.mjs</code>。</p>
+  <p class="sub">一条命令从读到配置，到一张卡被推上去、写回 TAPD。每张卡片都能点开，看这个节点的输入、输出、内部具体做了什么。</p>
 
   <div class="legend">
     <span class="chip"><i class="dot" style="background:#2563eb"></i>外循环 · node 进程</span>
@@ -193,12 +289,14 @@
     <span class="chip"><i class="dot" style="background:#dc2626"></i>出口 = 离开主流程</span>
   </div>
 
+  <p class="hint">点任意卡片看内部细节。关闭用 <span class="kbd">Esc</span>、点空白处，或右上角按钮。</p>
+
   <ol class="flow">
 
     <li class="stage" data-n="A"><div class="stage-label">启动：一次性准备，和卡片无关</div></li>
 
     <li data-n="1">
-      <div class="step outer">
+      <div class="step outer" role="button" tabindex="0" data-open="1" aria-label="查看节点 1 的内部">
         <h3><span class="actor a-outer">外循环</span>解析参数，叠出最终配置</h3>
         <ul>
           <li>五层覆盖：内置默认 → <code>~/.tapd-loop/config.json</code> → <code>&lt;git-common-dir&gt;/tapd-loop.json</code> → <code>--config</code> 文件 → 命令行参数</li>
@@ -211,7 +309,7 @@
     </li>
 
     <li data-n="2">
-      <div class="step outer">
+      <div class="step outer" role="button" tabindex="0" data-open="2" aria-label="查看节点 2 的内部">
         <h3><span class="actor a-outer">外循环</span>开通道、查仓库、建运行目录</h3>
         <ul>
           <li><code>createTapd()</code>：workspace、状态 key 表、四个机器标签名</li>
@@ -222,7 +320,7 @@
     </li>
 
     <li data-n="3">
-      <div class="step board">
+      <div class="step board" role="button" tabindex="0" data-open="3" aria-label="查看节点 3 的内部">
         <h3><span class="actor a-board">看板</span>拉起常驻进程，拿到一个固定地址</h3>
         <p><code>start-board.mjs</code> 用 detached 子进程起 <code>serve.mjs</code>，绑 <code>127.0.0.1:7317</code>，地址写进 <code>~/.tapd-loop/board.json</code>。已在跑就复用。</p>
         <div class="exits">
@@ -232,7 +330,7 @@
     </li>
 
     <li data-n="4">
-      <div class="step decide outer">
+      <div class="step decide outer" role="button" tabindex="0" data-open="4" aria-label="查看节点 4 的内部">
         <h3><span class="actor a-outer">外循环</span>两个提前退出的口</h3>
         <ul>
           <li><code>--dry-run</code>：打印 <code>sources</code>、<code>cfg</code>、队列，然后退出。不建 runDir、不动 TAPD</li>
@@ -244,14 +342,14 @@
     <li class="stage" data-n="B"><div class="stage-label">每一轮：先看还要不要跑，再挑一张卡</div></li>
 
     <li data-n="5">
-      <div class="step outer">
+      <div class="step outer" role="button" tabindex="0" data-open="5" aria-label="查看节点 5 的内部">
         <h3><span class="actor a-outer">外循环</span>三个停止条件</h3>
-        <p>每分钟一轮：<code>&lt;git-dir&gt;/tapd-loop-stop</code> 存在（每棵树独立）→ <code>maxTasks</code> 到量 → <code>maxFailures</code> 连败。任一成立就跳出。</p>
+        <p>每轮开头问一次：<code>&lt;git-dir&gt;/tapd-loop-stop</code> 存在（每棵树独立）→ <code>maxTasks</code> 到量 → <code>maxFailures</code> 连败。任一成立就跳出。</p>
       </div>
     </li>
 
     <li data-n="6">
-      <div class="step tapd">
+      <div class="step tapd" role="button" tabindex="0" data-open="6" aria-label="查看节点 6 的内部">
         <h3><span class="actor a-tapd">TAPD</span>拉队列，挑第一张能做的</h3>
         <ul>
           <li><code>story list owner=&lt;处理人&gt; label=ready-for-agent</code></li>
@@ -265,7 +363,7 @@
     </li>
 
     <li data-n="7">
-      <div class="step outer">
+      <div class="step outer" role="button" tabindex="0" data-open="7" aria-label="查看节点 7 的内部">
         <h3><span class="actor a-outer">外循环</span>进入 <code>runCard()</code>，再查一次状态</h3>
         <p>列表到开工之间可能被人改过，所以在跑任何前置之前先确认状态还在范围内。</p>
         <div class="exits">
@@ -275,27 +373,26 @@
     </li>
 
     <li data-n="8">
-      <div class="step git">
+      <div class="step git" role="button" tabindex="0" data-open="8" aria-label="查看节点 8 的内部">
         <h3><span class="actor a-git">仓库</span>开工前同步：<code>git pull --rebase</code></h3>
         <ul>
           <li>必须是开工前的第一步：<b>rebase 会改写历史</b>，等基线取完再 rebase，失败回滚就会把刚拉到的上游 commit 一起抹掉</li>
           <li>工作区停在半截 rebase / merge / cherry-pick 时，先按标记文件清干净再继续</li>
-          <li>冲突文件用 <code>git diff --name-only --diff-filter=U</code> 取，网络类失败自动重试 <code>sync.retries</code> 次</li>
-          <li>每次同步的 <code>moved</code> / <code>from</code> / <code>to</code> 都记进 <code>progress.jsonl</code></li>
+          <li>冲突文件用 <code>git diff --name-only --diff-filter=U</code> 取，网络类失败重试 <code>sync.retries</code> 次</li>
         </ul>
         <div class="exits">
-          <div class="exit"><b>冲突</b>或未跟踪文件挡住上游同名文件 → <code>rebase --abort</code>，这张卡记 <code>blocked</code>，<b>整批停</b>。同一个坏基线上继续跑下一张只会重复浪费内循环</div>
+          <div class="exit"><b>冲突</b>或未跟踪文件挡住上游同名文件 → <code>rebase --abort</code>，这张卡记 <code>blocked</code>，<b>整批停</b></div>
           <div class="exit warn"><b>只是没 upstream / detached / 已跟踪文件脏</b> → 记一条跳过日志，照常开工</div>
         </div>
       </div>
     </li>
 
     <li data-n="9">
-      <div class="step git">
+      <div class="step git" role="button" tabindex="0" data-open="9" aria-label="查看节点 9 的内部">
         <h3><span class="actor a-git">仓库</span><code>afterSync</code> 护栏：修好机器人看不见的脏状态</h3>
         <ul>
           <li>DigitDoor 填 <code>bash Tools/GitHooks/Luban/after-update.sh</code>；<b>无条件每张卡跑一次</b>，不是「sync 真动过才跑」</li>
-          <li>理由：脏导出不只由本循环造成。人在外面 rebase / cherry-pick / reset 都不触发 git 的 <code>post-merge</code> / <code>post-checkout</code>，而导表守卫挂在那两个钩子上</li>
+          <li>理由：脏导出不只由本循环造成。人在外面 rebase / cherry-pick / reset 都不触发 <code>post-merge</code> / <code>post-checkout</code>，而导表守卫挂在那两个钩子上</li>
           <li>跑完比对 <code>git status</code>：护栏自己留下新改动也不行，那些会被 <code>add -A</code> 算进本卡提交</li>
         </ul>
         <div class="exits">
@@ -305,14 +402,14 @@
     </li>
 
     <li data-n="10">
-      <div class="step git">
+      <div class="step git" role="button" tabindex="0" data-open="10" aria-label="查看节点 10 的内部">
         <h3><span class="actor a-git">仓库</span>记下基线 <code>baseline = git HEAD</code></h3>
         <p>这张卡后面所有的「有没有改动」判定，和失败时的回滚，都以它为锚。到这里仓库历史才可以被认为稳定。</p>
       </div>
     </li>
 
     <li data-n="11">
-      <div class="step tapd">
+      <div class="step tapd" role="button" tabindex="0" data-open="11" aria-label="查看节点 11 的内部">
         <h3><span class="actor a-tapd">TAPD</span>占住这张卡：加 <code>afk-claimed</code></h3>
         <p>多份拷贝并行时靠它互斥，谁先加谁拿到。写标签一律回读校验，多值字段用竖线分隔。</p>
         <div class="exits">
@@ -322,7 +419,7 @@
     </li>
 
     <li data-n="12">
-      <div class="step tapd">
+      <div class="step tapd" role="button" tabindex="0" data-open="12" aria-label="查看节点 12 的内部">
         <h3><span class="actor a-tapd">TAPD</span>抓工单，落成本地素材</h3>
         <ul>
           <li>读正文 + 全部评论，HTML 转纯文本</li>
@@ -337,7 +434,7 @@
     </li>
 
     <li data-n="13">
-      <div class="step outer">
+      <div class="step outer" role="button" tabindex="0" data-open="13" aria-label="查看节点 13 的内部">
         <h3><span class="actor a-outer">外循环</span>拼 brief：只讲这张卡和边界</h3>
         <ul>
           <li>写「工作目录、这张卡是什么、边界、怎么算完成、最后输出什么」</li>
@@ -347,28 +444,28 @@
         <div class="art"><b>产出</b> <code>brief.md</code></div>
       </div>
     </li>
+
     <li class="stage" data-n="C"><div class="stage-label">交给内循环：从这一步开始模型介入</div></li>
 
     <li data-n="14">
-      <div class="step inner">
+      <div class="step inner" role="button" tabindex="0" data-open="14" aria-label="查看节点 14 的内部">
         <h3><span class="actor a-inner">内循环</span>起一个 pi 子进程，技能正文由 pi 自己读进去</h3>
-        <p>命令长这样：</p>
         <ul>
           <li><code>--append-system-prompt &lt;SKILL.md 路径&gt;</code>：给路径时 pi 读的是<b>文件内容</b>，正文确定性地进系统提示</li>
-          <li><code>--skill &lt;yogioo-mode&gt;</code>：只登记 name/description/path。光靠它正文进不来（实测：系统提示里搜不到 <code>Non-negotiables</code>），而且这个技能还带 <code>disable-model-invocation: true</code></li>
-          <li><code>@brief.md</code>：brief 正常情况下展开成用户消息</li>
+          <li><code>--skill &lt;yogioo-mode&gt;</code>：只登记 name/description/path，正文进不来</li>
+          <li><code>@brief.md</code>：brief 展开成用户消息</li>
           <li>stdout 全量落 <code>events.jsonl</code>，stderr 落 <code>pi.log</code>；超时用 <code>taskkill /T /F</code> 连子树一起杀</li>
         </ul>
-        <div class="art"><b>这里跨过了进程边界</b>：两个进程、两个模型上下文，外循环看不到里面怎么想，只能事后读事件流</div>
+        <div class="art"><b>这里越过了进程边界</b>：两个进程、两个模型上下文，外循环看不到里面怎么想</div>
       </div>
     </li>
 
     <li data-n="15">
-      <div class="step inner">
+      <div class="step inner" role="button" tabindex="0" data-open="15" aria-label="查看节点 15 的内部">
         <h3><span class="actor a-inner">内循环</span>自己把活跑完，外循环不干预</h3>
         <ul>
           <li>按已注入的指令选 playbook（Bug fix / Feature / Investigation …），把步骤抄成清单</li>
-          <li>需要并行就把调查拆给 <code>agent-tools subagent</code> 的只读 arm</li>
+          <li>需要并行就把活拆给 <code>agent-tools subagent</code> 的只读 arm</li>
           <li>改代码，用 Unity MCP 复现与验证，跑相关 EditMode 用例</li>
           <li><b>不碰 git</b>：只在工作区留下改动，结尾输出 <code>RESULT</code> / <code>COMMIT</code></li>
         </ul>
@@ -379,7 +476,7 @@
     <li class="stage" data-n="D"><div class="stage-label">判定：只信客观信号，不信模型自述</div></li>
 
     <li data-n="16">
-      <div class="step decide outer">
+      <div class="step decide outer" role="button" tabindex="0" data-open="16" aria-label="查看节点 16 的内部">
         <h3><span class="actor a-outer">外循环</span>四道闸，按顺序过</h3>
         <ol style="margin:0;padding-left:20px">
           <li>进程超时了吗（<code>timedOut</code>）</li>
@@ -388,7 +485,7 @@
           <li>配了 <code>verify</code> 的话，退出码是不是 0（输出落 <code>verify.log</code>）</li>
         </ol>
         <div class="exits">
-          <div class="exit"><b>任一条不过</b> → 写 <code>diff.txt</code> 存档 → <code>reset --hard baseline</code> + <code>clean -fd</code> → 撤 <code>afk-claimed</code>、加 <code>afk-failed</code> → 评论原因 → 记 <code>failed</code></div>
+          <div class="exit"><b>任一条不过</b> → <code>diff.txt</code> 存档 → <code>reset --hard baseline</code> + <code>clean -fd</code> → 抓 <code>afk-claimed</code>、加 <code>afk-failed</code> → 评论原因 → 记 <code>failed</code></div>
         </div>
       </div>
     </li>
@@ -396,7 +493,7 @@
     <li class="stage" data-n="E"><div class="stage-label">提交与推送：这一段里 git 历史会被写两次</div></li>
 
     <li data-n="17">
-      <div class="step git">
+      <div class="step git" role="button" tabindex="0" data-open="17" aria-label="查看节点 17 的内部">
         <h3><span class="actor a-git">仓库</span>提交</h3>
         <ul>
           <li>工作区有改动就 <code>git add -A</code> + <code>commit</code></li>
@@ -408,7 +505,7 @@
     </li>
 
     <li data-n="18">
-      <div class="step git">
+      <div class="step git" role="button" tabindex="0" data-open="18" aria-label="查看节点 18 的内部">
         <h3><span class="actor a-git">仓库</span>再同步一次，然后 <code>git push</code></h3>
         <ul>
           <li>卡跑了十几到几十分钟，期间别人可能又推了，所以推之前必须再造一次 <code>pull --rebase</code></li>
@@ -417,18 +514,19 @@
           <li>推送关着时这一步直接跳过，记为「未开启 push」</li>
         </ul>
         <div class="exits">
-          <div class="exit"><b>同步冲突 / 远端拒绝</b> → <b>不丢活也不留在当前分支</b>：提交挑到 <code>tapd-loop-unpushed/&lt;卡片id&gt;</code>，当前分支退回父节点，加 <code>afk-failed</code>，评论写出分支名。留在当前分支的话，下一张卡的 push 会把它一起带上去，而 TAPD 上写的是「未推送」</div>
-          <div class="exit warn"><b>verify 为空</b>（且没写 <code>allowUnverified</code>） → 这种在启动时就被拦了，走不到这里</div>
+          <div class="exit"><b>同步冲突 / 远端拒绝</b> → <b>不丢活也不留在当前分支</b>：提交挑到 <code>tapd-loop-unpushed/&lt;卡片id&gt;</code>，当前分支退回父节点，加 <code>afk-failed</code>，评论写出分支名</div>
+          <div class="exit warn"><b>verify 为空</b>（且没写 <code>allowUnverified</code>） → 启动时就被拦了，走不到这里</div>
         </div>
       </div>
     </li>
+
     <li class="stage" data-n="F"><div class="stage-label">回写：到这一步结果才定型</div></li>
 
     <li data-n="19">
-      <div class="step tapd">
+      <div class="step tapd" role="button" tabindex="0" data-open="19" aria-label="查看节点 19 的内部">
         <h3><span class="actor a-tapd">TAPD</span>换标签，发验收评论</h3>
         <ul>
-          <li>撤 <code>afk-claimed</code>，加 <code>afk-delivered</code>（多值字段，写完回读校验）</li>
+          <li>撕 <code>afk-claimed</code>，加 <code>afk-delivered</code>（多值字段，写完回读校验）</li>
           <li>评论 = 抬头 + 结论前 2000 字（按句子边界截）+ <b>推送后的 HEAD</b> + 证据路径</li>
           <li>标出来源：<code>提交：c1ddebbae（已推送 origin/develop）</code> 或 <code>提交：f1a28b8c9（未推送，留在本地：…）</code></li>
         </ul>
@@ -440,7 +538,7 @@
     </li>
 
     <li data-n="20">
-      <div class="step board">
+      <div class="step board" role="button" tabindex="0" data-open="20" aria-label="查看节点 20 的内部">
         <h3><span class="actor a-board">看板</span>页面始终能看全过程</h3>
         <p>左侧每次 run 的队列，点卡开窗：工单（含图）、主 Agent 结论、brief、验证输出、diff、进程日志尾部、子代理、事件时间线。2 秒刷新，只读，绑 <code>127.0.0.1</code>。</p>
       </div>
@@ -449,7 +547,7 @@
     <li class="stage" data-n="G"><div class="stage-label">收尾：跳出循环，把这一轮汇总</div></li>
 
     <li data-n="21">
-      <div class="step outer">
+      <div class="step outer" role="button" tabindex="0" data-open="21" aria-label="查看节点 21 的内部">
         <h3><span class="actor a-outer">外循环</span>写报告，打一行 JSON 摘要就退</h3>
         <ul>
           <li>退出原因：<code>stop-file</code> / <code>max-tasks</code> / <code>max-failures</code> / <code>blocked</code> / <code>empty-queue</code></li>
@@ -485,23 +583,705 @@
     <tr><td>怎么算成功</td><td>进程正常 + 有改动 + verify 过（+ 推得上去）</td><td>自己说 RESULT，但不算数</td></tr>
   </table>
 
-  <h2>三个值得单独记住的约束</h2>
-  <table>
-    <tr><th>约束</th><th>为什么</th></tr>
-    <tr><td>rebase 只能发生在两个位置：开工前、提交后</td><td>它改写历史。基线取完再 rebase，失败回滚会把上游 commit 一起抹掉</td></tr>
-    <tr><td>技能正文靠 <code>--append-system-prompt</code>，不靠模型自觉 read</td><td><code>--skill</code> 只登记名字/描述/路径，不注入正文；不注入就等于 AI 没拿到指令</td></tr>
-    <tr><td>推之前必须有 <code>verify</code></td><td>push 把外循环从「产物留本地」变成「往共享分支发布」，没验证过的改动不该自己进去</td></tr>
-  </table>
-
   <div class="note">
     <b>读这张图的方式</b>　蓝色 = 确定性代码，紫色 = 模型在跑，橙色 = 动 TAPD 数据，绿色 = 动 git 历史。
     紫色那段是唯一不可控的，所以判定全压在它之后的蓝色步骤上，且只认进程、git、verify 三个客观信号。
   </div>
 
   <footer>
-    源码：<code>loop.mjs</code>（主流程、preflight、publish） · <code>brief.mjs</code>（brief 与 commit message） · <code>turn.mjs</code>（spawn pi、读事件流） · <code>tapd.mjs</code>（全部 tapd-cli 调用） · <code>serve.mjs</code> / <code>page.mjs</code>（看板）。内循环：<code>yogioo-mode/SKILL.md</code>。
+    源码：<code>loop.mjs</code>（主流程、preflight、publish） · <code>brief.mjs</code>（brief 与 commit message） · <code>turn.mjs</code>（spawn pi、读事件流） · <code>tapd.mjs</code>（全部 tapd-cli 调用） · <code>serve.mjs</code> / <code>page.mjs</code> / <code>read-run.mjs</code>（看板）。内循环：<code>yogioo-mode/SKILL.md</code>。
   </footer>
 
 </div>
+
+<div id="details" hidden>
+
+<template id="d1">
+  <p class="where"><code>loop.mjs · parseArgs() → loadConfig() · gitCommonDir() / gitOwnDir()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul>
+      <li><code>process.argv</code>：<code>--k v</code> 与 <code>--no-xxx</code>（后者变成 <code>args.xxx = false</code>）</li>
+      <li><code>--workdir</code>，缺省为 cwd</li>
+      <li>四份配置：<code>~/.tapd-loop/config.json</code> · <code>&lt;git-common-dir&gt;/tapd-loop.json</code> · <code>--config</code> 或 <code>$TAPD_LOOP_CONFIG</code> · 旧位置 <code>&lt;workdir&gt;/.tapd-loop.json</code></li>
+    </ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul>
+      <li><code>cfg</code>：<code>task</code>、<code>run</code>、<code>sources</code> 三块</li>
+      <li><code>cfg.run.stopFile</code> 在这里就定稿（默认 <code>&lt;git-dir&gt;/tapd-loop-stop</code>）</li>
+    </ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li><code>parseArgs</code> 把 <code>--push-retries 5</code> 这类变成 <code>args.pushRetries</code></li>
+      <li><code>deepMerge</code> 五层，后者覆盖前者</li>
+      <li>旧位置只在 <code>.git/</code> 里没有对应文件时才生效，否则忽略并在 stderr 告警</li>
+      <li>逐项应用 CLI 覆盖（<code>--push</code> / <code>--no-sync</code> / <code>--verify</code> / <code>--max-tasks</code> …）</li>
+      <li>没有 <code>task.assignee</code> 且不是 <code>--fetch</code> → 抛错</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li>配置文件 JSON 坏了（<code>JSON.parse</code> 直接抛出）</li><li>缺处理人</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>加配置项要同时改三处：<code>loadConfig</code> 的 <code>base</code>、<code>config.example.json</code>、<code>SKILL.md</code> 的配置段。新项一律挂在 <code>run</code> 下（<code>run.push.retries</code> 这种），不要平铺到顶层。</p>
+  </section>
+</template>
+
+<template id="d2">
+  <p class="where"><code>loop.mjs · main() · createTapd() · createGit()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>cfg</code>（上一步的产物）</li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul>
+      <li><code>tapd</code> 客户端：<code>workspaceId</code>、<code>statuses</code>、<code>labels</code>、<code>statusLabel()</code>、<code>listTagged()</code> 等</li>
+      <li><code>git</code> 客户端：<code>head</code> / <code>sync</code> / <code>commitAll</code> / <code>push</code> / <code>rollback</code> …</li>
+      <li><code>runDir</code>、<code>progress.jsonl</code> 的 <code>log()</code> 闭包</li>
+    </ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li><code>createTapd</code> 注入 cwd / workspaceId / assignee / labels / commentAuthor</li>
+      <li><code>git.isRepo()</code> 必须为真</li>
+      <li>除 <code>--dry-run</code> / <code>--migrate-config</code> / <code>--allow-dirty</code> 外，要求工作区 clean</li>
+      <li><code>runDir = (cacheDir || ~/.tapd-loop/runs)/run-&lt;UTC 时间戳&gt;</code>，dry-run 不建目录</li>
+      <li><code>log()</code> 写失败静默吞：进度写不进去不能阻断干活</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li>不是 git 仓库</li><li>工作区脏（提示 <code>--allow-dirty</code>）</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p><code>runDir</code> 的布局就是看板的数据源。改目录结构或文件名前，先同步改 <code>read-run.mjs</code>，否则页面会空掉。</p>
+  </section>
+</template>
+
+<template id="d3">
+  <p class="where"><code>start-board.mjs</code> → <code>serve.mjs</code> · <code>page.mjs</code> · <code>read-run.mjs</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>~/.tapd-loop/board.json</code>（上次的 pid / port / url）</li><li>可选 <code>--port</code></li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li><code>boardUrl</code>，就是 loop stdout 第一行的 <code>board: &lt;url&gt;</code></li><li>更新的 <code>board.json</code></li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li>读 <code>board.json</code>，探活；还活着就直接复用</li>
+      <li>否则 detached spawn <code>serve.mjs</code>，端口从 7317 起试 8 个</li>
+      <li><code>child.unref()</code>，父进程退出网页不关</li>
+      <li>只绑 <code>127.0.0.1</code>、只读；页面每 2s fetch <code>api/state</code></li>
+      <li>卡窗数据来自 <code>api/card</code>：<code>brief.md</code> / <code>card.md</code> / <code>events.jsonl</code> 时间线 / <code>diff.txt</code> / <code>verify.log</code> / <code>pi.log</code> 尾部</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li>报错被 catch，<code>boardUrl = ''</code>，干活不受影响，原因看 <code>~/.tapd-loop/board.log</code></li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>想在看板上多看到一种产物（比如 <code>after-sync.log</code>），要在 <code>read-run.mjs</code> 里加字段，再在 <code>page.mjs</code> 里渲染。只加文件不会自己出现。</p>
+  </section>
+</template>
+
+<template id="d4">
+  <p class="where"><code>loop.mjs · main()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>args.dryRun</code> / <code>args.migrateConfig</code></li><li><code>cfg.run.push</code> 与 <code>cfg.run.verify</code></li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li>dry-run：一段 JSON 后 <code>return</code></li><li>闸门不过：抛错，进程退出码 1</li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li><code>--migrate-config</code> 在 <code>loadConfig</code> 之前就处理：把旧 JSON 原样写到 <code>.git/</code>，删旧文件，目标已存在则拒绝覆盖</li>
+      <li><code>--dry-run</code> 打印 <code>sources</code> / <code>cfg</code> / 队列，不建 runDir、不碰 TAPD 写接口</li>
+      <li>push 闸门：<code>enabled &amp;&amp; !verify &amp;&amp; !allowUnverified</code> → <code>throw</code></li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li>闸门抛错（这是故意的：宁可不跑，不要晚知道）</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>新的启动前提都往这里放。判定越晚，「二十多分钟白跑」的代价越高。</p>
+  </section>
+</template>
+
+<template id="d5">
+  <p class="where"><code>loop.mjs · main() 的 while (true)</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>stopFile</code> 是否存在</li><li><code>taskCount</code> 与 <code>cfg.run.maxTasks</code></li><li><code>failures</code> 与 <code>cfg.run.maxFailures</code></li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li><code>break</code> 跳出 → 进收尾</li><li><code>continue</code> 继续下一轮</li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li>每轮开头依次判三个条件，任一成立就 <code>break</code></li>
+      <li>一张卡的结果是 <code>blocked</code> 时直接 <code>break</code>（环境坏了，不是这张卡的问题）</li>
+      <li>只有 <code>failed</code> 才累加 <code>failures</code></li>
+      <li><code>--watch</code> 且队列空 → <code>sleep(pollSec)</code> 再轮</li>
+    </ol>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>停止文件放在 <code>&lt;git-dir&gt;</code> 才能做到「每棵树独立」。改成 <code>--git-common-dir</code> 就会变成停一棵停全部，多 worktree 并行时会很意外。</p>
+  </section>
+</template>
+
+<template id="d6">
+  <p class="where"><code>tapd.mjs · listTagged() · stories() · describe()</code>；状态过滤在 <code>loop.mjs</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>task.assignee</code>、<code>labels.readyLabel</code>、<code>statuses</code></li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li>card 数组：<code>id / title / priority / priorityLabel / status / statusLabel / labels</code>，已排序</li><li><code>listRejected()</code> 另给出被状态挡住的卡与原因</li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li><code>stories()</code> 分页：<code>limit=200</code>，最多 20 页，取满一页继续</li>
+      <li>过滤一：必须含 <code>readyLabel</code>（TAPD 端的 label 过滤不保证精确，本地再确认一遍）</li>
+      <li>过滤二：不含任何机器标签（<code>machineOf()</code>）</li>
+      <li><code>describe()</code> 附上中文状态名（走 <code>story fields</code> 的 options 缓存）和 priority 数值</li>
+      <li>排序：priority 升序，再按 id 字典序</li>
+      <li>loop 里再按 <code>statuses</code> 过滤一次，被挡的进 <code>listRejected</code> 供报表</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li>队列空：不 watch 就结束，watch 就睡一忽儿</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>目前的挑卡规则只有「优先级 + id」。想按创建时间、迭代、标签额外排序，改 <code>listTagged</code> 的 <code>sort</code>；想按别的维度筛，加 <code>stories()</code> 的查询参数。</p>
+  </section>
+</template>
+
+<template id="d7">
+  <p class="where"><code>loop.mjs · runCard() 开头</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>card.status</code>（上一步列表里的快照）</li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li>继续往下 → <code>row(card, 'skipped', 原因)</code></li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li>列表到开工之间可能被人改过状态，所以用快照再判一次</li>
+      <li>不动 TAPD（这时候还没认领，没东西要撤）</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li><code>skipped</code>，回去拿下一张，不计入 <code>maxFailures</code></li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>这里只判快照。真正防并发的是第 11 步的 <code>claim</code>：它会重新读一次工单、确认机器标签和状态。两处不要合并，一个防「列表陈旧」，一个防「两人抢同一张卡」。</p>
+  </section>
+</template>
+
+<template id="d8">
+  <p class="where"><code>loop.mjs · preflight()</code> → <code>createGit().sync()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>run.sync</code>：<code>enabled</code> / <code>remote</code> / <code>retries</code></li><li>当前分支与它的 upstream</li><li>工作区状态（只看已跟踪文件）</li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul>
+      <li>成功：<code>{ ok: true, moved, from, to }</code>，进 <code>progress.jsonl</code> 的 <code>card_sync</code></li>
+      <li>失败：<code>{ ok: false, fatal, files, reason }</code>，记 <code>card_sync_skipped</code> 或 <code>card_sync</code> 失败</li>
+    </ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li>detached HEAD、没有 upstream → 直接跳过（非 fatal）</li>
+      <li>已跟踪文件脏 → 跳过；<b>untracked 不算脏</b>（它本身不阻碍 rebase）</li>
+      <li><code>git pull --rebase [remote]</code>，<code>transient()</code> 匹配到网络抖动就重试</li>
+      <li>失败 → <code>abortSequence()</code> 按标记文件清掉 rebase / merge / cherry-pick / revert 状态</li>
+      <li>冲突文件取 <code>git diff --name-only --diff-filter=U</code></li>
+      <li>untracked 被上游同名文件挡住（<code>would be overwritten</code>）→ fatal</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li>fatal → <code>blocked</code>，整批停</li><li>非 fatal → 只记日志，照常开工</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>这一步的位置是硬约束：必须在 <code>baseline = git HEAD</code> 之前。挪到后面，失败回滚就会把刚拉到的上游 commit 一起抹掉。想改 rebase 策略（比如 merge）要先想回滚怎么算。</p>
+  </section>
+</template>
+
+<template id="d9">
+  <p class="where"><code>loop.mjs · preflight()</code> + <code>runGuard()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>run.afterSync</code>（命令行字符串，走 shell）</li><li><code>run.afterSyncTimeoutSec</code>，默认 1800，最小 60</li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li><code>after-sync.log</code></li><li><code>{ ok, code, elapsedMs, tail }</code>，进 <code>progress.jsonl</code> 的 <code>card_after_sync</code> / <code>card_after_sync_failed</code></li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li>先记 <code>dirtyBefore = git.status --porcelain</code></li>
+      <li><code>execFileSync(command, { shell: true })</code> 跑（Windows 下就是 cmd）</li>
+      <li>输出按 UTF-8 解；出现替换字符就回退 GBK（cmd/powershell 的中文走控制台代码页）</li>
+      <li>失败 → <code>tail</code> 取 stderr/stdout 最后三行非空</li>
+      <li>成功 → 再取一次 <code>dirtyPaths()</code>，比 <code>dirtyBefore</code> 多出来的就是护栏自己留的</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li><code>blocked</code>：命令失败，或它把工作区弄脏了</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>护栏必须做到「不用导表时 1~2 秒就退」，否则每张卡都白付这笔时间。它产生的产物要么还原、要么进 <code>.gitignore</code>；否则会被 <code>add -A</code> 算进本卡 diff。</p>
+  </section>
+</template>
+
+<template id="d10">
+  <p class="where"><code>loop.mjs · runCard()</code></p>
+  <section class="sec in"><h4>输入</h4><ul><li>当前 <code>git HEAD</code></li></ul></section>
+  <section class="sec out"><h4>输出</h4><ul><li><code>baseline</code>：一张卡的锚点，后面的 <code>changedSince(baseline)</code> 与 <code>rollback(baseline)</code> 都用它</li></ul></section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol><li>就一个 <code>rev-parse HEAD</code>，没有任何副作用</li></ol>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>从这一行到第 17 步 <code>commit</code> 之间，仓库历史必须稳定。任何 rebase 都不能挤进这个窗口，否则回滚会连别人的提交一起抹掉。</p>
+  </section>
+</template>
+
+<template id="d11">
+  <p class="where"><code>tapd.mjs · claim()</code> → <code>writeLabels()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>card.id</code></li><li><code>labels.claimedLabel</code>（默认 <code>afk-claimed</code>）</li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li><code>{ ok: true }</code>，或者 <code>{ ok: false, reason }</code></li><li>TAPD 上多了一个 <code>afk-claimed</code></li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li><code>getStory(id)</code> 重新读一次（不看列表快照）</li>
+      <li>已经有任何机器标签 → 拒绝，理由写清是哪个</li>
+      <li>状态不在允许范围 → 拒绝</li>
+      <li><code>writeLabels</code>：读当前标签 → 合并想要的 → <code>story update label=a|b</code> → <b>回读比对</b></li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li><code>skipped</code>，换下一张</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>标签是多值字段，用竖线分隔。必须回读：TAPD 会把不认识的标签静默弄丢或把整串当成一个新标签名，不回读就发现不了。<code>best-effort</code> 的意思是两个进程同时抢时靠 TAPD 的写顺序，不是本地锁。</p>
+  </section>
+</template>
+
+<template id="d12">
+  <p class="where"><code>tapd.mjs · getDetail() / downloadImage() / htmlToText()</code> + <code>brief.buildCardMd()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>card.id</code></li><li><code>imageDir = &lt;runDir&gt;/&lt;id&gt;/images</code></li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul>
+      <li><code>card.md</code>（标题/状态/优先级/处理人/链接/描述/评论）</li>
+      <li><code>card.json</code>（<code>{ card, detail }</code> 原始结构，给机器看）</li>
+      <li><code>images/img-N.ext</code></li>
+      <li><code>detail.body</code>：正文 + 评论拼成一段纯文本，图片已换成相对路径</li>
+    </ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li><code>getStory</code> + <code>listComments</code>（<code>limit=200</code>，按 <code>created</code> 升序）</li>
+      <li><code>extractImagePaths</code> 找出正文与评论里的 <code>/tfl/</code> 图片</li>
+      <li><code>attachment get-image</code> 换签名 URL，再 <code>fetch</code>（30s 超时，总量最多 30 张）</li>
+      <li>单张失败降级成 <code>[图片下载失败: path]</code>，不中断</li>
+      <li><code>htmlToText</code> 去标签、归一化空行</li>
+      <li><code>attempt</code> 数一下正文里 <code>[tapd-loop] 失败</code> 出现几次</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li>抛错 → <code>failed</code>，回滚到基线（此时工作区还没脏，回滚等于没动）</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>图片降级是有意的：一张图下不来不该阻断开工，内循环会在 brief 里看到那行文字。上限在 <code>MAX_IMAGES</code>（30）和 <code>IMAGE_TIMEOUT_MS</code>（30s）。</p>
+  </section>
+</template>
+
+<template id="d13">
+  <p class="where"><code>brief.mjs · buildBrief() / writeBrief()</code>，调用点在 <code>loop.mjs runCard()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul>
+      <li><code>card</code>：<code>id</code> / <code>title</code> / <code>body</code>（已换图片路径）</li>
+      <li><code>workdir</code>、<code>skillPath</code>、<code>verify</code>、<code>attempt</code>、<code>cardMdPath</code></li>
+    </ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li><code>&lt;runDir&gt;/&lt;id&gt;/brief.md</code></li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li>固定七段：你是唯一执行端 / 内循环 / 这张需求 / 正文 / 外循环边界 / 完成定义 / 提交格式</li>
+      <li>内循环那段只有一行：技能已注入、技能目录在哪、<b>不要再读 SKILL.md</b></li>
+      <li>边界五条：只改本卡范围、不执行任何 git 命令、不问人、不开多个写入方、不留调试代码</li>
+      <li>完成定义：配了 <code>verify</code> 就写进 brief，让内循环自己先跑一遍</li>
+      <li><code>attempt &gt; 1</code> 时加一句「上次失败原因在评论里」</li>
+      <li>结尾约定 <code>RESULT:</code> 与 <code>COMMIT: &lt;type&gt;:&lt;7位号&gt; &lt;描述&gt;</code> 两行</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li>没有。纯字符串拼接，不读文件、不调接口</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>想改内循环的行为，最便宜的地方就是这里：边界措辞直接改变它会不会跑偏。技能正文不往 brief 放——它由下一步 pi 注入，重复写会出现两份、且会诱发多余的 read。</p>
+  </section>
+</template>
+
+<template id="d14">
+  <p class="where"><code>turn.mjs · runTurn()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul>
+      <li><code>workdir</code>、<code>promptFile</code>（brief）、<code>outDir</code>、<code>skillPath</code></li>
+      <li><code>model</code> / <code>provider</code> / <code>thinking</code>（空则用 pi 默认）</li>
+      <li><code>timeoutMs = timeoutSec * 1000</code></li>
+    </ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li><code>events.jsonl</code>（stdout 全量）、<code>pi.log</code>（stderr）</li><li><code>{ code, signal, timedOut, durationMs, eventsPath, logPath }</code></li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li><code>resolvePi()</code>：<code>$PI_CLI_JS</code> → npm 全局 <code>cli.js</code> → <code>$PI_BIN</code>/<code>pi</code>（走 shell）</li>
+      <li>拼参数：<code>--print --mode json --session-id</code> → 技能注入 → 模型覆盖 → <code>@brief.md</code></li>
+      <li>技能注入：<code>--append-system-prompt &lt;一句话说明&gt;</code> + <code>--append-system-prompt &lt;SKILL.md&gt;</code> + <code>--skill &lt;path&gt;</code></li>
+      <li>stdout 管道进 <code>events.jsonl</code>，stderr 进 <code>pi.log</code>（不落盘就看不了）</li>
+      <li>超时 → <code>taskkill /pid &lt;pid&gt; /T /F</code>，连子进程一起杀</li>
+      <li>返回 Promise，<code>loop</code> 侧 <code>await</code> 它</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li>超时（下一步判定会看到 <code>timedOut</code>）</li><li>spawn 失败（记录到 <code>pi.log</code>）</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>技能注入方式不能随手换：<code>--skill</code> 本身<b>不注入正文</b>（实测只给 <code>--skill</code> 时系统提示里搜不到 <code>Non-negotiables</code>），而 <code>/skill:yogioo-mode</code> 会让 <code>@brief.md</code> 不展开。详细实测结论记在 <code>SKILL.md</code> 的「一张卡的一生」里。</p>
+  </section>
+</template>
+
+<template id="d15">
+  <p class="where">在 <code>pi</code> 进程里，由 <code>yogioo-mode</code> 驱动</p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li>系统提示里的技能指令（约 21KB）</li><li><code>brief.md</code>（用户消息）</li><li><code>card.md</code>（需要时自己读）</li><li>仓库本身</li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li>工作区改动（不提交）</li><li><code>events.jsonl</code> 里的每一次工具调用</li><li>最后一条 assistant 文本，含 <code>RESULT:</code> / <code>COMMIT:</code></li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li>选 playbook（Bug fix / Feature / Investigation …），把步骤抄成清单</li>
+      <li>需要并行就派 <code>agent-tools subagent</code> 的只读 arm</li>
+      <li>改代码，用 Unity MCP 复现、验证、跑相关 EditMode 用例</li>
+      <li>自己跑一遍 brief 里的 <code>verify</code>（配了的话）</li>
+      <li>输出最后两行</li>
+    </ol>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>外循环看不到这段推理，只能读事件流。想约束它的行为，只有两个扳手：改 brief（第 13 步）或改技能（<code>SKILL.md</code> + <code>playbooks/</code>）。不要指望在这里加个「检查一下模型想什么」。</p>
+  </section>
+</template>
+
+<template id="d16">
+  <p class="where"><code>loop.mjs runCard() 判定段</code> + <code>turn.readSettled()</code> + <code>runVerify()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul>
+      <li><code>result.timedOut</code> / <code>durationMs</code></li>
+      <li>事件流里的 <code>agent_settled</code>、<code>aborted</code>、最后一条 assistant 文本</li>
+      <li><code>baseline</code></li>
+      <li><code>run.verify</code>（可能为空）</li>
+    </ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li>通过：带 <code>settled.lastText</code> 进第 17 步</li><li>不过：<code>finishFailed()</code> 的 <code>reason</code></li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li><code>timedOut</code> → 失败（超 <code>timeoutSec</code>）</li>
+      <li><code>!settled || aborted</code> → 失败（内循环没跑完或被中断）</li>
+      <li><code>changedSince(baseline)</code> 为假 → 失败（工作区脏或 HEAD 动了才算有改动）</li>
+      <li><code>verify</code> 非空 → <code>execFileSync(shell)</code>，600s 超时，输出写 <code>verify.log</code></li>
+      <li><code>readSettled</code> 顺带数了 <code>tool_end</code> 次数，目前只入档不判定</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li><code>failed</code>：存档 diff、回滚、换标签、评论</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>这里只认客观信号。想加严就在这里加客观检查（比如必须产生测试文件、必须包含某路径），<b>不要</b>加「模型说完成了」这类软判据——那是这个设计最不想要的东西。</p>
+  </section>
+</template>
+
+<template id="d17">
+  <p class="where"><code>loop.mjs runCard()</code> + <code>git.commitAll()</code> + <code>brief.commitMessage()</code> + <code>git.diff()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>settled.lastText</code>（从中找 <code>COMMIT:</code> 行）</li><li><code>card.id</code> / <code>card.title</code></li><li>工作区改动</li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li>一个本地 commit（sha 后面还会被 rebase 改写）</li><li><code>diff.txt</code>（<code>git show --format= --patch</code>，上限 200KB）</li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li>正则取 <code>COMMIT: &lt;type&gt;:&lt;7位&gt; &lt;描述&gt;</code>，type 限 feat/fix/docs/art/style/refactor/test/chore/perf/revert</li>
+      <li>7 位号必须等于 <code>card.id.slice(-7)</code>，对不上就用 <code>feat: &lt;7位&gt; &lt;卡片标题&gt;</code> 兜底</li>
+      <li>message 截到 120 字</li>
+      <li><code>git add -A</code> → <code>git commit -m</code></li>
+      <li><b>diff 在推送之前就落盘</b>：之后 rebase，旧 commit 可能不可达</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li>pre-commit 钩子拒绝（例如 Luban stale-export）→ 抛错 → <code>failed</code>，而且此时未 commit，所以会回滚</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>7 位工单号是项目提交规范，19 位全 id 不许写进 message。没 AI 署名。改格式只改 <code>commitMessage()</code>，别在 loop 里另拼一个。</p>
+  </section>
+</template>
+
+<template id="d18">
+  <p class="where"><code>loop.mjs · publish()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li><code>run.push</code>：<code>enabled</code> / <code>remote</code> / <code>retries</code> / <code>allowUnverified</code></li><li><code>run.verify</code>（闸门用）</li><li>当前分支</li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li>成功：<code>{ ok: true, pushed, remote, branch, moved }</code>，进 <code>progress.jsonl</code> 的 <code>card_pushed</code></li><li>失败：<code>{ ok: false, reason }</code></li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li>push 关着 → 直接返回 <code>pushed: false</code>，啥也不干</li>
+      <li>verify 闸门（第二道，防绕过启动检查）</li>
+      <li>每轮：<code>sync()</code> → <code>git push &lt;remote&gt; &lt;branch&gt;</code>，<b>永不 force</b></li>
+      <li>sync 非 fatal 失败（没 upstream / 脏 / detached）→ 跳过同步，仍然试推</li>
+      <li>push 失败分类：<code>retry=true</code>（网络、non-fast-forward、rejected）→ 2s 后再一轮；<code>protected=true</code>（分支保护/权限）→ 放弃</li>
+      <li>成功时取 <b>push 后的 HEAD</b> 返回</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li><code>finishFailed(keepCommit)</code>：提交挑到 <code>tapd-loop-unpushed/&lt;id&gt;</code>，当前分支退回父节点，<code>afk-failed</code></li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>报错文案用 <code>pickGitError()</code> 取真正说明原因的那一行。git 的报错后面总跟着 help/hint，取末尾几行只会拿到「See the 'Note about fast-forwards'」。</p>
+  </section>
+</template>
+
+<template id="d19">
+  <p class="where"><code>tapd.mjs · deliver() / fail()</code> + <code>loop.mjs note 构造</code> + <code>clip()</code> / <code>plainPath()</code></p>
+  <section class="sec in">
+    <h4>输入</h4>
+    <ul><li>推送后的 HEAD</li><li><code>published</code>（是否推了、推到哪里）</li><li><code>settled.lastText</code></li><li><code>&lt;runDir&gt;/&lt;id&gt;/events.jsonl</code> 路径</li></ul>
+  </section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li>标签：<code>afk-claimed</code> 撕掉，加 <code>afk-delivered</code>（失败则 <code>afk-failed</code>）</li><li>一条评论</li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li><code>removeLabels(claimed)</code> → <code>writeLabels(delivered)</code>，两处都回读校验</li>
+      <li>评论 = 抬头 + <code>clip(lastText, 2000)</code>（按句子边界截，不硬切）+ <code>提交：&lt;sha10&gt;（已推送 origin/branch）</code> + <code>证据：&lt;路径&gt;</code></li>
+      <li>路径统一正斜杠：Markdown 会把 <code>\.</code> 当转义，<code>C:\Users\EDY\.tapd-loop</code> 会被吞成 <code>C:\Users\EDY.tapd-loop</code></li>
+      <li><code>addComment</code> 走 <code>lenient</code>：<code>comment add</code> 的回执不带 <code>status</code>，严判会把已经写成功的评论当成失败</li>
+    </ol>
+  </section>
+  <section class="sec exit">
+    <h4>出口</h4>
+    <ul><li>评论失败 → 只记 <code>writeBack</code> warning，<b>不回滚</b>：代码已经在远端了</li></ul>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>回写必须发生在 push 之后。rebase 会改 sha，commit 那一刻的 sha 推完可能已不存在于远端——这一点在 1005037 那张卡上真踩过。</p>
+  </section>
+</template>
+
+<template id="d20">
+  <p class="where"><code>serve.mjs</code> + <code>page.mjs</code> + <code>read-run.mjs</code></p>
+  <section class="sec in"><h4>输入</h4><ul><li><code>~/.tapd-loop/runs</code> 下的每个 run 目录</li></ul></section>
+  <section class="sec out"><h4>输出</h4><ul><li>一个只读页面：左队列 + 卡片窗口 + 子代理窗口</li></ul></section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li><code>GET /</code> 返回页面，前端每 2s <code>fetch('api/state')</code></li>
+      <li><code>api/card</code> 拉单卡：<code>card.md</code> / <code>brief.md</code> / <code>events.jsonl</code> 时间线 / <code>diff.txt</code> / <code>verify.log</code> / <code>pi.log</code> 尾部 / 子代理 arm</li>
+      <li>只绑 <code>127.0.0.1</code>，全部只读</li>
+    </ol>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>新增产物想看就得两步：<code>read-run.mjs</code> 里读出来，<code>page.mjs</code> 里渲染。只把文件写进 run 目录不会自己出现在页面上。</p>
+  </section>
+</template>
+
+<template id="d21">
+  <p class="where"><code>loop.mjs · main() 尾部</code> + <code>writeReport()</code> + <code>row()</code></p>
+  <section class="sec in"><h4>输入</h4><ul><li><code>ledger</code>：每张卡的 <code>row{ id, title, status, note, dir, startedAt, durationMs }</code></li><li>停止原因</li></ul></section>
+  <section class="sec out">
+    <h4>输出</h4>
+    <ul><li><code>report.md</code>：表格 + 被状态挡住的卡</li><li>stdout 一行 JSON：<code>attempted / done / failed / blocked / board / runDir / reportFile / ledger</code></li></ul>
+  </section>
+  <section class="sec do">
+    <h4>内部做什么</h4>
+    <ol>
+      <li>退出原因优先级：<code>stop-file</code> &gt; <code>blocked</code> &gt; <code>max-tasks</code> &gt; <code>max-failures</code> &gt; <code>empty-queue</code></li>
+      <li>每行 note 里的换行展平、截 160 字进表格</li>
+      <li>打一行 JSON 就退，不打印过程日志（那些在 <code>progress.jsonl</code> 和看板上）</li>
+    </ol>
+  </section>
+  <section class="sec tune">
+    <h4>迭代提示</h4>
+    <p>stdout 那一行 JSON 是给调用方（脚本、<code>afk-run</code>、CI）解析的。往里加字段可以，但不要混入额外输出，否则调用方 <code>JSON.parse</code> 就挂了。</p>
+  </section>
+</template>
+
+</div>
+
+<div class="modal" id="modal">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div class="sheet-head">
+      <h2 id="sheet-title"></h2>
+      <button class="sheet-close" type="button" id="sheet-close">关闭 · Esc</button>
+    </div>
+    <div class="sheet-body" id="sheet-body"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var modal = document.getElementById('modal')
+  var body = document.getElementById('sheet-body')
+  var titleEl = document.getElementById('sheet-title')
+  var closeBtn = document.getElementById('sheet-close')
+  var lastFocus = null
+
+  function label(card) {
+    if (!card) return ''
+    var h3 = card.querySelector('h3')
+    if (!h3) return ''
+    var actor = h3.querySelector('.actor')
+    var rest = h3.textContent
+    if (actor) rest = rest.replace(actor.textContent, '')
+    rest = rest.replace(/\s+/g, ' ').trim()
+    return actor ? actor.textContent.trim() + ' · ' + rest : rest
+  }
+
+  function open(n) {
+    var tpl = document.getElementById('d' + n)
+    if (!tpl) return
+    titleEl.textContent = label(document.querySelector('[data-open="' + n + '"]')) || '节点 ' + n
+    body.innerHTML = ''
+    body.appendChild(tpl.content.cloneNode(true))
+    lastFocus = document.activeElement
+    modal.classList.add('show')
+    document.body.style.overflow = 'hidden'
+    modal.scrollTop = 0
+    closeBtn.focus()
+    try { history.replaceState(null, '', '#n' + n) } catch (e) {}
+  }
+
+  function close() {
+    if (!modal.classList.contains('show')) return
+    modal.classList.remove('show')
+    document.body.style.overflow = ''
+    if (lastFocus && lastFocus.focus) lastFocus.focus()
+    try { history.replaceState(null, '', location.pathname + location.search) } catch (e) {}
+  }
+
+  document.addEventListener('click', function (e) {
+    var trigger = e.target.closest('[data-open]')
+    if (trigger) { open(trigger.getAttribute('data-open')); return }
+    if (e.target === modal || e.target.closest('#sheet-close')) close()
+  })
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { close(); return }
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-open]')) {
+      e.preventDefault()
+      open(e.target.getAttribute('data-open'))
+    }
+  })
+
+  var deep = /^#n(\d+)$/.exec(location.hash)
+  if (deep) open(deep[1])
+})()
+</script>
+
 </body>
 </html>
+
