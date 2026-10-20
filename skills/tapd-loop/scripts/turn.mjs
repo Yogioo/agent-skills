@@ -6,7 +6,7 @@
 import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
 function quote(value) {
   const text = String(value)
@@ -40,7 +40,18 @@ export function runTurn(opts) {
     '--mode', 'json',
     '--session-id', opts.sessionId || `tapd-${Date.now()}`,
   ]
-  if (skillPath) args.push('--skill', skillPath)
+  // 技能正文由 pi 直接读进系统提示，不靠模型自觉去 read。
+  // 光靠 --skill 不够：它只在系统提示里登记 name/description/path，不注入正文，
+  // 而 yogioo-mode 还带着 disable-model-invocation，连自动选择都关了。
+  // --append-system-prompt 给路径时读的是文件内容，所以正文是确定性地进上下文的。
+  if (skillPath) {
+    const skillFile = join(skillPath, 'SKILL.md')
+    if (existsSync(skillFile)) {
+      args.push('--append-system-prompt', `以下是技能 ${basename(skillPath)} 的完整指令，它引用的相对路径都相对 ${skillPath}。`)
+      args.push('--append-system-prompt', skillFile)
+    }
+    args.push('--skill', skillPath)
+  }
   if (provider) args.push('--provider', provider)
   if (model) args.push('--model', model)
   if (thinking) args.push('--thinking', thinking)

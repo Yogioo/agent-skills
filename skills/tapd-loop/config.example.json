@@ -23,6 +23,19 @@
     "provider": "",
     "thinking": "",
     "cacheDir": "",
-    "stopFile": ""
+    "stopFile": "",
+    "sync": {
+      "enabled": false,
+      "remote": "",
+      "retries": 0
+    },
+    "afterSync": "",
+    "afterSyncTimeoutSec": 1800,
+    "push": {
+      "enabled": false,
+      "remote": "",
+      "retries": 3,
+      "allowUnverified": false
+    }
   }
 }

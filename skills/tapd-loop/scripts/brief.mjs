@@ -14,7 +14,7 @@ export function buildBrief(opts) {
     '',
     '## 内循环',
     '',
-    `先 read ${skillPath}/SKILL.md，按它执行。`,
+    `yogioo-mode（完整指令已随系统提示注入，技能目录 ${skillPath}）。不要再去读 SKILL.md。`,
     '',
     '## 这张需求',
     '',
