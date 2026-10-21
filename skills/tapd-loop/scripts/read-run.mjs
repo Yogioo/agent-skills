@@ -7,6 +7,9 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
 const ALIVE_WINDOW_MS = 10 * 60 * 1000
+// 心跳超过这么久没动就算卡死。窗口要大于 afterSync 的默认超时（1800s）：
+// 同步/验证/afterSync 走 execFileSync，会整个卡住事件循环，那段时间是不会有心跳的。
+const STALL_MS = 31 * 60 * 1000
 
 export function listRuns(root) {
   if (!existsSync(root)) return []
@@ -104,13 +107,18 @@ function toArmEvent(event) {
 function summarizeRun(dir) {
   const runId = basename(dir)
   const progress = readProgress(join(dir, 'progress.jsonl'))
-  const cards = aggregate(progress, dir)
   const start = progress.find((event) => event.event === 'loop_start')
   const end = [...progress].reverse().find((event) => event.event === 'loop_end')
-  const last = progress[progress.length - 1]
+  const beats = progress.filter((event) => event.event === 'heartbeat')
   const startedAt = start?.t || birthtime(dir) || 0
   const endedAt = end?.t || 0
-  const alive = !endedAt && Boolean(last) && Date.now() - last.t < ALIVE_WINDOW_MS
+  const liveness = judgeLiveness({
+    endedAt,
+    pid: Number(start?.pid) || 0,
+    lastBeat: beats[beats.length - 1]?.t || 0,
+    last: progress[progress.length - 1],
+  })
+  const cards = settleInterrupted(aggregate(progress, dir), liveness, progress[progress.length - 1]?.t || 0)
   return {
     runId,
     dir,
@@ -118,12 +126,59 @@ function summarizeRun(dir) {
     assignee: start?.assignee || '',
     startedAt,
     endedAt,
-    alive,
-    reason: end?.reason || '',
+    alive: liveness.alive,
+    reason: end?.reason || liveness.reason,
     cards,
     counts: countCards(cards),
     events: progress.length,
   }
+}
+
+/**
+ * 进程被强杀（taskkill /F、断电、终端被关）不会留下 loop_end，只读事件流就会永远显示「运行中」。
+ * 所以按进程判生死：
+ *   pid 明确定义了不在 → 立刻中断；
+ *   pid 还在 → 信它，只看心跳会把「同步中卡住事件循环」误判成死；
+ *   pid 不知道（老 run 没写、EPERM、跨机）→ 退回「最后事件多久以前」。
+ */
+function judgeLiveness({ endedAt, pid, lastBeat, last }) {
+  if (endedAt) return { alive: false, why: 'ended', reason: '' }
+  const running = processAlive(pid)
+  if (running === false) return { alive: false, why: 'gone', reason: '进程已退出，没有 loop_end' }
+  if (running === true) {
+    if (lastBeat && Date.now() - lastBeat > STALL_MS) return { alive: false, why: 'stalled', reason: '进程在，但长时间没有心跳' }
+    return { alive: true, why: 'process', reason: '' }
+  }
+  if (!last) return { alive: false, why: 'empty', reason: '' }
+  return Date.now() - last.t < ALIVE_WINDOW_MS
+    ? { alive: true, why: 'silence', reason: '' }
+    : { alive: false, why: 'silence', reason: '长时间没有事件' }
+}
+
+/** pid 在不在。null 表示判不了（没给 pid / 权限不够）。 */
+function processAlive(pid) {
+  if (!pid) return null
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return err.code === 'EPERM' ? true : false
+  }
+}
+
+/** run 不在了，还挂着 running 的卡按中断收尾：时钟停住，并说清楚原因。 */
+function settleInterrupted(cards, liveness, lastSeen) {
+  if (liveness.alive) return cards
+  const note = liveness.why === 'stalled' ? '进程还在，但长时间没有心跳' : '进程已中断（没有写 loop_end）'
+  for (const card of cards) {
+    if (card.status !== 'running') continue
+    card.status = 'interrupted'
+    card.phase = ''
+    // 心跳不带卡片 id，所以用「整个 run 最后一条事件的时刻」兜底，否则长任务的中断时刻会回溯到 card_start。
+    card.endedAt = Math.max(card.startedAt || 0, card.lastEventAt || 0, lastSeen || 0)
+    card.note = note
+  }
+  return cards
 }
 
 function aggregate(progress, dir) {
@@ -137,9 +192,10 @@ function aggregate(progress, dir) {
     if (!id) continue
     let card = cards.get(id)
     if (!card) {
-      card = { id, title: '', status: 'queued', phase: '', startedAt: 0, endedAt: 0, note: '', commit: '', durations: [] }
+      card = { id, title: '', status: 'queued', phase: '', startedAt: 0, endedAt: 0, lastEventAt: 0, note: '', commit: '', durations: [] }
       cards.set(id, card)
     }
+    if (event.t) card.lastEventAt = event.t
     if (event.event === 'card_start') {
       card.title = event.title || card.title
       card.status = 'running'
@@ -156,7 +212,7 @@ function aggregate(progress, dir) {
       card.lastTurnMs = event.durationMs
       if (event.timedOut) card.phase = 'timeout'
     }
-    if (event.event === 'card_done' || event.event === 'card_failed' || event.event === 'card_skipped') {
+    if (event.event === 'card_done' || event.event === 'card_failed' || event.event === 'card_skipped' || event.event === 'card_interrupted') {
       card.status = event.event.slice(5)
       card.endedAt = event.t
       card.note = event.reason || ''
@@ -180,7 +236,7 @@ function queueCard(cards, id, status, note, title = '') {
 }
 
 function countCards(cards) {
-  const counts = { total: cards.length, running: 0, done: 0, failed: 0, blocked: 0, queued: 0, preview: 0, skipped: 0 }
+  const counts = { total: cards.length, running: 0, done: 0, failed: 0, interrupted: 0, blocked: 0, queued: 0, preview: 0, skipped: 0 }
   for (const card of cards) {
     const key = card.status === 'done' ? 'done' : card.status === 'failed' ? 'failed' : card.status
     if (key in counts) counts[key] += 1

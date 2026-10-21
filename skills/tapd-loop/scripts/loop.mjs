@@ -6,17 +6,21 @@
 
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createTapd } from './tapd.mjs'
 import { buildBrief, buildCardMd, commitMessage, writeBrief } from './brief.mjs'
-import { readSettled, runTurn } from './turn.mjs'
+import { abortAllTurns, readSettled, runTurn } from './turn.mjs'
 
 const HOME = join(homedir(), '.tapd-loop')
 const HERE = dirname(fileURLToPath(import.meta.url))
 const STOP_NAME = 'tapd-loop-stop'
 const CONFIG_NAME = 'tapd-loop.json'
+// 心跳间隔。看板主要靠 pid 判死活，心跳是 pid 判不了时的依据，顺带让「进程还活着」可观测。
+const HEARTBEAT_SEC = 15
+/** 当前处理到哪张卡。信号中断时靠它给正在跑的那张写 card_interrupted。 */
+let currentCardId = ''
 
 /**
  * 仓库级配置放 .git/ 下，不放工作区。
@@ -162,7 +166,25 @@ async function main() {
     assignee: cfg.task.assignee,
     statuses: cfg.task.statuses,
     maxTasks: cfg.run.maxTasks,
+    // pid 与 host 给看板判生死用：被 taskkill /F 掉的 run 不会有 loop_end。
+    pid: process.pid,
+    host: hostname(),
   })
+
+  const beat = setInterval(() => log('heartbeat', { pid: process.pid, card: currentCardId }), HEARTBEAT_SEC * 1000)
+  beat.unref?.()
+  // 能收到信号就自己把现场写完；收不到（taskkill /F、断电）就由看板按 pid 是否还在直接判中断。
+  // 信号里不跑 git/TAPD：它们会 block 很久，也可能把半完成的收尾写进去。
+  const onInterrupt = (signal) => {
+    clearInterval(beat)
+    abortAllTurns()
+    if (currentCardId) log('card_interrupted', { id: currentCardId, reason: `收到 ${signal}，这一批被中断` })
+    log('loop_end', { reason: 'interrupted', signal })
+    process.exit(130)
+  }
+  process.once('SIGINT', () => onInterrupt('SIGINT'))
+  process.once('SIGTERM', () => onInterrupt('SIGTERM'))
+  if (process.platform === 'win32') process.once('SIGBREAK', () => onInterrupt('SIGBREAK'))
   while (true) {
     if (existsSync(stopFile)) break
     if (taskCount >= cfg.run.maxTasks) break
@@ -184,6 +206,7 @@ async function main() {
     }
 
     const outcome = await runCard(card, { tapd, git, cfg, runDir, workdir, args, log })
+    currentCardId = ''
     ledger.push(outcome)
     taskCount += 1
     // blocked 是环境/前置条件坏了（同步冲突、护栏留下脏改动），不是这张卡的问题：
@@ -200,6 +223,7 @@ async function main() {
       : taskCount >= cfg.run.maxTasks ? 'max-tasks'
         : failures >= cfg.run.maxFailures ? 'max-failures'
           : 'empty-queue'
+  clearInterval(beat)
   log('loop_end', { reason })
   const reportFile = writeReport(runDir, workdir, ledger, { reason, rejected: tapd.listRejected() })
   console.log(JSON.stringify({
@@ -221,6 +245,7 @@ async function runCard(card, ctx) {
   const startedAt = new Date()
   const log = ctx.log || (() => {})
   log('card_start', { id: card.id, title: card.title, priorityLabel: card.priorityLabel, statusLabel: card.statusLabel })
+  currentCardId = card.id
 
   if (!tapd.statuses.includes(card.status)) {
     log('card_skipped', { id: card.id, reason: `状态 ${card.statusLabel}，不在可接单范围` })

@@ -22,14 +22,16 @@ tr.card{cursor:pointer}tr.card:hover{background:#11161f}tr.sel{background:#161d2
 tr.dim{opacity:.55}
 .what{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ok{color:#3fb950}.bad{color:#f85149}.dim2{color:#6e7681}.run{color:#58a6ff}.warn{color:#d29922}
-#modal details.pane{margin:0 0 12px;border:1px solid #21262d;border-radius:6px;padding:8px 12px;background:#0d1117}
+/* 整张卡是一列 flex：区块区、时间线各自滚，卡片本身不出滚动条。 */
+#modal .panes{flex:0 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain}
+#modal details.pane{margin:0 0 8px;border:1px solid #21262d;border-radius:6px;padding:8px 12px;background:#0d1117}
 #modal details.pane summary{color:#8b949e;font-size:12px;cursor:pointer;outline:none}
-#modal details.pane .body{margin:8px 0 0;max-height:46vh;overflow:auto;color:#c9d1d9}
-.tlbar{display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;font-size:12px;color:#8b949e}
-.tlwrap{border:1px solid #21262d;border-radius:6px;background:#0d1117}
+#modal details.pane .body{margin:8px 0 0;max-height:34vh;overflow:auto;color:#c9d1d9}
+.tlbar{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;font-size:12px;color:#8b949e}
+.tlwrap{flex:1 1 40vh;min-height:40vh;display:flex;flex-direction:column;border:1px solid #21262d;border-radius:6px;background:#0d1117;overflow:hidden}
 .tlhead,.tl{display:grid;grid-template-columns:66px 62px minmax(0,1fr) 62px;gap:12px;align-items:baseline}
-.tlhead{color:#6e7681;font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:8px 12px 6px;border-bottom:1px solid #21262d}
-.tllist{max-height:58vh;overflow:auto;overscroll-behavior:contain}
+.tlhead{flex:0 0 auto;color:#6e7681;font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:8px 12px 6px;border-bottom:1px solid #21262d}
+.tllist{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain}
 .tl{padding:4px 12px;border-top:1px solid #161b22}.tl:first-child{border-top:0}
 .tl>.act{min-width:0;white-space:pre-wrap;word-break:break-word}
 .tl.say>.act{color:#8fb8d8;max-height:5.6em;overflow:hidden;-webkit-mask-image:linear-gradient(#000 72%,transparent);cursor:pointer}
@@ -42,8 +44,9 @@ tr.dim{opacity:.55}
 .armrow .nm{color:#d2a8ff;min-width:90px}.armrow .meta{color:#8b949e;font-size:11px}
 #modal{position:fixed;inset:0;background:#05070bcc;display:none;padding:36px;z-index:20}
 #modal.on{display:block}
-#modal .box{max-width:1180px;margin:0 auto;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px 20px;max-height:88vh;overflow:auto;box-shadow:0 20px 60px #0009}
-#modal h3{font-size:14px;margin:0 0 4px}#modal .mh{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+#modal .box{max-width:1180px;margin:0 auto;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px 20px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px #0009}
+#modal #mbody{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+#modal h3{font-size:14px;margin:0 0 4px}#modal .mh{flex:0 0 auto;display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
 #modal .sub{color:#8b949e;font-size:12px;margin:0 0 12px}
 #modal .mactions{display:flex;gap:8px;align-items:center}
 #modal #mback{background:#11161f;color:#8b949e;border:1px solid #21262d;border-radius:6px;padding:3px 10px;font:inherit;cursor:pointer;display:none}
@@ -59,7 +62,7 @@ tr.dim{opacity:.55}
 .md blockquote{border-left:3px solid #30363d;margin:.45em 0;padding-left:10px;color:#8b949e}
 .md a{color:#58a6ff}.md img{max-width:100%;border:1px solid #21262d;border-radius:6px;margin:.4em 0}
 .md hr{border:0;border-top:1px solid #21262d;margin:.7em 0}
-.diff{font:12px/1.45 ui-monospace,Consolas,monospace;background:#0d1117;border:1px solid #21262d;border-radius:6px;overflow:auto;max-height:60vh}
+.diff{font:12px/1.45 ui-monospace,Consolas,monospace;background:#0d1117;border:1px solid #21262d;border-radius:6px;overflow:auto}
 .dline{padding:1px 10px;white-space:pre-wrap;word-break:break-word}
 .dline.dadd{background:#12261e;color:#7ee787}
 .dline.ddel{background:#2d1214;color:#ff7b72}
@@ -200,7 +203,7 @@ tr.dim{opacity:.55}
   function rel(t){if(!t)return'';var s=Math.round((Date.now()-t)/1000);return s<2?'刚刚':(s<60?s+' 秒前':dur(s*1000)+'前');}
   function msText(ms){return typeof ms!=='number'?'':(ms<1000?ms+'ms':(Math.round(ms/100)/10)+'s');}
   var PHASE={claim:'占住卡片',fetch:'抓取工单与图片',fetched:'已抓取',running:'内循环运行中',timeout:'超时'};
-  var STATUS={running:['▶','运行中','run'],done:['●','完成','ok'],failed:['✕','失败','bad'],preview:['◐','预览','warn'],blocked:['⊘','状态挡住','dim2'],queued:['○','排队','dim2'],skipped:['⊘','跳过','dim2']};
+  var STATUS={running:['▶','运行中','run'],done:['●','完成','ok'],failed:['✕','失败','bad'],interrupted:['⊘','已中断','warn'],preview:['◐','预览','warn'],blocked:['⊘','状态挡住','dim2'],queued:['○','排队','dim2'],skipped:['⊘','跳过','dim2']};
   function st(s){var hit=STATUS[s]||['·',s||'未知','dim2'];return '<span class="'+hit[2]+'">'+hit[0]+' '+esc(hit[1])+'</span>';}
   function what(c){if(c.status==='running')return PHASE[c.phase]||'运行中';return c.note||PHASE[c.phase]||'—';}
   function elapsed(c){if(!c.startedAt)return'';var end=c.endedAt||Date.now();return dur(end-c.startedAt);}
@@ -301,7 +304,7 @@ tr.dim{opacity:.55}
       armSig=sig;
       var head=(d.reports||[]).map(function(r){return esc([r.label,r.model,r.status,r.tokens?r.tokens+' tok':'',dur(r.elapsedMs)].filter(Boolean).join(' · '));}).join('<br>');
       document.getElementById('mhead').innerHTML='<h3>子代理 '+esc(top.name)+'</h3><div class="sub">'+head+'</div>';
-      mbody.innerHTML='<div class="tlwrap"><div class="tlhead"><span>时间</span><span>起点+</span><span>动作</span><span>耗时</span></div><div class="tllist" id="tllist" style="max-height:62vh">'+tlHtml(d.events||[])+'</div></div>';
+      mbody.innerHTML='<div class="tlwrap"><div class="tlhead"><span>时间</span><span>起点+</span><span>动作</span><span>耗时</span></div><div class="tllist" id="tllist">'+tlHtml(d.events||[])+'</div></div>';
       wireTl(mbody);
       var box=document.getElementById('tllist');
       if(box)box.scrollTop=box.scrollHeight;
@@ -310,12 +313,14 @@ tr.dim{opacity:.55}
   function renderCard(sel){
     fetch('api/card?run='+encodeURIComponent(sel.runId)+'&id='+encodeURIComponent(sel.cardId)).then(function(r){return r.json();}).then(function(d){
       var mbody=document.getElementById('mbody');
+      // 头部状态每轮都重画：进程被强制中断时事件流不再变化，只重画 body 的话这里会永远停在「运行中」。
+      // 也放在读不到文件之前：还没开工的卡没有目录，头部还得显示卡号与状态。
+      var run=state.runs.filter(function(r){return r.runId===sel.runId;})[0];
+      var card=(run&&run.cards.filter(function(c){return c.id===sel.cardId;})[0])||{};
+      document.getElementById('mhead').innerHTML='<h3>'+esc(card.title||sel.cardId)+'</h3><div class="sub">'+esc(card.id)+' · '+(d.detail?esc(d.detail.statusLabel+' · '+d.detail.priorityLabel+' · '+d.detail.owner):'')+' · '+esc(elapsed(card))+' · '+st(card.status||'queued')+(card.note?' · '+esc(card.note):'')+'</div>';
       if(d.error){mbody.innerHTML='<div class="bad">读不到：'+esc(d.error)+'</div>';return;}
       var sig=[sel.runId,sel.cardId,(d.events||[]).length,d.diff?d.diff.length:0,d.cardMd?d.cardMd.length:0].join('|');
       if(sig===cardSig)return;cardSig=sig;
-      var run=state.runs.filter(function(r){return r.runId===sel.runId;})[0];
-      var card=(run&&run.cards.filter(function(c){return c.id===sel.cardId;})[0])||{};
-      document.getElementById('mhead').innerHTML='<h3>'+esc(card.title||sel.cardId)+'</h3><div class="sub">'+esc(card.id)+' · '+(d.detail?esc(d.detail.statusLabel+' · '+d.detail.priorityLabel+' · '+d.detail.owner):'')+' · '+esc(elapsed(card))+' · '+st(card.status||'queued')+'</div>';
       var html=[];
       if(d.cardMd){
         var cardMd=String(d.cardMd).replace(/\\]\\(images\\//g,'](/img/'+sel.runId+'/'+sel.cardId+'/');
@@ -341,9 +346,10 @@ tr.dim{opacity:.55}
         html.push(paneHtml(sel.runId+'|'+sel.cardId+'|arms','子代理 · '+d.arms.length+' 个',armBody));
       }
       var evs=d.events||[];
-      html.push('<div class="tlbar"><span>内循环时间线 · '+evs.length+' 条</span><label><input type="checkbox" id="autoscroll">自动滚到最新</label></div>');
-      html.push('<div class="tlwrap"><div class="tlhead"><span>时间</span><span>起点+</span><span>动作</span><span>耗时</span></div><div class="tllist" id="tllist">'+tlHtml(evs)+'</div></div>');
-      mbody.innerHTML=html.join('');
+      // 区块区自己滚，时间线占剩下的地方：卡片本身不出滚动条。
+      var panes='<div class="panes">'+html.join('')+'</div>';
+      mbody.innerHTML=panes+'<div class="tlbar"><span>内循环时间线 · '+evs.length+' 条</span><label><input type="checkbox" id="autoscroll">自动滚到最新</label></div>'+
+        '<div class="tlwrap"><div class="tlhead"><span>时间</span><span>起点+</span><span>动作</span><span>耗时</span></div><div class="tllist" id="tllist">'+tlHtml(evs)+'</div></div>';
       var box=document.getElementById('tllist'),cb=document.getElementById('autoscroll');
       if(cb){cb.checked=autoscroll;cb.onchange=function(){autoscroll=cb.checked;if(autoscroll)box.scrollTop=box.scrollHeight;};}
       if(box&&autoscroll)box.scrollTop=box.scrollHeight;

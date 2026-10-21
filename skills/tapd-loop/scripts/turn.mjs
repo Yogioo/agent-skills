@@ -22,6 +22,23 @@ function resolvePi() {
   return { cmd: process.env.PI_BIN || 'pi', prefix: [], shell: true }
 }
 
+/** 正在跑的 inner-loop 子进程。中断时要一起收掉，否则父进程退了 pi 还在改工作区。 */
+const live = new Set()
+
+export function abortAllTurns() {
+  for (const child of live) killTree(child)
+  live.clear()
+}
+
+function killTree(child) {
+  try {
+    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true })
+    else child.kill('SIGKILL')
+  } catch {
+    // 已经退了
+  }
+}
+
 export function runTurn(opts) {
   const {
     workdir,
@@ -78,13 +95,10 @@ export function runTurn(opts) {
     let timedOut = false
     const timer = setTimeout(() => {
       timedOut = true
-      if (process.platform === 'win32') {
-        spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true })
-      } else {
-        child.kill('SIGKILL')
-      }
+      killTree(child)
     }, timeoutMs)
 
+    live.add(child)
     child.stdout.pipe(events)
     child.stderr.pipe(log)
 
@@ -96,6 +110,7 @@ export function runTurn(opts) {
 
     function finish(code, signal) {
       clearTimeout(timer)
+      live.delete(child)
       events.end()
       log.end()
       resolve({
