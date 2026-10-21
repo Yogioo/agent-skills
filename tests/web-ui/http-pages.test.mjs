@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -53,6 +53,22 @@ test('agent runs board serves its page and read-only APIs', async (t) => {
   const runs = await (await fetch(`${board.local}api/runs`)).json()
   assert.ok(Array.isArray(runs.runs), 'runs.runs is an array')
   assert.ok(runs.window && typeof runs.window.days === 'number', 'window is reported')
+
+  const { registerRun } = await import('../../lib/run-runtime/run-registry.mjs')
+  const { appendEvent } = await import('../../lib/run-runtime/progress.mjs')
+  const outDir = join(home, 'out')
+  mkdirSync(outDir, { recursive: true })
+  const { runId } = registerRun({
+    workdir: home,
+    outDir,
+    labels: ['how explorer'],
+    arms: [{ label: 'how explorer', runner: 'pi', model: 'm', thinking: 'high' }],
+  })
+  appendEvent(join(outDir, 'progress.jsonl'), { level: 1, event: 'tool', data: { arm: 'how explorer', name: 'read', detail: 'x.cs' } })
+  const arm = await (await fetch(`${board.local}api/runs/${runId}/arms/how%20explorer`)).json()
+  assert.equal(arm.arm.label, 'how explorer')
+  assert.equal(arm.events[0].kind, 'tool')
+  assert.equal(arm.events[0].detail, 'x.cs')
 
   const missing = await fetch(`${board.local}api/runs/does-not-exist`)
   assert.equal(missing.status, 404)

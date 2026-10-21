@@ -63,6 +63,7 @@ details.pane .body{margin:8px 0 0;max-height:34vh;overflow:auto;color:#c9d1d9}
 .armrow:hover{background:#11161f}
 .armrow .nm{color:#d2a8ff;min-width:90px}
 .armrow .meta{color:#8b949e;font-size:11px}
+
 #modal{position:fixed;inset:0;background:#05070bcc;display:none;padding:36px;z-index:20}
 #modal.on{display:block}
 #modal .box{max-width:1180px;margin:0 auto;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:16px 20px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px #0009}
