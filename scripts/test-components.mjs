@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const groups = ['agent-run', 'subagent', 'work-items', 'event-inbox', 'requirement-store', 'questionnaire',
-  'prompt-compose', 'run-runtime', 'workspace-diff', 'xlsx-cell-diff', 'components', 'layers', 'packaging']
+  'prompt-compose', 'run-runtime', 'workspace-diff', 'xlsx-cell-diff', 'web-ui', 'components', 'layers', 'packaging']
 const selected = process.argv.length > 2 ? process.argv.slice(2) : groups
 if (selected.some((name) => !groups.includes(name))) {
   process.stderr.write(`Unknown test group; choose from ${groups.join(', ')}\n`)

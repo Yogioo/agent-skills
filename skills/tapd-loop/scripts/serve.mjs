@@ -6,11 +6,14 @@ import { createServer } from 'node:http'
 import { execFile } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { readAsset, sharedAsset } from '../../../lib/web-ui/assets.mjs'
 import { listRuns, readArm, readCard } from './read-run.mjs'
 import { pageHtml } from './page.mjs'
 
 const args = process.argv.slice(2)
+const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = argValue('--root') || join(homedir(), '.tapd-loop', 'runs')
 const PORT = Number(argValue('--port') || 7317)
 
@@ -18,6 +21,18 @@ const server = createServer((req, res) => {
   const url = new URL(req.url || '/', 'http://127.0.0.1')
   try {
     if (url.pathname === '/' || url.pathname === '/index.html') return send(res, 200, pageHtml(), 'text/html; charset=utf-8')
+    const asset = url.pathname.startsWith('/assets/') ? sharedAsset(url.pathname.slice('/assets/'.length)) : null
+    if (asset) {
+      res.writeHead(200, { 'content-type': asset.type, 'cache-control': 'no-store' })
+      res.end(asset.body)
+      return
+    }
+    if (url.pathname === '/app.js') {
+      const app = readAsset(join(HERE, 'page-app.js'))
+      res.writeHead(200, { 'content-type': app.type, 'cache-control': 'no-store' })
+      res.end(app.body)
+      return
+    }
     if (url.pathname === '/api/state') {
       return send(res, 200, JSON.stringify({ runs: listRuns(ROOT) }), 'application/json; charset=utf-8')
     }

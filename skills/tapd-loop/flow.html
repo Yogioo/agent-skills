@@ -589,7 +589,7 @@
   </div>
 
   <footer>
-    源码：<code>loop.mjs</code>（主流程、preflight、publish） · <code>brief.mjs</code>（brief 与 commit message） · <code>turn.mjs</code>（spawn pi、读事件流） · <code>tapd.mjs</code>（全部 tapd-cli 调用） · <code>serve.mjs</code> / <code>page.mjs</code> / <code>read-run.mjs</code>（看板）。内循环：<code>yogioo-mode/SKILL.md</code>。
+    源码：<code>loop.mjs</code>（主流程、preflight、publish） · <code>brief.mjs</code>（brief 与 commit message） · <code>turn.mjs</code>（spawn pi、读事件流） · <code>tapd.mjs</code>（全部 tapd-cli 调用） · <code>serve.mjs</code> / <code>page.mjs</code> / <code>page-app.js</code> / <code>read-run.mjs</code>（看板）。内循环：<code>yogioo-mode/SKILL.md</code>。
   </footer>
 
 </div>
@@ -668,7 +668,7 @@
 </template>
 
 <template id="d3">
-  <p class="where"><code>start-board.mjs</code> → <code>serve.mjs</code> · <code>page.mjs</code> · <code>read-run.mjs</code></p>
+  <p class="where"><code>start-board.mjs</code> → <code>serve.mjs</code> · <code>page.mjs</code> · <code>page-app.js</code> · <code>read-run.mjs</code></p>
   <section class="sec in">
     <h4>输入</h4>
     <ul><li><code>~/.tapd-loop/board.json</code>（上次的 pid / port / url）</li><li>可选 <code>--port</code></li></ul>
@@ -693,7 +693,7 @@
   </section>
   <section class="sec tune">
     <h4>迭代提示</h4>
-    <p>想在看板上多看到一种产物（比如 <code>after-sync.log</code>），要在 <code>read-run.mjs</code> 里加字段，再在 <code>page.mjs</code> 里渲染。只加文件不会自己出现。</p>
+    <p>想在看板上多看到一种产物（比如 <code>after-sync.log</code>），要在 <code>read-run.mjs</code> 里加字段，再在 <code>page-app.js</code> 里渲染。只加文件不会自己出现。</p>
   </section>
 </template>
 
@@ -1172,7 +1172,7 @@
 </template>
 
 <template id="d20">
-  <p class="where"><code>serve.mjs</code> + <code>page.mjs</code> + <code>read-run.mjs</code></p>
+  <p class="where"><code>serve.mjs</code> + <code>page.mjs</code> + <code>page-app.js</code> + <code>read-run.mjs</code></p>
   <section class="sec in"><h4>输入</h4><ul><li><code>~/.tapd-loop/runs</code> 下的每个 run 目录</li></ul></section>
   <section class="sec out"><h4>输出</h4><ul><li>一个只读页面：左队列 + 卡片窗口 + 子代理窗口</li></ul></section>
   <section class="sec do">
@@ -1185,7 +1185,7 @@
   </section>
   <section class="sec tune">
     <h4>迭代提示</h4>
-    <p>新增产物想看就得两步：<code>read-run.mjs</code> 里读出来，<code>page.mjs</code> 里渲染。只把文件写进 run 目录不会自己出现在页面上。</p>
+    <p>新增产物想看就得两步：<code>read-run.mjs</code> 里读出来，<code>page-app.js</code> 里渲染。只把文件写进 run 目录不会自己出现在页面上。</p>
   </section>
 </template>
 

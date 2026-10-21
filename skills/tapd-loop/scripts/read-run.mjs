@@ -5,6 +5,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { fromPiEvent, fromProgressEvent } from '../../../lib/web-ui/events.mjs'
 
 const ALIVE_WINDOW_MS = 10 * 60 * 1000
 // 心跳超过这么久没动就算卡死。窗口要大于 afterSync 的默认超时（1800s）：
@@ -72,7 +73,7 @@ function listArms(cardDir) {
       status: reports.every((row) => row.status === 'ok') ? 'ok' : 'error',
       elapsedMs: ends.reduce((sum, event) => sum + (event.elapsedMs || 0), 0),
       tokens: reports.reduce((sum, row) => sum + (row.tokens || 0), 0),
-      events: armEvents.filter((event) => toArmEvent(event)).length,
+      events: armTimeline(join(dir, 'progress.jsonl')).length,
     }
   })
 }
@@ -88,20 +89,12 @@ function armTimeline(file) {
     } catch {
       continue
     }
-    const entry = toArmEvent(event)
-    if (entry) out.push(entry)
+    const entry = fromProgressEvent(event)
+    // 臂进度只认识 say/think/tool/arm_start/arm_end；其余记录旧版直接丢掉，
+    // 共享归一化会把它们变成 note，这里继续丢掉以保持计数和行数不变。
+    if (entry && entry.kind !== 'note') out.push(entry)
   }
   return out
-}
-
-function toArmEvent(event) {
-  const base = { t: event.t || 0, arm: event.arm || '' }
-  if (event.event === 'say') return { ...base, kind: 'say', text: event.text || '' }
-  if (event.event === 'think') return { ...base, kind: 'think', text: event.text || '' }
-  if (event.event === 'tool') return { ...base, kind: 'tool', name: event.name || 'tool', detail: event.detail || '', ms: event.ms }
-  if (event.event === 'arm_start') return { ...base, kind: 'arm_start', text: [event.runner, event.model, event.thinking].filter(Boolean).join(' · ') }
-  if (event.event === 'arm_end') return { ...base, kind: 'arm_end', text: event.status || '', status: event.status }
-  return null
 }
 
 function summarizeRun(dir) {
@@ -277,28 +270,10 @@ function timeline(file) {
       lastT = own
       seq = 0
     }
-    const entry = toTimeline(event, lastT ? lastT + seq++ : 0)
+    const entry = fromPiEvent(event, lastT ? lastT + seq++ : 0)
     if (entry) out.push(entry)
   }
   return out.slice(-400)
-}
-
-function toTimeline(event, t = 0) {
-  if (event.type === 'message_end' && event.message?.role === 'assistant') {
-    const text = contentText(event.message.content)
-    if (!text.trim()) return null
-    return { t, kind: 'say', text }
-  }
-  if (event.type === 'tool_execution_start') {
-    return { t, kind: 'tool', name: event.toolName || 'tool', detail: argsDetail(event.args) }
-  }
-  if (event.type === 'tool_execution_end') {
-    return { t, kind: 'tool_end', name: event.toolName || 'tool', ms: event.durationMs, error: Boolean(event.isError) }
-  }
-  if (event.type === 'agent_settled') {
-    return { t, kind: 'settled', text: event.aborted ? '被中断' : '正常结束' }
-  }
-  return null
 }
 
 /** pi 的事件用毫秒数字，只有 session header 用 ISO 字符串。两种都要认。 */
@@ -311,19 +286,6 @@ function eventTime(value) {
     if (Number.isFinite(parsed)) return parsed
   }
   return 0
-}
-
-function contentText(content) {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
-  return content.filter((part) => part?.type === 'text').map((part) => part.text).join('\n')
-}
-
-function argsDetail(args) {
-  if (!args || typeof args !== 'object') return ''
-  const pick = args.command || args.path || args.file_path || args.pattern || args.query || args.url
-  if (pick) return String(pick).slice(0, 220)
-  return JSON.stringify(args).slice(0, 220)
 }
 
 function readJson(file) {
