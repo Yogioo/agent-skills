@@ -4,19 +4,21 @@
 
 ## 文件
 
-- `theme.css` 调色板与全部通用组件：表格、筛选、markdown、时间线、面板、弹窗、diff。
+- `theme.css` 调色板与全部通用组件：表格、筛选、markdown、时间线、面板、弹窗（含下钻布局：区块自己滚、时间线吃掉剩下的高度）、diff。
 - `markdown.mjs` `esc` / `inlineM` / `md`。图片默认关，TAPD 页面传 `{images:true}`。
 - `format.mjs` `dur` / `clock` / `rel` / `msText` / `project`。
 - `events.mjs` 时间线事件的唯一形状，以及 progress / pi 两种来源的归一化。纯函数，浏览器也能 import。
-- `client.mjs` 浏览器侧渲染：`describeEvent`、`timelineHtml`、`paneHtml`、`diffHtml`、localStorage 小工具。
-- `assets.mjs` 服务端白名单与 `pageHead`。请求路径只在字面量表里查，永远不拼文件路径。
+- `client.mjs` 浏览器侧渲染：`describeEvent`、`timelineHtml`、`paneHtml`、`diffHtml`、`wireModal`（返回/点空白/Esc 翻成回调）、localStorage 小工具。
+- `assets.mjs` 服务端白名单、`pageHead` 和 `modalShell`（下钻弹窗的骨架 HTML）。请求路径只在字面量表里查，永远不拼文件路径。
 
 ## 边界
 
-共享层只认识时间线事件和中立词汇，不认识 run、card、TAPD、端口、家目录。这些留在各自页面：
+共享层只认识时间线事件、弹窗外壳和中立词汇，不认识 run、card、TAPD、端口、家目录。这些留在各自页面：
 
-- `lib/run-runtime/board-app.js`：run 行、输入面板、用时每秒自走、深链 `?run=`。
-- `skills/tapd-loop/scripts/page-app.js`：卡片行、弹窗栈、工单/brief/verify/diff/log 面板、子臂下钻、`images/` 改写。
+- `lib/run-runtime/board-app.js`：run 行、输入面板、用时每秒自走、深链 `?run=` / `?arm=`，栈底是 run、上层是子代理。
+- `skills/tapd-loop/scripts/page-app.js`：卡片行、工单/brief/verify/diff/log 面板、子臂下钻、`images/` 改写。
+
+两个页面的详情都是**同一个覆盖层弹窗**（`modalShell()` + `wireModal()` + `theme.css` 里的 `#modal`），不是表格下方展开。展示成什么样由栈决定，开关与层级由共享层保证两边一致。
 
 事件形状：
 
@@ -36,11 +38,12 @@ kind: say | think | tool | tool_end | arm_start | arm_end | note
 - `GET /assets/format.mjs`
 - `GET /app.js`：该页面自己的 app 模块
 
-页面骨架用 `pageHead(title, extraHead)`，然后 `<script type="module" src="/app.js">`。浏览器模块只用相对 URL（`/assets/client.mjs`），不要出现 `node:`、`process`、`require`；`tests/web-ui/units.test.mjs` 会拦。
+页面骨架用 `pageHead(title, extraHead)` 加 `${modalShell()}`，然后 `<script type="module" src="/app.js">`。浏览器模块只用相对 URL（`/assets/client.mjs`），不要出现 `node:`、`process`、`require`；`tests/web-ui/units.test.mjs` 会拦。
 
 ## 迭代规则
 
-- 视觉/格式/时间线/面板/diff 的改动只改这里，两边一起看。
-- 只属于一张页面的排版（列宽、弹窗里 flex 怎么分）写回该页面的 `<style>`，不要塞进共享层。
+- 视觉/格式/时间线/面板/弹窗/diff 的改动只改这里，两边一起看。
+- 只属于一张页面的排版（表格列宽、卡片行里几个格子）写回该页面的 `<style>`，不要塞进共享层。
+- 弹窗外壳只能改 `modalShell()` 与 `theme.css` 的 `#modal`：两张页面挂的是同一份骨架，改一处两边一起变。
 - 新事件来源在 `events.mjs` 里加一个归一化函数，不要在页面里判断上游字段。
-- 改完跑 `node --test tests/web-ui/`，再用真实页面看一眼（`node --test` 不做视觉断言）。
+- 改完跑 `node scripts/test-components.mjs web-ui`，再用真浏览器点一遍（`node --test` 不做视觉断言）：列表 → 开弹窗 → 下钻 → 返回 → Esc。

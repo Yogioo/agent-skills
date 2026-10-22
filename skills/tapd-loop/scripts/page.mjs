@@ -1,19 +1,14 @@
 /** 看板页面骨架：皮肤在 /assets/theme.css，渲染逻辑在 page-app.js。 */
 
-import { pageHead } from '../../../lib/web-ui/assets.mjs'
+import { modalShell, pageHead } from '../../../lib/web-ui/assets.mjs'
 
-// 只写这张页面的布局差异：固定列宽 + 卡片弹窗里区块与时间线的分配。
+// 只写这张页面的布局差异：表头列宽。弹窗下钻布局在 theme.css。
 const SHELL_CSS = `<style>
 table{table-layout:fixed}
 th:nth-child(1),td:nth-child(1){width:50%}
 th:nth-child(2),td:nth-child(2){width:35%}
 th:nth-child(3),td:nth-child(3){width:8%;white-space:nowrap;color:#8b949e}
 th:nth-child(4),td:nth-child(4){width:7%;white-space:nowrap}
-#modal .panes{flex:0 1 auto;min-height:0}
-#modal .tlbar{flex:0 0 auto}
-#modal .tlwrap{flex:1 1 40vh;min-height:40vh;display:flex;flex-direction:column}
-#modal .tlhead{flex:0 0 auto}
-#modal .tllist{flex:1 1 auto;min-height:0}
 </style>`
 
 export function pageHtml() {
@@ -28,6 +23,6 @@ export function pageHtml() {
 </div>
 <table><thead><tr><th>卡片</th><th>现在</th><th>用时</th><th>状态</th></tr></thead>
 <tbody id="rows"></tbody></table>
-<div id="modal"><div class="box"><div class="mh"><div id="mhead"></div><div class="mactions"><button id="mback">返回</button></div></div><div id="mbody"></div></div></div>
+${modalShell()}
 <script type="module" src="/app.js"></script></body></html>`
 }

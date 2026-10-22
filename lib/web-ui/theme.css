@@ -73,6 +73,11 @@ details.pane .body{margin:8px 0 0;max-height:34vh;overflow:auto;color:#c9d1d9}
 #modal .sub{color:#8b949e;font-size:12px;margin:0 0 12px}
 #modal .mactions{display:flex;gap:8px;align-items:center}
 #modal #mback{background:#11161f;color:#8b949e;border:1px solid #21262d;border-radius:6px;padding:3px 10px;font:inherit;cursor:pointer;display:none}
+/* 下钻布局：区块区自己滚，时间线吃掉剩下的高度，弹窗本身不出滚动条。 */
+#modal .tlbar{flex:0 0 auto}
+#modal .tlwrap{flex:1 1 40vh;min-height:40vh;display:flex;flex-direction:column}
+#modal .tlhead{flex:0 0 auto}
+#modal .tllist{flex:1 1 auto;min-height:0}
 
 .diff{font:12px/1.45 ui-monospace,Consolas,monospace;background:#0d1117;border:1px solid #21262d;border-radius:6px;overflow:auto}
 .dline{padding:1px 10px;white-space:pre-wrap;word-break:break-word}

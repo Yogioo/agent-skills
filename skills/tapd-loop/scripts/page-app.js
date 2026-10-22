@@ -2,7 +2,7 @@
 
 import {
   diffHtml, dur, esc, loadJson, md, paneHtml, rel, saveJson,
-  timelineHtml, wirePanes, wireTimeline,
+  timelineHtml, wireModal, wirePanes, wireTimeline,
 } from '/assets/client.mjs'
 
 const rowsEl = document.getElementById('rows')
@@ -338,15 +338,7 @@ function wire() {
     poll()
   }
   syncFilters()
-  document.getElementById('mback').onclick = back
-  document.getElementById('modal').addEventListener('click', function (e) {
-    if (e.target === this) closeModal()
-  })
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return
-    if (stack.length > 1) back()
-    else closeModal()
-  })
+  wireModal({ back, close: closeModal })
 }
 
 wire()

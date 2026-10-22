@@ -39,10 +39,16 @@ test('agent runs board serves its page and read-only APIs', async (t) => {
   assert.match(html, /href="\/assets\/theme\.css"/)
   assertNoCrossOrigin(html)
 
+  // 详情是弹窗下钻，不是表格下方的整页展开。
+  assert.ok(html.includes(await shell()), 'agent runs mounts the shared modal shell')
+  assert.doesNotMatch(html, /id="detail"/)
+
   const app = await fetch(`${board.local}app.js`)
   assert.equal(app.status, 200)
   assert.match(app.headers.get('content-type'), /text\/javascript/)
-  assert.match(await app.text(), /api\/runs/)
+  const appSource = await app.text()
+  assert.match(appSource, /api\/runs/)
+  assert.match(appSource, /wireModal/, 'the drill-down behaviour comes from the shared layer')
   const css = await fetch(`${board.local}assets/theme.css`)
   assert.equal(css.status, 200)
   assert.match(css.headers.get('content-type'), /text\/css/)
@@ -97,6 +103,7 @@ test('tapd-loop board serves its page and read-only APIs', async (t) => {
   assert.match(html, /<title>tapd-loop<\/title>/)
   assert.match(html, /<script type="module" src="\/app\.js">/)
   assertNoCrossOrigin(html)
+  assert.ok(html.includes(await shell()), 'tapd-loop mounts the shared modal shell')
 
   const app = await fetch(`${url}app.js`)
   assert.equal(app.status, 200)
@@ -131,6 +138,11 @@ function assertNoCrossOrigin(html) {
   const refs = [...html.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1])
   const external = refs.filter((ref) => /^(?:https?:)?\/\//i.test(ref))
   assert.deepEqual(external, [], 'pages must not load anything off-origin')
+}
+
+async function shell() {
+  const { modalShell } = await import('../../lib/web-ui/assets.mjs')
+  return modalShell()
 }
 
 function freePort() {
