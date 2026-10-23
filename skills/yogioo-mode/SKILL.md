@@ -104,6 +104,7 @@ You own every subagent's work. Review the diff and write your own summary, don't
 
 Pi has no `Task` tool. `agent-tools subagent` is the subagent tool here, and it is installed. Its absence is the only reason to do a delegated step yourself, and `agent-tools --help` is how to check rather than assume.
 
+- **Run arms in the background.** Start `agent-tools subagent run` as a background command and read `report.jsonl` when it lands. A foreground arm owns the chat window for its whole run, so a 10 minute arm is 10 minutes of a blocked chat.
 - **status is the verdict.** `ok`, `empty`, `error`, `timeout` or `aborted` in the run's JSON decides whether an arm worked. `exitCode` is the child CLI's, not the turn's.
 - **Report every arm.** One line per arm: `arm <role> -> <status>, <n> files changed, <one clause>`. A bash call that returns `{"status":"ok"}` looks like nothing happened, and an unreported arm cannot be told from one that never ran.
 - **Roles, not models, in a brief.** A missing or unusable role is `/skill:setup-yogioo`, not a guess at a model id.
