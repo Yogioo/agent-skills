@@ -25,20 +25,26 @@ agent-tools subagent roles|plan|run|probe|doctor|init|set ...
 
 # one arm
 agent-tools subagent run --role "how explorer" --prompt-file brief.md `
-  --out-dir cache/run-1 --sandbox read-only
+  --out-dir "$HOME/.afk/artifacts/$(basename "$PWD")/run-1" --sandbox read-only
 
 # a panel or a fan-out: one arm per brief, optionally one model or CLI per arm
-agent-tools subagent run --manifest arms.json --out-dir cache/review-1
+agent-tools subagent run --manifest arms.json --out-dir "$HOME/.afk/artifacts/$(basename "$PWD")/review-1"
 
 # resolve without spawning: the table, the routing, and how each pool is spent
 agent-tools subagent plan --role "interrogate reviewers"
 
 # which models actually answer, one cheap read-only turn each
-agent-tools subagent probe --out-dir cache/probe-1 --model cursor:auto
+agent-tools subagent probe --out-dir "$HOME/.afk/artifacts/$(basename "$PWD")/probe-1" --model cursor:auto
 
 # change one role without hand-editing the table
 agent-tools subagent set --role "swarm workers" --value "cursor:auto"
 ```
+
+`--out-dir` is created fresh and holds the briefs, per-arm output and progress. Put it
+under the AFK home (`~/.afk/artifacts/<repo dir name>/<slug>/`; override the root with
+`AFK_HOME`), never inside the repository. One fan-out writes hundreds of megabytes of
+`events.jsonl`; in the repo that dirties `git status`, blocks worktree guards, and can be
+committed by accident.
 
 Every command prints one JSON object. `run` also writes `<out-dir>/report.jsonl`,
 one record per arm, and `<out-dir>/<label>/` holds that arm's `output.txt`,
