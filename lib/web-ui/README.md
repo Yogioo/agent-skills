@@ -48,5 +48,6 @@ tapd-loop 的页面还多两个只属于它的模块：`GET /control.js`（控�
 - 视觉/格式/时间线/面板/弹窗/diff 的改动只改这里，两边一起看。
 - 只属于一张页面的排版（表格列宽、卡片行里几个格子）写回该页面的 `<style>`，不要塞进共享层。
 - 弹窗外壳只能改 `modalShell()` 与 `theme.css` 的 `#modal`：两张页面挂的是同一份骨架，改一处两边一起变。
+- 页面骨架必须在请求时现拼（`pageHtml()`），不能烘成模块级常量：`app.js` 和 `/assets/*` 都是读盘的，常驻进程里只有 HTML 会被冻住。两边错位时点卡片不会报错也不会开弹窗 —— 旧进程发旧骨架、新 `app.js` 摸不到 `#modal`。改完外壳还得 `board stop` + `board ensure` 一次。
 - 新事件来源在 `events.mjs` 里加一个归一化函数，不要在页面里判断上游字段。
 - 改完跑 `node scripts/test-components.mjs web-ui`，再用真浏览器点一遍（`node --test` 不做视觉断言）：列表 → 开弹窗 → 下钻 → 返回 → Esc。

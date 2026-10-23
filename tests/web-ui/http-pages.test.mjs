@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,6 +42,10 @@ test('agent runs board serves its page and read-only APIs', async (t) => {
   // 详情是弹窗下钻，不是表格下方的整页展开。
   assert.ok(html.includes(await shell()), 'agent runs mounts the shared modal shell')
   assert.doesNotMatch(html, /id="detail"/)
+  // 骨架必须每次请求现拼：烘成模块常量的旧进程会发旧 HTML，而 app.js 是读盘的 ——
+  // 两边错位时点卡片就什么都不发生（2026-02 真实踩过）。
+  const boardSource = readFileSync(join(repoRoot, 'lib/run-runtime/board.mjs'), 'utf8')
+  assert.doesNotMatch(boardSource, /^const PAGE = /m, 'board page shell must be built per request')
 
   const app = await fetch(`${board.local}app.js`)
   assert.equal(app.status, 200)
