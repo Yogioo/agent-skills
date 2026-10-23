@@ -46,6 +46,10 @@ tr.stale{opacity:.55}
 .tl{padding:4px 12px;border-top:1px solid #161b22}
 .tl:first-child{border-top:0}
 .tl>.act{min-width:0;white-space:pre-wrap;word-break:break-word}
+/* say/think 的图标单独占一列：正文第一行就贴在图标那一行，不再先空一行。 */
+.tl.say>.act,.tl.think>.act{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:6px;align-items:baseline}
+.tl.say>.act>.md,.tl.think>.act>.md{min-width:0}
+.tl.say>.act>.md>:first-child,.tl.think>.act>.md>:first-child{margin-top:0}
 .tl.tool>.act{color:#c9d1d9}
 .tl.say>.act{color:#8fb8d8;max-height:5.6em;overflow:hidden;-webkit-mask-image:linear-gradient(#000 72%,transparent);cursor:pointer}
 .tl.say.open>.act{max-height:none;-webkit-mask-image:none}
