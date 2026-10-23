@@ -88,6 +88,9 @@ async function main() {
     statuses: cfg.task.statuses,
     labels: cfg.task.labels,
     commentAuthor: cfg.task.commentAuthor,
+    // 依赖检查用 tapd-cli 的 story time-relations（>= 1.16）；老版本会自动降级成不检查。
+    checkDependencies: cfg.task.checkDependencies !== false,
+    doneStatuses: cfg.task.doneStatuses,
   })
 
   if (args.list) {
@@ -97,6 +100,7 @@ async function main() {
       allowedStatuses: tapd.statuses.map((key) => `${key}(${tapd.statusLabel(key)})`),
       ready: tapd.listReady(),
       rejected: tapd.listRejected(),
+      checkDependencies: tapd.checkDependencies,
     }, null, 2))
     return
   }
@@ -108,11 +112,13 @@ async function main() {
     const readyLabel = tapd.labels.readyLabel
     const machine = card.labels.find((label) => [tapd.labels.claimedLabel, tapd.labels.deliveredLabel, tapd.labels.failedLabel].includes(label)) || ''
     const claimable = tapd.statuses.includes(card.status)
-    // 两条都会挡住「接这张」：机器标签在（可能正被别的批次占着）和状态不对。
-    // 分开说清楚，人一次就能把两个都处理掉，不用改完标签再发现状态也不对。
+    const blockers = tapd.blockersOf(card.id)
+    // 三条都会挡住「接这张」：机器标签在（可能正被别的批次占着）、状态不对、前置还没完成。
+    // 分开说清楚，人一次就能把都处理掉，不用改完标签再发现状态也不对。
     const blockedReason = [
       machine ? `已带 ${machine}（可能正在跑、已交付或上次失败），要先在 TAPD 上把这个标签摘掉` : '',
       claimable ? '' : `状态 ${card.statusLabel}，只有「开发中 / 实现中」能接`,
+      blockers.length ? `前置未完成: ${blockers.map((b) => `${b.id}(${b.statusLabel})`).join('、')}` : '',
     ].filter(Boolean).join('；')
     console.log(JSON.stringify({
       source: 'tapd',
@@ -127,6 +133,7 @@ async function main() {
       hasReadyLabel: card.labels.includes(readyLabel),
       machineLabel: machine,
       claimable,
+      blockers,
       blockedReason,
       allowedStatuses: tapd.statuses.map((key) => `${key}(${tapd.statusLabel(key)})`),
       url: `https://www.tapd.cn/tapd_fe/${tapd.workspaceId}/story/detail/${card.id}`,
@@ -224,14 +231,16 @@ async function main() {
     if (failures >= cfg.run.maxFailures) break
 
     const queued = tapd.listTagged()
+    // 不单看状态：前置没完成的卡也算接不了，一并进 rejected，否则选卡时会被默默跳过。
+    const scanned = tapd.partitionTagged(queued)
     log('queue', {
-      ready: queued.filter((card) => tapd.statuses.includes(card.status)).map((card) => card.id),
-      rejected: queued.filter((card) => !tapd.statuses.includes(card.status)).map((card) => ({ id: card.id, status: card.statusLabel, title: card.title })),
+      ready: scanned.ready.map((card) => card.id),
+      rejected: scanned.rejected.map((card) => ({ id: card.id, status: card.statusLabel, reason: card.reason, title: card.title })),
     })
 
     const card = args.card
-      ? queued.find((item) => item.id === args.card) || tapd.getCard(args.card)
-      : queued.find((item) => tapd.statuses.includes(item.status))
+      ? scanned.ready.find((item) => item.id === args.card) || tapd.getCard(args.card)
+      : scanned.ready[0]
     if (!card) {
       if (!cfg.run.watch) break
       sleep(cfg.run.pollSec * 1000)
@@ -283,6 +292,15 @@ async function runCard(card, ctx) {
   if (!tapd.statuses.includes(card.status)) {
     log('card_skipped', { id: card.id, reason: `状态 ${card.statusLabel}，不在可接单范围` })
     return row(card, 'skipped', `状态 ${card.statusLabel}，不在可接单范围`, dir, startedAt)
+  }
+
+  // 前置没完成的卡先在这里拦：preflight 要跑 sync/afterSync，代价不小，
+  // 而且开完工才发现前置没做，前面那十几分钟全白花。
+  const blockers = ctx.args.noWrite ? [] : tapd.blockersOf(card.id)
+  if (blockers.length) {
+    const note = `前置未完成: ${blockers.map((b) => `${b.id}(${b.statusLabel})`).join('、')}`
+    log('card_skipped', { id: card.id, reason: note, blockers })
+    return row(card, 'skipped', note, dir, startedAt)
   }
 
   // 同步与开工前护栏必须跑在取基线之前：rebase 会改写历史，基线若取在它前面，
@@ -798,7 +816,7 @@ function loadConfig(workdir, args = {}) {
   // 老位置还能用（不静默失效），但只要 .git/ 里已经有了就以新的为准。
   const legacyUsed = !existsSync(repoFile) && existsSync(legacyFile)
   const base = {
-    task: { workspaceId: '', assignee: '', commentAuthor: '', statuses: ['developing', 'status_11'], labels: {} },
+    task: { workspaceId: '', assignee: '', commentAuthor: '', statuses: ['developing', 'status_11'], labels: {}, checkDependencies: true, doneStatuses: [] },
     run: {
       maxTasks: 1,
       maxFailures: 2,

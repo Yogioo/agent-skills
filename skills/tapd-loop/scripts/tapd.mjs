@@ -26,6 +26,15 @@ export const DEFAULTS = {
 /** 只有这两个状态允许接单。其余状态（策划中/待启动/验收/已完成）一律不碰。 */
 export const DEFAULT_STATUSES = ['developing', 'status_11']
 
+/**
+ * 「前置需求算完成了」的判定：有 task.doneStatuses 就按它（状态码或中文名都行），
+ * 没配就按状态中文名猜。中文名猜测先排除「待/未/不/非」开头，否则「待完成」会被当成完成。
+ */
+const DONE_LABEL_RE = /(已完成|已关闭|已发布|已上线|已验收|已结|完成|关闭)/
+const NOT_DONE_LABEL_RE = /^(待|未|不|非)/
+/** 依赖查询按进程缓存 60 秒：listReady/listRejected/claim 会重复问同一张卡。 */
+const DEP_TTL_MS = 60 * 1000
+
 export function createTapd(opts = {}) {
   const workspaceId = String(opts.workspaceId || firstWorkspaceId())
   const assignee = String(opts.assignee || '')
@@ -35,6 +44,11 @@ export function createTapd(opts = {}) {
   const statuses = Array.isArray(opts.statuses) && opts.statuses.length
     ? opts.statuses.map(String)
     : [...DEFAULT_STATUSES]
+  // 依赖检查默认开：TAPD 里标了「前置需求」的，前置没完成就不接这张卡。
+  const checkDependencies = opts.checkDependencies !== false
+  const doneStatuses = Array.isArray(opts.doneStatuses) ? opts.doneStatuses.map(String) : []
+  let depSupported = true
+  const depCache = new Map()
   let statusMap = null
 
   /**
@@ -111,7 +125,8 @@ export function createTapd(opts = {}) {
 
   function statusLabels() {
     if (!statusMap) {
-      const body = call(['story', 'fields'])
+      // 显式带 workspaceid：项目可能来自配置而不是环境变量里的第一个。
+      const body = call(['story', 'fields', `workspaceid=${workspaceId}`])
       statusMap = body.data?.status?.options || {}
     }
     return statusMap
@@ -119,6 +134,79 @@ export function createTapd(opts = {}) {
 
   function statusLabel(status) {
     return statusLabels()[status] || String(status)
+  }
+
+  /** 前置需求是否算做完。 */
+  function isDoneStory(row) {
+    const code = String(row?.status || '')
+    const label = String(statusLabel(code) || '').trim()
+    if (doneStatuses.length) return doneStatuses.includes(code) || doneStatuses.includes(label)
+    return !NOT_DONE_LABEL_RE.test(label) && DONE_LABEL_RE.test(label)
+  }
+
+  /**
+   * 取这张卡的前置关系。返回统一后的扁平对象（TAPD 会把每条包在 WorkitemTimeRelation 里）。
+   * 老版本 tapd-cli 没有 `story time-relations`，失败一次就永久降级为「不检查依赖」，
+   * 免得整批卡在同一个不支持的命令上。
+   */
+  function relationsOf(id) {
+    if (!depSupported) return []
+    try {
+      const body = call(['story', 'time-relations', `workspaceid=${workspaceId}`, `story-id=${id}`])
+      if (!Array.isArray(body.data)) return []
+      return body.data
+        .map((row) => row?.WorkitemTimeRelation || row)
+        .filter((row) => row && typeof row === 'object')
+    } catch (err) {
+      depSupported = false
+      process.stderr.write(
+        `[tapd-loop] 依赖检查已跳过：tapd-cli story time-relations 调用失败（${err.message}）。升级 tapd-cli（>= 1.16）后可恢复\n`,
+      )
+      return []
+    }
+  }
+
+  /**
+   * 前置没完成的卡 [{id, status, statusLabel, title}]；空数组表示可以开工。
+   *
+   * 方向按记录里的 src(src_field) / dst(dst_field) 判，不靠 relation_type 猜：
+   * - type=after（默认）：dst 是后置，被 src 挡，所以只有 dst 会被卡。
+   * - type=before：反过来，src 被 dst 挡。
+   * 只认「前置已完成」：begin 型依赖（前置只要开始）也会按完成判，偏保守；
+   * 不想要这种保守就用 task.checkDependencies=false 关掉，或在 task.doneStatuses 里写宽一点。
+   */
+  function blockersOf(id) {
+    if (!checkDependencies || !id) return []
+    const key = String(id)
+    const hit = depCache.get(key)
+    if (hit && Date.now() - hit.at < DEP_TTL_MS) return hit.blockers
+    const depIds = []
+    for (const rel of relationsOf(key)) {
+      const src = String(rel.workitem_id || '')
+      const dst = String(rel.dst_workitem_id || '')
+      const before = String(rel.relation_type || 'after') === 'before'
+      const blocked = before ? src : dst
+      const prerequisite = before ? dst : src
+      if (blocked === key && prerequisite && prerequisite !== key) depIds.push(prerequisite)
+    }
+    const blockers = []
+    for (const depId of [...new Set(depIds)]) {
+      let row
+      try {
+        row = getStory(depId)
+      } catch {
+        blockers.push({ id: depId, status: '', statusLabel: '查不到', title: '' })
+        continue
+      }
+      if (isDoneStory(row)) continue
+      blockers.push({ id: String(row.id), status: String(row.status || ''), statusLabel: statusLabel(row.status), title: String(row.name || '') })
+    }
+    depCache.set(key, { at: Date.now(), blockers })
+    return blockers
+  }
+
+  function blockerNote(blockers) {
+    return `前置未完成: ${blockers.map((b) => `${b.id}(${b.statusLabel})`).join('、')}`
   }
 
   function describe(story) {
@@ -142,15 +230,32 @@ export function createTapd(opts = {}) {
       .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))
   }
 
-  /** 带标签只是候选；状态必须是实现中或开发中才允许接单。 */
+  /** 带标签只是候选；状态必须是实现中或开发中、且前置都完成，才允许接单。 */
+  function partition(cards) {
+    const ready = []
+    const rejected = []
+    for (const card of cards) {
+      const statusOk = statuses.includes(card.status)
+      const blockers = blockersOf(card.id)
+      if (statusOk && !blockers.length) {
+        ready.push(card)
+        continue
+      }
+      const reason = [
+        statusOk ? '' : `状态 ${card.statusLabel}，不在可接单范围`,
+        blockers.length ? blockerNote(blockers) : '',
+      ].filter(Boolean).join('；')
+      rejected.push({ ...card, blockers, reason })
+    }
+    return { ready, rejected }
+  }
+
   function listReady() {
-    return listTagged().filter((card) => statuses.includes(card.status))
+    return partition(listTagged()).ready
   }
 
   function listRejected() {
-    return listTagged()
-      .filter((card) => !statuses.includes(card.status))
-      .map((card) => ({ ...card, reason: `状态 ${card.statusLabel}，不在可接单范围` }))
+    return partition(listTagged()).rejected
   }
 
   function getStory(id) {
@@ -299,21 +404,36 @@ export function createTapd(opts = {}) {
     ], { lenient: true })
   }
 
+  function updateComment(commentId, description) {
+    if (!commentId) throw new Error('缺少评论 ID，无法修正评论')
+    call([
+      'comment', 'update',
+      `workspaceid=${workspaceId}`,
+      `id=${commentId}`,
+      `description=${description}`,
+    ], { lenient: true })
+  }
+
   return {
     workspaceId,
     labels,
     listReady,
     listTagged,
     listRejected,
+    partitionTagged: (cards) => partition(cards),
     getCard: (id) => describe(getStory(id)),
     statuses,
     statusLabel,
+    checkDependencies,
+    blockersOf,
+    isDoneStory,
     getDetail,
     getStory,
     listComments,
     writeLabels,
     removeLabels,
     addComment,
+    updateComment,
 
     claim(id) {
       const story = getStory(id)
@@ -322,6 +442,8 @@ export function createTapd(opts = {}) {
       if (!statuses.includes(String(story.status))) {
         return { ok: false, reason: `状态 ${statusLabel(story.status)}，不在可接单范围` }
       }
+      const blockers = blockersOf(id)
+      if (blockers.length) return { ok: false, reason: blockerNote(blockers), blockers }
       writeLabels(id, [labels.claimedLabel])
       return { ok: true }
     },

@@ -13,7 +13,9 @@
       "claimedLabel": "afk-claimed",
       "deliveredLabel": "afk-delivered",
       "failedLabel": "afk-failed"
-    }
+    },
+    "checkDependencies": true,
+    "doneStatuses": []
   },
   "run": {
     "maxTasks": 1,

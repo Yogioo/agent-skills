@@ -178,7 +178,7 @@ function aggregate(progress, dir) {
   const cards = new Map()
   for (const event of progress) {
     if (event.event === 'queue') {
-      for (const item of event.rejected || []) queueCard(cards, item.id, 'blocked', `状态 ${item.status}`, item.title)
+      for (const item of event.rejected || []) queueCard(cards, item.id, 'blocked', item.reason || `状态 ${item.status}`, item.title)
       continue
     }
     const id = event.id

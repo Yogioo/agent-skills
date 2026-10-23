@@ -13,6 +13,7 @@ disable-model-invocation: true
 ## 前置
 
 - `node` 可用；`tapd-cli` 已安装并配好 `TAPD_TOKEN` / `TAPD_API_ENDPOINT` / `TAPD_WORKSPACE_IDS`
+  - 版本 **>= 1.16**：前置依赖检查要 `story time-relations`（1.9.x 没有这个子命令）。更老的版本不会报错，只会打一行 `依赖检查已跳过` 后照常跑卡。
 - 工作目录是 git 仓库，且启动时干净
 - 内循环技能存在，默认 `~/.agents/skills/yogioo-mode`
 
@@ -88,9 +89,20 @@ node <技能根>/scripts/loop.mjs --workdir <仓库> --show <需求id>
 
 `statuses` 是允许接单的状态 key，默认 `developing`（开发中）与 `status_11`（实现中）。TAPD 的状态 key 按项目自定义，`--list` 会打印 `key(中文名)` 的对照，不确定就先跑它。
 
+### 前置依赖检查
+
+TAPD 上给需求标了前后置关系（「A 完成后 B 才能开始」）时，前置没完成就不接这张卡——否则前端画完了才发现后端接口还没写。
+
+- 数据来自 `tapd-cli story time-relations`，方向按记录里的 `workitem_id`(src) / `dst_workitem_id`(dst) 判：`relation_type=after`（默认）时 dst 被 src 挡；`before` 时反过来。
+- 「前置算完成」的判定：配了 `task.doneStatuses` 就按它（状态 key 或中文名都能写，如 `["status_7", "已完成"]`）；没配就按状态中文名猜（含「已完成/已关闭/已发布/完成」等，且排除「待/未/不/非」开头）。
+- 被挡住的卡进 `--list` 的 `rejected`，`reason` 写「前置未完成: <id>(<状态>)」；`--show <id>` 里是结构化的 `blockers` 数组。**不会静默跳过**。
+- 两种关掉的方式：`task.checkDependencies: false`（整机关），或把 `task.doneStatuses` 写宽一点。
+- 只认「前置已完成」，所以 `begin` 型依赖（前置只要开始就行）也按完成判，偏保守；觉得卡太严就按上面调。
+- 依赖查询按进程缓存 60 秒，`listReady` / `listRejected` / 认领不会对同一张卡反复查。
+
 ## 一张卡的一生
 
-1. `listReady` 拉 `owner=<assignee>`、带 `readyLabel`、不含机器标签、且状态在 `statuses` 里的需求，按优先级再按 id 排序
+1. `listReady` 拉 `owner=<assignee>`、带 `readyLabel`、不含机器标签、状态在 `statuses` 里、且前置依赖都已完成的需求，按优先级再按 id 排序
 2. 加 `afk-claimed` 占住（best-effort，先到先得）；认领时再查一次状态，防止列表之后被人改回「已完成」
 3. 读描述和全部评论，拼成 brief；正文里的 `/tfl/` 内嵌图经 `tapd-cli attachment get-image` 拿签名地址后下载到本地，正文换成 `![图片](images/img-N.png)`
 4. 同时落一份 `card.md`（标题、状态、链接、描述、评论，图片相对路径），brief 里用绝对路径引用同一批图片
@@ -237,7 +249,9 @@ loop 每 15 秒写一条 `heartbeat`，收到 SIGINT / SIGTERM / SIGBREAK 时先
 
 评论正文按句子边界截到 2000 字（超了加 `…`），不按字数硬切；路径在评论里统一写成正斜杠，因为 Markdown 会把 `\.` 当转义、把 `C:\Users\EDY\.tapd-loop` 吞成 `C:\Users\EDY.tapd-loop`。
 
-tapd-cli 各命令的回执形状不统一：读命令（`story list`、`comment list`…）给 `{status:1,data,info}`，写命令里 `comment add` 只回一个不带 `status` 的壳。所以读命令要求 `status===1` 或带 `data`，写命令按 lenient 判（exit 0 且没有明确的失败体就算成功）；API 真失败时 tapd-cli 是 **exit 1 + stderr**，不会落到这条路径上。
+tapd-cli 各命令的回执形状不统一：读命令（`story list`、`comment list`…）给 `{status:1,data,info}`；写命令在 1.9.x 里 `comment add` 只回一个不带 `status` 的壳（1.16 起多数回 `{status:1}`）。所以读命令要求 `status===1` 或带 `data`，写命令一律按 lenient 判（exit 0 且没有明确的失败体就算成功），别把写命令改成严格校验；API 真失败时 tapd-cli 是 **exit 1 + stderr**，不会落到这条路径上。
+
+评论正文由 tapd-cli 自己识别格式并转 HTML（1.16 起：纯文本自动包 `<p>`，Markdown 转 HTML），所以 note 里的 `##`、列表、`|` 表格在 TAPD 上是正常渲染的，不用自己拼 HTML。**写错的评论现在能改**：`comment update id=<评论id>`（`tapd.mjs` 有 `updateComment`），别再靠「再发一条更正」这种留垃圾的方式。
 
 report 里出现「回写异常」时，用 `TAPD_LOOP_DEBUG=1` 重跑一次，stderr 会打出 tapd-cli 的原始 stdout 回执；同时去 TAPD 上人工确认评论与标签，别只信 report。
 
@@ -246,5 +260,6 @@ report 里出现「回写异常」时，用 `TAPD_LOOP_DEBUG=1` 重跑一次，s
 - 只写机器标签，不改 TAPD 状态和处理人。验收流转由人做。
 - `push` 打开后它会往共享分支推东西。先确认 `verify` 真的能拦住坏改动，再开。
 - 状态不是「开发中 / 实现中」就不接单，标签挂着也不接。`--list` 的 `rejected` 会列出被状态挡住的卡与原因。
+- 前置依赖没完成的卡同样不接，`rejected` 的 `reason` 会写清是哪张前置在挡。认领时（`claim`）会再验一次，防止列表之后依赖关系变了。
 - 描述与评论都为空时不认领，直接标失败并评论，让人补充后撤销标签重跑。
 - 同一项目多份拷贝并行时靠 `afk-claimed` 互斥，谁先加谁拿到。
