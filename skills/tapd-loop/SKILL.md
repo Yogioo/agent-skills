@@ -23,9 +23,10 @@ node <技能根>/scripts/loop.mjs --workdir <仓库> --assignee <TAPD处理人> 
 node <技能根>/scripts/loop.mjs --workdir <仓库> --assignee <处理人> --max-tasks 1
 node <技能根>/scripts/loop.mjs --workdir <仓库> --watch --max-tasks 10
 node <技能根>/scripts/loop.mjs --workdir <仓库> --fetch <需求id>
+node <技能根>/scripts/loop.mjs --workdir <仓库> --show <需求id>
 ```
 
-`--list` 只看队列，`--fetch` 只抓一张卡的标题、详情、评论和图片到本地，不跑内循环。真跑前先用 `--max-tasks 1` 跑一张，读 report 与 `events.jsonl`。
+`--list` 只看队列，`--show` 只读地问一句「这张卡现在什么状态、能不能接」，`--fetch` 只抓一张卡的标题、详情、评论和图片到本地，都不跑内循环。真跑前先用 `--max-tasks 1` 跑一张，读 report 与 `events.jsonl`。
 
 常用参数：`--card <id>`、`--max-tasks`、`--watch`、`--verify <命令>`、`--model`、`--thinking`、`--comment-author`、`--allow-dirty`。
 
@@ -42,6 +43,8 @@ node <技能根>/scripts/loop.mjs --workdir <仓库> --fetch <需求id>
 仓库级配置住在 **`.git/` 里，不在工作区**：`git status` 永远干净，也不会因为忘加 `.gitignore` 而被人误提交。用 `--git-common-dir` 而不是 `--git-dir`，所以**同一仓库的所有 worktree 共用一份配置**，`DigitDoor` 和 `DigitDoor-wt-alpha` 读的是同一个文件。
 
 看当前生效的是哪份：`--dry-run` 的 `sources` 会打出三层路径和 `repoExists`。
+
+`~/.tapd-loop/config.json` 里还可以写 `board`（只看板用，不影响 loop）：`{"board": {"host": "0.0.0.0", "port": 7317}}`。`start-board` 的顺序是 `--host/--port` > `$TAPD_LOOP_BOARD_HOST` > `board.host` > 内置默认。
 
 老位置（仓库根 `.tapd-loop.json`）仍然能读，但会打一行告警：它在工作区里，会被 git 看到。搬过去用 `--migrate-config`，它会把 JSON 原样写到 `<git-common-dir>/tapd-loop.json` 并删掉旧文件；目标已存在时拒绝覆盖。`.git/` 里有了之后就以新的为准，老文件被忽略。
 
@@ -135,18 +138,64 @@ brief 要求内循环最后输出 `COMMIT: <type>:<7位工单号> <描述>`。�
 ## 看板
 
 ```powershell
-node <技能根>/scripts/start-board.mjs            # 起一个常驻的，已在跑就复用
-node <技能根>/scripts/start-board.mjs --status   # 在哪、活着没
+node <技能根>/scripts/start-board.mjs            # 起一个常驻的，已在跑就复用；默认绑 0.0.0.0
+node <技能根>/scripts/start-board.mjs --status   # 在哪、活着没、分享链接
 node <技能根>/scripts/start-board.mjs --stop
+node <技能根>/scripts/start-board.mjs --local     # 只本机可用（绑 127.0.0.1，不要密钥）
+node <技能根>/scripts/start-board.mjs --port 7400 --host 192.168.1.5
 ```
 
 `start-board` 用 detached 子进程拉起 `serve.mjs`，自己的进程退出了网页也不会关。地址固定写进 `~/.tapd-loop/board.json`，重复执行只返回同一个 URL。日志在 `~/.tapd-loop/board.log`。
 
 每次跑 loop 都会先确认看板在跑：没起就自动起，已在跑就复用。stdout 第一行就是 `board: <url>`，结束时的 JSON 摘要里也有 `board` 字段。不想要看板加 `--no-board`。
 
-页面只读，绑 `127.0.0.1`。左边是每个 run 的卡片队列，点一张卡开内部窗口，里面依次是工单（含图片）、主 Agent 结论、brief、验证输出、改动 diff、进程日志尾部、子代理，以及内循环事件时间线。每 2 秒刷新。run 结束后页面继续在，变成历史 run。
+### 页面能做的事
+
+顶上那块面板就是 CLI 的按钮版，取卡/占卡/判定/回写一律走 `loop.mjs`，页面里没有第二套实现：
+
+| 控件 | 等于 |
+| --- | --- |
+| 工作目录 + 处理人 + 本批最多 | `--workdir` / `--assignee` / `--max-tasks` |
+| 允许脏工作区 / 只演练 | `--allow-dirty` / `--no-write` |
+| 查看 TAPD 队列 | `--list`，列出就绪卡与「被状态挡住」的卡 |
+| 接单开跑 / 只跑这张 | 真跑，等同 `loop.mjs --workdir … --max-tasks n [--card id]` |
+| 停止（下一张前） | 写 `<git-dir>/tapd-loop-stop`，和 CLI 的 `--stop` 一样不杀当前卡 |
+| 定时查看 TAPD 并接单 | 开关 + 间隔秒（30 秒起，默认 300），等于 CLI 的 `--watch` 配 `run.pollSec` |
+| 指定工单：贴链接 + 查看这张 / 接这张开跑 | 先 `--show <id>` 看清楚，再 `--card <id>` 真跑（永远只跑一张） |
+
+**一次只允许一批**：判活看 `progress.jsonl` 里的 pid，所以命令行起的批次也算，网页和 CLI 不会在同一个仓库上撞车。工作区不干净、目录不是 git 仓库、已经有一批在跑，都会在开跑前直接拒掉（不在 spawn 之后才失败）。
+
+「指定工单」是给「别人在聊天里丢一条链接过来」用的：把 `https://www.tapd.cn/tapd_fe/<项目>/story/detail/<id>`、`.../prong/stories/view/<id>` 或者 19 位 id 直接贴进去。
+
+- **查看这张**只调 `--show`：不认领、不评论、不建 runDir，先看清楚标题/状态/标签
+- 认不出的链接会直说认不出；只在实在认不出时才退化成「取最长的一段数字」并标注猜的
+- **接这张开跑**之前会再确认一次：卡上已经有 `afk-claimed` / `afk-delivered` / `afk-failed`，或者状态不是开发中/实现中，就直接拒掉并写出原因——不会 spawn 一个「拉起来就被跳过」的批次
+- 真跑用的是 `--card <id>`，所以**只跑这一张**：`maxTasks` 被强制成 1（否则第二轮会重新把同一张卡拉出来再跳过一次）
+
+「接单开跑」会顺手清掉上一次留下的停止标记：那个标记是「下一张之前停」的一次性开关，不清的话再点一次跑会在第一张卡之前直接退出，看着像坏了。
+
+定时接单的定时器活在 `serve.mjs` 里：看板不开就没有定时接单。它每 `pollSec` 秒跑一次 `--list`，有就绪卡才开工；批次在跑时不查；查到但没有卡只更新「上次查到几张」。这个设置和上一批的状态一起落在 `~/.tapd-loop/board-control.json`（机器级，跟着看板走，不写仓库）。
+
+### 局域网
+
+默认绑 `0.0.0.0`，页面顶上会显示一条带密钥的分享链接。`serve.mjs` 的 `/api/*` 在出网时一律要密钥，页面骨架和静态资源不要：
+
+- 密钥存在 `~/.tapd-loop/board-key`，只生成一次，重启不换，发出去的链接不会失效
+- 只从打出来的 `?k=<key>` 进来一次，之后存浏览器 `localStorage`，每个请求带 `x-tapd-loop-key`
+- 别人拿到的那条链接可以直接点「接单开跑」——这正是分享的目的，所以别丢到公共频道
+- 只想本机用：`--local`，这时不要密钥
+
+这个页面能让人替你在共享分支上提交代码，所以它跟只读的 agent runs 看板不是一个安全等级。绑 `0.0.0.0` 就意味着同网段的人拿到链接就能开跑。
+
+### 看什么
+
+左边是每个 run 的卡片队列，点一张卡开内部窗口，里面依次是工单（含图片）、主 Agent 结论、brief、验证输出、改动 diff、进程日志尾部、子代理，以及内循环事件时间线。每 2 秒刷新。run 结束后页面继续在，变成历史 run。
 
 卡片窗口自己不滚动：横向铺满、纵向按内容长到 88vh 封顶，区块区和内循环时间线各自滚。
+
+批次自己的 stdout/stderr 在 `~/.tapd-loop/board-batches/batch-<时间戳>.log`，跑完那行 JSON 摘要会解析进 `lastBatch.summary`，页面的「已开跑」消息和这里对得上。
+
+接口（都要求密钥，除 `/healthz`）：`GET /api/state`、`/api/card`、`/api/arm`、`/api/control`、`/api/queue`、`/api/card-link`（贴链接先看一眼）、`POST /api/control`（存设置）、`POST /api/run`（带 `ref` 就先翻译成 id 并确认能接）、`POST /api/stop`。
 
 ### 中断的卡
 
@@ -160,7 +209,7 @@ loop 每 15 秒写一条 `heartbeat`，收到 SIGINT / SIGTERM / SIGBREAK 时先
 
 时间线里主 Agent 的发言和思考默认折叠，点一下展开；完整结论在「主 Agent 结论」区，不用滚时间线。
 
-深链可以直接选中一张卡：`http://127.0.0.1:7317/?run=run-<时间戳>&id=<需求id>`。
+深链可以直接选中一张卡：`http://127.0.0.1:7317/?run=run-<时间戳>&id=<需求id>`（出网时再带 `&k=<key>`）。
 
 默认读 `~/.tapd-loop/runs`，配置了 `run.cacheDir` 就用 `--root <目录>` 指过去。
 
@@ -170,7 +219,7 @@ loop 每 15 秒写一条 `heartbeat`，收到 SIGINT / SIGTERM / SIGBREAK 时先
 - 连续失败到 `maxFailures`
 - 前置失败（`blocked`）：同步冲突 / afterSync 红 / afterSync 留下改动，立刻停整批，不打 TAPD 标签
 - 队列为空（没有 `--watch` 时退出，有则轮询 `pollSec`）
-- 停止文件出现就退出：`<git-dir>/tapd-loop-stop`（主树是 `.git/tapd-loop-stop`，每棵树各自一份，停一棵不影响其他）
+- 停止文件出现就退出：`<git-dir>/tapd-loop-stop`（主树是 `.git/tapd-loop-stop`，每棵树各自一份，停一棵不影响其他）。网页上的「停止」写的就是这个文件，「接单开跑」会把它清掉。
 
 ## 输出
 

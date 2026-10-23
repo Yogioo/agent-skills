@@ -1,6 +1,9 @@
 /**
  * 看板常驻入口：detached 拉起 serve.mjs，父进程退出后网页继续在。
  * 幂等：已经在跑就复用，端口写进 board.json，链接之后不会变。
+ *
+ * 默认绑 0.0.0.0（局域网里别人能打开、能点按钮），因此 `/api/*` 会要密钥：
+ * 打出来的 `url` 直接带着 `?k=`，贴给别人就能用。只想本机用就 `--local`。
  */
 
 import { spawn } from 'node:child_process'
@@ -8,17 +11,55 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, write
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ensureKey } from './control.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const HOME = join(homedir(), '.tapd-loop')
+const args = process.argv.slice(2)
+const HOME = flag('--home') || join(homedir(), '.tapd-loop')
 const STATE = join(HOME, 'board.json')
 const LOG = join(HOME, 'board.log')
 const DEFAULT_PORT = 7317
 const PORT_TRIES = 8
 
-const args = process.argv.slice(2)
+async function main() {
+  if (args.includes('--stop')) return await stop()
+  if (args.includes('--status')) return status()
 
-if (args.includes('--stop')) {
+  const wanted = Number(flag('--port') || configBoard().port || DEFAULT_PORT)
+  const host = resolveHost()
+  const key = ensureKey(HOME)
+
+  const current = readState()
+  if (current && (await probe(current.port))) {
+    const health = await probe(current.port)
+    const state = stateFor({ port: current.port, health, key, reused: true })
+    writeState(state)
+    console.log(JSON.stringify(state))
+    return
+  }
+
+  for (let i = 0; i < PORT_TRIES; i++) {
+    const port = wanted + i
+    const existing = await probe(port)
+    if (existing) {
+      const state = stateFor({ port, health: existing, key, reused: true })
+      writeState(state)
+      console.log(JSON.stringify(state))
+      return
+    }
+    const started = await spawnBoard(port, host)
+    if (started) {
+      writeState(started)
+      console.log(JSON.stringify(started))
+      return
+    }
+  }
+
+  console.error(`看板启动失败，日志：${LOG}`)
+  process.exitCode = 1
+}
+
+async function stop() {
   const state = readState()
   let stopped = false
   if (state?.pid) {
@@ -29,49 +70,58 @@ if (args.includes('--stop')) {
       // 进程已经不在了，下面照样清 state
     }
   }
+  // pid 对不上但端口上确实是自己的看板（比如 state 里的 pid 是旧进程）：用 healthz 的 pid 补一刀。
+  if (!stopped && state?.port) {
+    const health = await probe(state.port)
+    if (health?.pid) {
+      try {
+        process.kill(health.pid)
+        stopped = true
+      } catch {
+        // 已经没了
+      }
+    }
+  }
   rmSync(STATE, { force: true })
   console.log(JSON.stringify({ stopped, url: state?.url || '' }))
-  process.exit(0)
 }
 
-if (args.includes('--status')) {
+async function status() {
   const state = readState()
-  const alive = state ? await healthy(state.url + 'api/state') : false
-  console.log(JSON.stringify({ ...(state || {}), alive }, null, 2))
-  process.exit(alive ? 0 : 4)
+  const health = state ? await probe(state.port) : null
+  console.log(JSON.stringify({ ...(state || {}), alive: Boolean(health), health: health || null }, null, 2))
+  process.exitCode = health ? 0 : 4
 }
 
-const wanted = Number(flag('--port') || DEFAULT_PORT)
-
-const current = readState()
-if (current && (await healthy(current.url + 'api/state'))) {
-  console.log(JSON.stringify({ ...current, reused: true }))
-  process.exit(0)
-}
-
-for (let i = 0; i < PORT_TRIES; i++) {
-  const port = wanted + i
-  const url = `http://127.0.0.1:${port}/`
-  if (await healthy(url + 'api/state')) {
-    const state = { host: '127.0.0.1', port, url, pid: 0, reused: true }
-    writeState(state)
-    console.log(JSON.stringify(state))
-    process.exit(0)
+/**
+ * 打出来的 `url` 是「能直接发给别人」的那条：出网时给局域网地址，并且带上密钥。
+ * 扩展和 loop 只读这一个字段，所以它必须是完整的、点开就能用的链接。
+ */
+function stateFor({ port, health, key, reused }) {
+  const local = health.local || `http://127.0.0.1:${port}/`
+  const share = health.share || ''
+  const authRequired = Boolean(health.authRequired)
+  const previous = readState()
+  return {
+    host: health.host || '127.0.0.1',
+    port,
+    local,
+    share,
+    url: `${share || local}${authRequired ? `?k=${encodeURIComponent(key)}` : ''}`,
+    key: authRequired ? key : '',
+    authRequired,
+    pid: health.pid || 0,
+    startedAt: reused ? previous?.startedAt || new Date().toISOString() : new Date().toISOString(),
+    reused,
   }
-  const started = await spawnBoard(port, url)
-  if (started) {
-    console.log(JSON.stringify(started))
-    process.exit(0)
-  }
 }
 
-console.error(`看板启动失败，日志：${LOG}`)
-process.exit(1)
-
-async function spawnBoard(port, url) {
+async function spawnBoard(port, host) {
   mkdirSync(HOME, { recursive: true })
   const fd = openSync(LOG, 'a')
-  const child = spawn(process.execPath, [join(HERE, 'serve.mjs'), '--port', String(port)], {
+  const child = spawn(process.execPath, [
+    join(HERE, 'serve.mjs'), '--host', host, '--port', String(port), '--home', HOME,
+  ], {
     cwd: HERE,
     detached: true,
     windowsHide: true,
@@ -80,25 +130,43 @@ async function spawnBoard(port, url) {
   child.unref()
   closeSync(fd)
 
-  for (let i = 0; i < 25; i++) {
+  for (let i = 0; i < 30; i++) {
     await sleep(150)
-    if (await healthy(url + 'api/state')) {
-      const state = { host: '127.0.0.1', port, url, pid: child.pid, startedAt: new Date().toISOString(), reused: false }
-      writeState(state)
-      return state
-    }
+    const health = await probe(port)
+    if (health) return stateFor({ port, health: { ...health, pid: health.pid || child.pid }, key: ensureKey(HOME), reused: false })
   }
   return null
 }
 
-async function healthy(url) {
+/**
+ * 探活只认自己的看板：端口可能被别人占了，`/healthz` 上的 `app` 标记必须对上。
+ * 绑通配和绑 loopback 的看板在 127.0.0.1 上都答，所以一个目标就够。
+ */
+async function probe(port) {
+  if (!port) return null
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(900) })
-    if (!res.ok) return false
+    const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(900) })
+    if (!res.ok) return null
     const data = await res.json()
-    return Array.isArray(data.runs)
+    return data?.app === 'tapd-loop' ? data : null
   } catch {
-    return false
+    return null
+  }
+}
+
+/** `--local` / `--lan` 是 `--host` 的糖；配置里也能写 board.host。 */
+function resolveHost() {
+  if (args.includes('--local')) return '127.0.0.1'
+  if (args.includes('--lan')) return '0.0.0.0'
+  return flag('--host') || process.env.TAPD_LOOP_BOARD_HOST || configBoard().host || '0.0.0.0'
+}
+
+function configBoard() {
+  try {
+    const parsed = JSON.parse(readFileSync(join(HOME, 'config.json'), 'utf8'))
+    return parsed?.board && typeof parsed.board === 'object' ? parsed.board : {}
+  } catch {
+    return {}
   }
 }
 
@@ -124,3 +192,5 @@ function flag(name) {
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
+
+await main()

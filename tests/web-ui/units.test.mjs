@@ -119,8 +119,17 @@ test('diff renders both modes', () => {
 })
 
 test('served browser modules stay free of node APIs', () => {
-  for (const name of ['client.mjs', 'events.mjs', 'markdown.mjs', 'format.mjs']) {
-    const source = readFileSync(fileURLToPath(new URL(`../../lib/web-ui/${name}`, import.meta.url)), 'utf8')
+  const files = [
+    '../../lib/web-ui/client.mjs',
+    '../../lib/web-ui/events.mjs',
+    '../../lib/web-ui/markdown.mjs',
+    '../../lib/web-ui/format.mjs',
+    '../../skills/tapd-loop/scripts/page-app.js',
+    '../../skills/tapd-loop/scripts/control.js',
+    '../../skills/tapd-loop/scripts/auth.js',
+  ]
+  for (const name of files) {
+    const source = readFileSync(fileURLToPath(new URL(name, import.meta.url)), 'utf8')
     assert.doesNotMatch(source, /\bnode:/, name)
     assert.doesNotMatch(source, /\brequire\(/, name)
     assert.doesNotMatch(source, /\bprocess\./, name)

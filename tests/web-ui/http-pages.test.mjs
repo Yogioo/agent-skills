@@ -85,7 +85,8 @@ test('tapd-loop board serves its page and read-only APIs', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'web-ui-tapd-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const port = await freePort()
-  const child = spawn(process.execPath, [tapdServe, '--root', root, '--port', String(port)], {
+  // --home 指到临时目录：serve 会在 <home> 里生成 board-key，不能写进真实的 ~/.tapd-loop。
+  const child = spawn(process.execPath, [tapdServe, '--root', root, '--home', root, '--port', String(port), '--host', '127.0.0.1'], {
     cwd: repoRoot,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -108,7 +109,13 @@ test('tapd-loop board serves its page and read-only APIs', async (t) => {
   const app = await fetch(`${url}app.js`)
   assert.equal(app.status, 200)
   assert.match(app.headers.get('content-type'), /text\/javascript/)
-  assert.match(await app.text(), /api\/state/)
+  const appSource = await app.text()
+  assert.match(appSource, /api\/state/)
+  assert.match(appSource, /mountControl/, '控制面板由页面挂上')
+
+  const control = await fetch(`${url}control.js`)
+  assert.equal(control.status, 200)
+  assert.match(await control.text(), /api\/run/)
 
   const state = await (await fetch(`${url}api/state`)).json()
   assert.ok(Array.isArray(state.runs))

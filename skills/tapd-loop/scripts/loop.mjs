@@ -101,6 +101,39 @@ async function main() {
     return
   }
 
+  if (args.show) {
+    // 只读：确认「这条链接指的是哪张卡、现在能不能接」。不写标签、不评论、不建 runDir。
+    // 给看板的「贴链接接单」用：先看清楚再开工，别为了一个打错的 id 启一个注定跳过的批次。
+    const card = tapd.getCard(String(args.show))
+    const readyLabel = tapd.labels.readyLabel
+    const machine = card.labels.find((label) => [tapd.labels.claimedLabel, tapd.labels.deliveredLabel, tapd.labels.failedLabel].includes(label)) || ''
+    const claimable = tapd.statuses.includes(card.status)
+    // 两条都会挡住「接这张」：机器标签在（可能正被别的批次占着）和状态不对。
+    // 分开说清楚，人一次就能把两个都处理掉，不用改完标签再发现状态也不对。
+    const blockedReason = [
+      machine ? `已带 ${machine}（可能正在跑、已交付或上次失败），要先在 TAPD 上把这个标签摘掉` : '',
+      claimable ? '' : `状态 ${card.statusLabel}，只有「开发中 / 实现中」能接`,
+    ].filter(Boolean).join('；')
+    console.log(JSON.stringify({
+      source: 'tapd',
+      workspaceId: tapd.workspaceId,
+      id: card.id,
+      title: card.title,
+      status: card.status,
+      statusLabel: card.statusLabel,
+      priorityLabel: card.priorityLabel,
+      labels: card.labels,
+      readyLabel,
+      hasReadyLabel: card.labels.includes(readyLabel),
+      machineLabel: machine,
+      claimable,
+      blockedReason,
+      allowedStatuses: tapd.statuses.map((key) => `${key}(${tapd.statusLabel(key)})`),
+      url: `https://www.tapd.cn/tapd_fe/${tapd.workspaceId}/story/detail/${card.id}`,
+    }, null, 2))
+    return
+  }
+
   if (args.fetch) {
     const dir = join(cfg.run.cacheDir || join(HOME, 'cards'), String(args.fetch))
     const detail = await tapd.getDetail(args.fetch, { imageDir: join(dir, 'images') })
@@ -820,7 +853,7 @@ function loadConfig(workdir, args = {}) {
   if (args.commentAuthor) merged.task.commentAuthor = args.commentAuthor
   if (args.statuses) merged.task.statuses = String(args.statuses).split(',').map((s) => s.trim()).filter(Boolean)
   merged.run.allowDirty = Boolean(args.allowDirty)
-  if (!merged.task.assignee && !args.fetch) throw new Error('缺少 task.assignee（TAPD 处理人）')
+  if (!merged.task.assignee && !args.fetch && !args.show) throw new Error('缺少 task.assignee（TAPD 处理人）')
   return merged
 }
 
@@ -891,6 +924,7 @@ function printHelp() {
   console.log(`用法: node scripts/loop.mjs --workdir <仓库> [选项]
 
   --list              只列出 TAPD 就绪卡，不执行
+  --show <id>         只读：看一张卡现在什么状态、能不能接（不写 TAPD）
   --fetch <id>        只抓取工单标题/详情/评论/图片到本地 md
   --dry-run           打印配置来源、运行目录与就绪卡
   --config <path>     额外合并一份配置文件（优先级最高，也可用 $TAPD_LOOP_CONFIG）

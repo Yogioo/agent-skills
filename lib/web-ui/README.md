@@ -17,6 +17,7 @@
 
 - `lib/run-runtime/board-app.js`：run 行、输入面板、用时每秒自走、深链 `?run=` / `?arm=`，栈底是 run、上层是子代理。
 - `skills/tapd-loop/scripts/page-app.js`：卡片行、工单/brief/verify/diff/log 面板、子臂下钻、`images/` 改写。
+- `skills/tapd-loop/scripts/control.js` + `auth.js`：控制面板（跑/停/定时接单）和看板密钥。它们能触发真跑、要看鉴权，只属于这张页面，不进共享层。
 
 两个页面的详情都是**同一个覆盖层弹窗**（`modalShell()` + `wireModal()` + `theme.css` 里的 `#modal`），不是表格下方展开。展示成什么样由栈决定，开关与层级由共享层保证两边一致。
 
@@ -37,6 +38,8 @@ kind: say | think | tool | tool_end | arm_start | arm_end | note
 - `GET /assets/markdown.mjs`
 - `GET /assets/format.mjs`
 - `GET /app.js`：该页面自己的 app 模块
+
+tapd-loop 的页面还多两个只属于它的模块：`GET /control.js`（控制面板）与 `GET /auth.js`（密钥与带 header 的 fetch）。共享层不认识它们。
 
 页面骨架用 `pageHead(title, extraHead)` 加 `${modalShell()}`，然后 `<script type="module" src="/app.js">`。浏览器模块只用相对 URL（`/assets/client.mjs`），不要出现 `node:`、`process`、`require`；`tests/web-ui/units.test.mjs` 会拦。
 

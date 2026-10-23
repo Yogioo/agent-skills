@@ -4,6 +4,8 @@ import {
   diffHtml, dur, esc, loadJson, md, paneHtml, rel, saveJson,
   timelineHtml, wireModal, wirePanes, wireTimeline,
 } from '/assets/client.mjs'
+import { apiFetch, withKey } from '/auth.js'
+import { mountControl } from '/control.js'
 
 const rowsEl = document.getElementById('rows')
 const meta = document.getElementById('meta')
@@ -188,7 +190,7 @@ function refreshModal() {
 function renderArm(top) {
   const card = stack[0]
   if (!card || card.type !== 'card') return
-  fetch('api/arm?run=' + encodeURIComponent(card.runId) + '&id=' + encodeURIComponent(card.cardId) + '&arm=' + encodeURIComponent(top.name))
+  apiFetch('api/arm?run=' + encodeURIComponent(card.runId) + '&id=' + encodeURIComponent(card.cardId) + '&arm=' + encodeURIComponent(top.name))
     .then((r) => r.json())
     .then((d) => {
       const mbody = document.getElementById('mbody')
@@ -212,7 +214,7 @@ function renderArm(top) {
 }
 
 function renderCard(sel) {
-  fetch('api/card?run=' + encodeURIComponent(sel.runId) + '&id=' + encodeURIComponent(sel.cardId))
+  apiFetch('api/card?run=' + encodeURIComponent(sel.runId) + '&id=' + encodeURIComponent(sel.cardId))
     .then((r) => r.json())
     .then((d) => {
       const mbody = document.getElementById('mbody')
@@ -232,7 +234,9 @@ function renderCard(sel) {
       cardSig = sig
       const html = []
       if (d.cardMd) {
-        const cardMd = String(d.cardMd).replace(/\]\(images\//g, '](/img/' + sel.runId + '/' + sel.cardId + '/')
+        // 出网时 /img/ 也要带密钥（<img> 带不了 header，只能进 query）。
+        const cardMd = String(d.cardMd).replace(/\]\(images\/([^)\s]+)\)/g,
+          (_, name) => '](' + withKey('/img/' + sel.runId + '/' + sel.cardId + '/' + name) + ')')
         html.push(paneHtml(sel.runId + '|' + sel.cardId + '|card', '工单', '<div class="md">' + md(cardMd, { images: true }) + '</div>', !!paneState[sel.runId + '|' + sel.cardId + '|card']))
       }
       const says = (d.events || []).filter((e) => e.kind === 'say')
@@ -299,10 +303,15 @@ function renderCard(sel) {
 }
 
 function poll() {
-  fetch('api/state')
+  apiFetch('api/state')
     .then((r) => r.json())
     .then((d) => {
-      state.runs = d.runs || []
+      if (!Array.isArray(d.runs)) {
+        // 401：骨架能打开但没数据。顶上那条横幅在说原因，这里别显示成「没有数据」。
+        meta.textContent = '需要访问密钥（用带 ?k= 的链接打开）'
+        return
+      }
+      state.runs = d.runs
       render()
       if (deep) {
         const first = deep
@@ -339,6 +348,7 @@ function wire() {
   }
   syncFilters()
   wireModal({ back, close: closeModal })
+  mountControl()
 }
 
 wire()

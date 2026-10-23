@@ -285,7 +285,7 @@
     <span class="chip"><i class="dot" style="background:#7c3aed"></i>内循环 · pi 子进程</span>
     <span class="chip"><i class="dot" style="background:#ea580c"></i>TAPD · tapd-cli</span>
     <span class="chip"><i class="dot" style="background:#059669"></i>仓库 · git</span>
-    <span class="chip"><i class="dot" style="background:#64748b"></i>看板 · 只读 HTTP</span>
+    <span class="chip"><i class="dot" style="background:#64748b"></i>看板 · HTTP + 按钮</span>
     <span class="chip"><i class="dot" style="background:#dc2626"></i>出口 = 离开主流程</span>
   </div>
 
@@ -322,7 +322,7 @@
     <li data-n="3">
       <div class="step board" role="button" tabindex="0" data-open="3" aria-label="查看节点 3 的内部">
         <h3><span class="actor a-board">看板</span>拉起常驻进程，拿到一个固定地址</h3>
-        <p><code>start-board.mjs</code> 用 detached 子进程起 <code>serve.mjs</code>，绑 <code>127.0.0.1:7317</code>，地址写进 <code>~/.tapd-loop/board.json</code>。已在跑就复用。</p>
+        <p><code>start-board.mjs</code> 用 detached 子进程起 <code>serve.mjs</code>，默认绑 <code>0.0.0.0:7317</code>，地址写进 <code>~/.tapd-loop/board.json</code>。已在跑就复用。出网时 <code>/api/*</code> 要密钥，打出来的 <code>url</code> 自带 <code>?k=</code>。</p>
         <div class="exits">
           <div class="exit warn"><b>起不来</b>只打一条日志，不影响干活，只是没页面可看</div>
         </div>
@@ -540,7 +540,8 @@
     <li data-n="20">
       <div class="step board" role="button" tabindex="0" data-open="20" aria-label="查看节点 20 的内部">
         <h3><span class="actor a-board">看板</span>页面始终能看全过程</h3>
-        <p>左侧每次 run 的队列，点卡开窗：工单（含图）、主 Agent 结论、brief、验证输出、diff、进程日志尾部、子代理、事件时间线。2 秒刷新，只读，绑 <code>127.0.0.1</code>。</p>
+        <p>左侧每次 run 的队列，点卡开窗：工单（含图）、主 Agent 结论、brief、验证输出、diff、进程日志尾部、子代理、事件时间线。2 秒刷新。</p>
+        <p>顶上的面板是 CLI 的按钮版：选仓库 / 处理人 / 本批张数，<b>查看 TAPD 队列</b>、<b>接单开跑</b>、<b>只跑这张</b>、<b>停止（下一张前）</b>，以及<b>定时查看并接单</b>的开关与间隔。动作照旧只 spawn <code>loop.mjs</code>，一次只允许一批。</p>
       </div>
     </li>
 
@@ -668,10 +669,10 @@
 </template>
 
 <template id="d3">
-  <p class="where"><code>start-board.mjs</code> → <code>serve.mjs</code> · <code>page.mjs</code> · <code>page-app.js</code> · <code>read-run.mjs</code></p>
+  <p class="where"><code>start-board.mjs</code> → <code>serve.mjs</code> · <code>page.mjs</code> · <code>page-app.js</code> · <code>control.js</code> · <code>control.mjs</code> · <code>read-run.mjs</code></p>
   <section class="sec in">
     <h4>输入</h4>
-    <ul><li><code>~/.tapd-loop/board.json</code>（上次的 pid / port / url）</li><li>可选 <code>--port</code></li></ul>
+    <ul><li><code>~/.tapd-loop/board.json</code>（上次的 pid / port / url / key）</li><li><code>~/.tapd-loop/board-key</code>（密钥，只生成一次）</li><li>可选 <code>--host</code> / <code>--local</code> / <code>--port</code></li></ul>
   </section>
   <section class="sec out">
     <h4>输出</h4>
@@ -680,10 +681,12 @@
   <section class="sec do">
     <h4>内部做什么</h4>
     <ol>
-      <li>读 <code>board.json</code>，探活；还活着就直接复用</li>
+      <li>读 <code>board.json</code>，打 <code>/healthz</code> 探活（认 <code>app: tapd-loop</code> 标记）；还活着就直接复用</li>
       <li>否则 detached spawn <code>serve.mjs</code>，端口从 7317 起试 8 个</li>
       <li><code>child.unref()</code>，父进程退出网页不关</li>
-      <li>只绑 <code>127.0.0.1</code>、只读；页面每 2s fetch <code>api/state</code></li>
+      <li>页面每 2s fetch <code>api/state</code>；控制面板每 3s fetch <code>api/control</code></li>
+      <li>按钮只 spawn <code>loop.mjs</code>（<code>--no-board</code>），批次 detached 跑，输出落 <code>~/.tapd-loop/board-batches/</code></li>
+      <li>定时接单：<code>serve.mjs</code> 每 5s tick 一次，到点跑 <code>--list</code>，有就绪卡才开工</li>
       <li>卡窗数据来自 <code>api/card</code>：<code>brief.md</code> / <code>card.md</code> / <code>events.jsonl</code> 时间线 / <code>diff.txt</code> / <code>verify.log</code> / <code>pi.log</code> 尾部</li>
     </ol>
   </section>
@@ -1172,15 +1175,18 @@
 </template>
 
 <template id="d20">
-  <p class="where"><code>serve.mjs</code> + <code>page.mjs</code> + <code>page-app.js</code> + <code>read-run.mjs</code></p>
-  <section class="sec in"><h4>输入</h4><ul><li><code>~/.tapd-loop/runs</code> 下的每个 run 目录</li></ul></section>
-  <section class="sec out"><h4>输出</h4><ul><li>一个只读页面：左队列 + 卡片窗口 + 子代理窗口</li></ul></section>
+  <p class="where"><code>serve.mjs</code> + <code>page.mjs</code> + <code>page-app.js</code> + <code>control.js</code> + <code>control.mjs</code> + <code>read-run.mjs</code></p>
+  <section class="sec in"><h4>输入</h4><ul><li><code>~/.tapd-loop/runs</code> 下的每个 run 目录</li><li><code>~/.tapd-loop/board-control.json</code>（面板设置与上一批状态）</li><li><code>~/.tapd-loop/board-key</code>（出网时 `/api/*` 要的密钥）</li></ul></section>
+  <section class="sec out"><h4>输出</h4><ul><li>一个页面：左队列 + 卡片窗口 + 子代理窗口 + 顶上那块控制面板</li><li>点按钮时 spawn 的 <code>loop.mjs</code> 批次，stdout 落 <code>board-batches/</code></li></ul></section>
   <section class="sec do">
     <h4>内部做什么</h4>
     <ol>
       <li><code>GET /</code> 返回页面，前端每 2s <code>fetch('api/state')</code></li>
       <li><code>api/card</code> 拉单卡：<code>card.md</code> / <code>brief.md</code> / <code>events.jsonl</code> 时间线 / <code>diff.txt</code> / <code>verify.log</code> / <code>pi.log</code> 尾部 / 子代理 arm</li>
-      <li>只绑 <code>127.0.0.1</code>，全部只读</li>
+      <li>面板每 3s fetch <code>api/control</code>；按钮走 <code>api/run</code> / <code>api/stop</code> / <code>api/queue</code></li>
+      <li>贴 TAPD 链接：<code>api/card-link</code> 先调 <code>loop.mjs --show &lt;id&gt;</code> 看清楚，再带 <code>ref</code> 调 <code>api/run</code>（服务端翻译成 id、确认能接，强制只跑一张）</li>
+      <li>默认绑 <code>0.0.0.0</code>，出网时 <code>/api/*</code> 一律要密钥（<code>?k=</code> 或 <code>x-tapd-loop-key</code>）</li>
+      <li>定时接单：每 5s tick，到点跑 <code>--list</code>，有就绪卡才开工；判活看 <code>progress.jsonl</code> 的 pid，所以一次只跑一批</li>
     </ol>
   </section>
   <section class="sec tune">
