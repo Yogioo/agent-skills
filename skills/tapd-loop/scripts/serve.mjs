@@ -158,6 +158,29 @@ async function handle(req, res, url) {
     const result = control.stop(body)
     return sendJson(res, result.ok ? 200 : 400, { ...result, ...boardStatus() })
   }
+  if (path === '/api/stations') {
+    if (req.method === 'GET') return sendJson(res, 200, { ok: true, ...boardStatus() })
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'GET/POST only' })
+    const body = await readJsonBody(req)
+    const action = String(body.action || '').trim()
+    const result = action === 'create' ? control.createStation(body)
+      : action === 'remove' ? control.removeStation(body)
+        : action === 'register' ? control.registerStation(body)
+          : action === 'forget' ? control.forgetStation(body)
+            : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / forget）` }
+    return sendJson(res, result.ok ? 200 : 400, { ...result, ...boardStatus() })
+  }
+  if (path === '/api/dispatch') {
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+    const body = await readJsonBody(req)
+    if (body.enabled != null) {
+      const current = control.read()
+      control.write({ ...current, watch: { ...current.watch, enabled: Boolean(body.enabled) } })
+    }
+    // force：手动派一次不进节流（定时器自己调的时候不传）。
+    const tick = await control.tick({ force: true })
+    return sendJson(res, 200, { ok: true, tick, ...boardStatus() })
+  }
   if (path.startsWith('/img/')) return sendImage(res, url)
   return send(res, 404, 'not found')
 }

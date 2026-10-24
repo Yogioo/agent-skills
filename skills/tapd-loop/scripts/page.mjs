@@ -38,6 +38,18 @@ th:nth-child(4),td:nth-child(4){width:7%;white-space:nowrap}
 #cRefBox .rtitle{color:#e6edf3}
 #cRefBox .rmeta{color:#8b949e;margin-top:2px}
 #cRefBox a{color:#58a6ff}
+#cStations:empty{display:none}
+#cStations{margin:10px 0 0;border-top:1px solid #21262d;padding-top:8px}
+#cStations .shead{display:flex;align-items:center;gap:10px;font-size:12px;color:#8b949e;margin:0 0 6px;flex-wrap:wrap}
+#cStations .slist{display:flex;flex-direction:column}
+#cStations .srow{display:grid;grid-template-columns:64px minmax(0,1fr) 100px 150px 196px;gap:10px;align-items:center;padding:4px 0;border-top:1px solid #161b22;font-size:12px}
+#cStations .srow:first-child{border-top:0}
+#cStations .sname{color:#e6edf3}
+#cStations .spath{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#6e7681}
+#cStations .sact{display:flex;gap:6px}
+#cStations .sjob{font-size:12px;margin-top:4px;color:#8b949e}
+#ctl input#cStationPath{flex:1 1 260px}
+#ctl input#cStationName{width:8em}
 </style>`
 
 export function pageHtml() {
@@ -75,6 +87,15 @@ export function pageHtml() {
     <button id="cRefRun" class="primary">接这张开跑</button>
   </div>
   <div id="cRefBox"></div>
+  <div class="row">
+    <span>新建工位</span>
+    <input id="cStationName" placeholder="名字，如 a" spellcheck="false">
+    <button id="cStationCreate">建一棵</button>
+    <span>或</span>
+    <input id="cStationPath" placeholder="已有 worktree 的绝对路径" spellcheck="false">
+    <button id="cStationRegister">登记已有</button>
+  </div>
+  <div id="cStations"></div>
   <div id="cRunning"></div>
   <div class="row" id="cShare"></div>
   <div id="cQueueBox"></div>
