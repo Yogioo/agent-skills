@@ -117,6 +117,9 @@ function summarizeRun(dir) {
     dir,
     workdir: start?.workdir || '',
     assignee: start?.assignee || '',
+    // 这一批用的 CLI / 模型 / 思考等级。卡片自己的 turn_start 没带时（旧事件、被中断的卡）
+    // 看板拿它兜底，不然弹窗里只剩一个空。
+    runtime: start?.runtime || null,
     startedAt,
     endedAt,
     alive: liveness.alive,
@@ -199,7 +202,10 @@ function aggregate(progress, dir) {
     if (event.event === 'card_phase') card.phase = event.phase
     if (event.event === 'turn_start') {
       card.phase = 'running'
-      card.model = event.model
+      card.cli = event.cli || ''
+      card.provider = event.provider || ''
+      card.model = event.model || ''
+      card.thinking = event.thinking || ''
     }
     if (event.event === 'turn_end') {
       card.lastTurnMs = event.durationMs

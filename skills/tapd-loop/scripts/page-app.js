@@ -222,9 +222,22 @@ function renderCard(sel) {
       // 也放在读不到文件之前：还没开工的卡没有目录，头部还得显示卡号与状态。
       const run = state.runs.filter((r) => r.runId === sel.runId)[0]
       const card = (run && run.cards.filter((c) => c.id === sel.cardId)[0]) || {}
+      // 这张卡用的 CLI / 模型 / 思考等级：运维时最常问的就是「它到底跑在什么上」。
+      // 逐字段兜底：卡片自己的 turn_start 优先，没有就用这一批 loop_start 里的 runtime
+      //（旧 run 两者都只会有一个 model，那就显示一个）。
+      const rt = run && run.runtime ? run.runtime : {}
+      const rtCli = card.cli || rt.cli
+      const rtModel = card.model || rt.model
+      const rtThinking = card.thinking || rt.thinking
+      const runBits = []
+      if (rtCli) runBits.push(rtCli)
+      if (rtModel) runBits.push('模型 ' + rtModel)
+      if (rtThinking) runBits.push('思考 ' + rtThinking)
+      const runInfo = runBits.filter(Boolean).map(esc).join(' · ')
       document.getElementById('mhead').innerHTML = '<h3>' + esc(card.title || sel.cardId) + '</h3><div class="sub">' + esc(card.id) + ' · ' +
         (d.detail ? esc(d.detail.statusLabel + ' · ' + d.detail.priorityLabel + ' · ' + d.detail.owner) : '') + ' · ' + esc(elapsed(card)) + ' · ' +
-        st(card.status || 'queued') + (card.note ? ' · ' + esc(card.note) : '') + '</div>'
+        st(card.status || 'queued') + (card.note ? ' · ' + esc(card.note) : '') + '</div>' +
+        (runInfo ? '<div class="sub">' + runInfo + '</div>' : '')
       if (d.error) {
         mbody.innerHTML = '<div class="bad">读不到：' + esc(d.error) + '</div>'
         return

@@ -206,6 +206,14 @@ async function main() {
     assignee: cfg.task.assignee,
     statuses: cfg.task.statuses,
     maxTasks: cfg.run.maxTasks,
+    // 这一批用的 CLI / 模型 / 思考等级：卡片自己的 turn_start 没带时（旧事件、被中断的卡）
+    // 看板拿这里的值兜底，不然弹窗里只剩一个空。
+    runtime: {
+      cli: process.env.PI_BIN || 'pi',
+      provider: cfg.run.provider || '',
+      model: cfg.run.model || '(default)',
+      thinking: cfg.run.thinking || '(default)',
+    },
     // pid 与 host 给看板判生死用：被 taskkill /F 掉的 run 不会有 loop_end。
     pid: process.pid,
     host: hostname(),
@@ -356,7 +364,16 @@ async function runCard(card, ctx) {
     thinking: cfg.run.thinking,
     timeoutMs: cfg.run.timeoutSec * 1000,
   })
-  log('turn_start', { id: card.id, model: cfg.run.model || '(default)', skill: cfg.run.skillPath })
+  log('turn_start', {
+    id: card.id,
+    // 看板靠这几个字段展示「这张卡用的是哪个 CLI / 模型 / 思考等级」。
+    // 配置为空时显式记 (default)，不要留空——否则页面分不清「没配」和「没传」。
+    cli: process.env.PI_BIN || 'pi',
+    provider: cfg.run.provider || '',
+    model: cfg.run.model || '(default)',
+    thinking: cfg.run.thinking || '(default)',
+    skill: cfg.run.skillPath,
+  })
 
   return turn.then((result) => {
     log('turn_end', { id: card.id, code: result.code, timedOut: result.timedOut, durationMs: result.durationMs })
