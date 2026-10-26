@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import {
-  DEFAULTS, batchArgs, parseCardRef, sameKey, sanitizeControl, stopFilePath,
+  DEFAULTS, batchArgs, createControl, parseCardRef, sameKey, sanitizeControl, stopFilePath,
 } from '../../skills/tapd-loop/scripts/control.mjs'
 
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
@@ -214,6 +214,87 @@ test('a claimable card from a link starts a one-card batch', async (t) => {
   assert.equal(started.data.batch.maxTasks, 1, '指定一张卡就只跑一张')
   assert.ok(started.data.batch.argv.includes('--card'))
   assert.ok(started.data.batch.argv.includes('--no-board'))
+})
+
+// ---------------------------------------------------------------- 工位状态
+
+test('a station with a live batch is busy before the card id is known', (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'tapd-busy-'))
+  t.after(() => cleanup(home))
+  const runsRoot = join(home, 'runs')
+  const runDir = join(runsRoot, 'run-1')
+  mkdirSync(runDir, { recursive: true })
+  // loop 记的是反斜杠路径，工位表里存的是正斜杠：两种写法必须认成同一个目录，
+  // 否则「跑着」的工位会显示成空闲，还会给它画「合入 / 接一单」。
+  const workdir = 'C:\\projects\\demo-wt-a'
+  writeFileSync(join(runDir, 'progress.jsonl'), [
+    JSON.stringify({ t: Date.now(), event: 'loop_start', workdir, pid: process.pid, maxTasks: 1 }),
+    // 刚开跑：批次已经起来，但卡还没分到（card 是空的）。
+    JSON.stringify({ t: Date.now(), event: 'heartbeat', pid: process.pid, card: '' }),
+  ].join('\n') + '\n', 'utf8')
+
+  const ctl = createControl({ home, runsRoot, loopScript: 'unused.mjs' })
+  ctl.write({ workdir: 'C:/projects/demo', stations: [{ name: 'a', path: 'C:/projects/demo-wt-a' }] })
+
+  const station = ctl.status().stations[0]
+  assert.equal(station.busy, true)
+  assert.equal(station.idle, false)
+  assert.equal(station.card, '', '还没有卡，但页面不能因此画成空闲')
+  assert.equal(ctl.busy('C:/projects/demo-wt-a').pid, process.pid, '斜杠方向不同也要拦得住第二批')
+})
+
+test('pending merge count ignores commits the main tree has not pulled yet', (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'tapd-pending-'))
+  t.after(() => cleanup(home))
+  const git = (cwd, ...args) => execFileSync('git', args, {
+    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  }).trim()
+
+  const origin = join(home, 'origin.git')
+  git(home, 'init', '--bare', origin)
+
+  // 主树：develop 跟 origin/develop 同步
+  const main = join(home, 'main')
+  git(home, 'clone', origin, main)
+  git(main, 'checkout', '-B', 'develop')
+  git(main, 'config', 'user.email', 'a@b.c')
+  git(main, 'config', 'user.name', 't')
+  writeFileSync(join(main, 'a.txt'), 'base', 'utf8')
+  git(main, 'add', '-A')
+  git(main, 'commit', '-m', 'base')
+  git(main, 'push', '-u', 'origin', 'develop')
+
+  // 工位：从 develop 开分支
+  const station = join(home, 'main-wt-a')
+  git(main, 'worktree', 'add', '-b', 'feat/a', station, 'develop')
+
+  // 别人往 origin/develop 推了一个提交（美术/别人的活，不是这一单的）
+  const other = join(home, 'other')
+  git(home, 'clone', origin, other)
+  git(other, 'checkout', '-B', 'develop', 'origin/develop')
+  git(other, 'config', 'user.email', 'a@b.c')
+  git(other, 'config', 'user.name', 't')
+  writeFileSync(join(other, 'art.txt'), 'art', 'utf8')
+  git(other, 'add', '-A')
+  git(other, 'commit', '-m', 'art: 别人的提交')
+  git(other, 'push', 'origin', 'develop')
+
+  // 工位开工前 sync 把别人刚推的提交拉进来，主树本地还没 pull
+  git(station, 'pull', '--rebase', 'origin', 'develop')
+  assert.equal(git(main, 'rev-parse', 'HEAD'), git(main, 'rev-parse', 'origin/develop~1'), '主树故意落后一格')
+  assert.equal(git(main, 'rev-list', '--count', 'HEAD..feat/a'), '1', '只跟本地 HEAD 比会算出 1，这就是那个假「合入 1」')
+
+  const runsRoot = join(home, 'runs')
+  mkdirSync(runsRoot, { recursive: true })
+  const ctl = createControl({ home, runsRoot, loopScript: 'unused.mjs' })
+  ctl.write({ workdir: main.replace(/\\/g, '/'), stations: [{ name: 'a', path: station.replace(/\\/g, '/') }] })
+  assert.equal(ctl.status().stations[0].pending, 0, '上游已有的提交不算待合入')
+
+  // 工位真提交了自己的活，就得算回来
+  writeFileSync(join(station, 'mine.txt'), 'mine', 'utf8')
+  git(station, 'add', '-A')
+  git(station, 'commit', '-m', 'fix: 1005001 工位自己的提交')
+  assert.equal(ctl.status().stations[0].pending, 1, '工位自己的提交不能被过滤掉')
 })
 
 // ---------------------------------------------------------------- 小工具

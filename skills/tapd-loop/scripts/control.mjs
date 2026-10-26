@@ -211,6 +211,27 @@ export function stopFilePath(workdir) {
   return join(isAbsolute(dir) ? dir : resolve(workdir, dir), 'tapd-loop-stop')
 }
 
+/**
+ * 两个路径是不是同一个目录。
+ * 工位表里存的是 ``C:/projects/...-wt-a``（正斜杠），而 loop 的 progress.jsonl 里记的是
+ * ``C:\\projects\\...-wt-a``（反斜杠）。直接 ``===`` 永远不相等，后果是「跑着的工位看着空闲」
+ * （于是画「接一单」），更糟的是 remove / clean / merge 的「有批次在跑」闸门也会漏。
+ */
+function samePath(a, b) {
+  if (!a || !b) return false
+  const fold = (value) => {
+    let text
+    try {
+      text = resolve(String(value))
+    } catch {
+      text = String(value)
+    }
+    text = text.replace(/[\\/]+$/, '')
+    return process.platform === 'win32' ? text.toLowerCase() : text
+  }
+  return fold(a) === fold(b)
+}
+
 function gitOut(cwd, args) {
   try {
     return execFileSync('git', args, {
@@ -261,7 +282,8 @@ function allRuns(runsRoot, limit = PROBE_DIRS) {
     if (!existsSync(file)) continue
     const start = firstJsonLine(file)
     if (!start || start.event !== 'loop_start') continue
-    if (tailText(file, TAIL_BYTES).includes('"loop_end"')) continue
+    const tail = tailText(file, TAIL_BYTES)
+    if (tail.includes('"loop_end"')) continue
     if (!pidAlive(Number(start.pid))) continue
     out.push({
       kind: 'run',
@@ -270,14 +292,43 @@ function allRuns(runsRoot, limit = PROBE_DIRS) {
       pid: Number(start.pid) || 0,
       startedAt: Number(start.t) || 0,
       maxTasks: Number(start.maxTasks) || 0,
+      // 刚开跑时还没有卡（card_start 要等 TAPD 查完），所以这个字段可以是空的。
+      card: cardFromTail(tail),
     })
   }
   return out
 }
 
+/**
+ * 从 progress 尾部找这批正在跑哪张卡。
+ * 先看最后一条 heartbeat：它每 15 秒写一次，card 为空就表示两张卡之间（或还没接到卡），
+ * 这时不要倒着找出上一张 card_done 的 id，否则「跑完一张、下一张还没接」会显示成上一张。
+ */
+function cardFromTail(tail) {
+  if (!tail) return ''
+  const events = []
+  for (const line of tail.split('\n')) {
+    if (!line.startsWith('{')) continue
+    try {
+      events.push(JSON.parse(line))
+    } catch {
+      // 尾巴第一行多半被截断了，跳过
+    }
+  }
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    if (events[i].event === 'heartbeat') return String(events[i].card || '')
+    if (events[i].event === 'card_done' || events[i].event === 'card_failed') return ''
+  }
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const id = String(events[i].id || events[i].card || '')
+    if (/^\d{10,}$/.test(id)) return id
+  }
+  return ''
+}
+
 /** 某个工位上有没有活批次。不传 workdir 就是全机（老语义）。 */
 function probeRun(runsRoot, workdir = '') {
-  return allRuns(runsRoot).find((run) => !workdir || run.workdir === workdir) || null
+  return allRuns(runsRoot).find((run) => !workdir || samePath(run.workdir, workdir)) || null
 }
 
 function firstJsonLine(file) {
@@ -429,7 +480,7 @@ export function createControl(opts) {
   /** 某个工位上的活批次；不传 workdir 就是全机第一个。 */
   function busy(workdir = '') {
     const all = runningAll()
-    return (workdir ? all.find((item) => item.workdir === workdir) : all[0]) || null
+    return (workdir ? all.find((item) => samePath(item.workdir, workdir)) : all[0]) || null
   }
 
   /** 工作目录候选：最近跑过的那几个，页面的下拉框就是它。 */
@@ -570,7 +621,7 @@ export function createControl(opts) {
     const target = String(workdir || '').trim()
     if (!target) return Promise.resolve({ ok: false, error: '先选工作目录', ready: [], rejected: [] })
     const cached = memory.queue
-    if (!refresh && cached && cached.workdir === target && Date.now() - cached.at < 20_000) return Promise.resolve(cached)
+    if (!refresh && cached && samePath(cached.workdir, target) && Date.now() - cached.at < 20_000) return Promise.resolve(cached)
     return list({ workdir: target, assignee: read().assignee }).then((result) => {
       memory.queue = { ...result, workdir: target, at: Date.now() }
       return memory.queue
@@ -723,7 +774,7 @@ export function createControl(opts) {
       const upstream = isRepo && branch ? gitOut(path, ['rev-parse', '--abbrev-ref', '@{u}']) : ''
       const behind = upstream ? Number(gitOut(path, ['rev-list', '--count', `HEAD..@{u}`]) || '0') || 0 : 0
       const unity = exists && isRepo ? unityState(path) : 'off'
-      const batch = active.find((item) => item.workdir === path) || null
+      const batch = active.find((item) => samePath(item.workdir, path)) || null
       // 这个工位有多少提交还没进主树（卡片据此给「合入」按钮）。
       // 主树未知或就是本树时按 0。
       const mainDir = String(config.workdir || '').trim()
@@ -742,6 +793,9 @@ export function createControl(opts) {
         dirty,
         unity,
         pending,
+        // busy 是「这个工位上有一批在跑」。它跟 card 不等价：刚点「接一单」时批次已经起来了，
+        // 但卡片要等 TAPD 查完才有 id，card 一段时间里是空的。页面据此判断能不能再开一批。
+        busy: Boolean(batch),
         idle: !batch,
         // 可用 = 目录在 + 是 git 仓库 + 工作区没改已跟踪文件 + Unity 在线（端点能用）
         usable: exists && isRepo && !dirty && unity === 'on',
@@ -962,7 +1016,7 @@ function resolveBash() {
     if (!existsSync(script)) return { ok: false, error: `主树里没有建树脚本：${script}` }
     const path = String(input.path || '').trim() || defaultStationPath(main, name)
     if (existsSync(path)) return { ok: false, error: `目录已存在：${path}（要复用就用「登记已有工位」）` }
-    if (runningAll().some((item) => String(item.workdir) === path)) return { ok: false, error: '这个路径上还有批次在跑' }
+    if (runningAll().some((item) => samePath(item.workdir, path))) return { ok: false, error: '这个路径上还有批次在跑' }
     return spawnJob({
       kind: 'create',
       name,
@@ -990,13 +1044,13 @@ function resolveBash() {
     if (main && resolve(station.path).toLowerCase() === resolve(main).toLowerCase()) {
       return { ok: false, error: '这是主树，不能当工位删' }
     }
-    const live = runningAll().find((item) => item.workdir === station.path)
+    const live = runningAll().find((item) => samePath(item.workdir, station.path))
     if (live) return { ok: false, error: `${name} 上还有批次在跑（${live.runId || live.pid}），先停再删` }
     const branch = gitOut(station.path, ['rev-parse', '--abbrev-ref', 'HEAD'])
     const mainDir = main && existsSync(main) ? main : dirname(station.path)
-    const pending = branch ? Number(gitOut(mainDir, ['rev-list', '--count', `develop..${branch}`]) || '0') || 0 : 0
+    const pending = branch && branch !== 'HEAD' ? pendingCount(mainDir, branch) : 0
     if (pending > 0) {
-      return { ok: false, error: `${name} 的分支 ${branch} 还有 ${pending} 个提交没合进 develop：先跑 Tools/Worktree/collect.mjs 再删` }
+      return { ok: false, error: `${name} 的分支 ${branch} 还有 ${pending} 个提交没合进主树：先跑 Tools/Worktree/collect.mjs 再删` }
     }
     if (!input.confirm) {
       return { ok: false, error: `真要删 ${station.path}（分支 ${branch}）就带 confirm: true 再调一次` }
@@ -1019,7 +1073,7 @@ function resolveBash() {
     const path = String(input.path || '').trim()
     const hit = config.stations.find((item) => item.name === name || (path && item.path.toLowerCase() === path.toLowerCase()))
     if (!hit) return { ok: false, error: '工位表里没有这一项' }
-    const live = runningAll().find((item) => item.workdir === hit.path)
+    const live = runningAll().find((item) => samePath(item.workdir, hit.path))
     if (live) return { ok: false, error: `${hit.name} 上还有批次在跑，先停再移除` }
     dropStation(hit.name)
     return { ok: true, stations: read().stations }
@@ -1092,7 +1146,7 @@ function resolveBash() {
     if (!station) return { ok: false, error: `没有叫 ${name} 的工位` }
     const path = station.path
     if (!existsSync(path)) return { ok: false, error: `目录不存在：${path}` }
-    const live = runningAll().find((item) => item.workdir === path)
+    const live = runningAll().find((item) => samePath(item.workdir, path))
     if (live) return { ok: false, error: `${name} 上还有批次在跑，不能清理` }
 
     const dirty = gitOut(path, ['status', '--porcelain', '--untracked-files=no'])
@@ -1113,8 +1167,26 @@ function resolveBash() {
    */
   function pendingCount(main, branch) {
     if (!main || !branch) return 0
-    const out = gitOut(main, ['cherry', 'HEAD', branch])
-    return out ? out.split('\n').filter((line) => line.startsWith('+')).length : 0
+    // 也不能只跟主树本地 HEAD 比：工位开工前会 pull --rebase，别人刚推到 origin 的提交先落到
+    // 工位分支上，而主树本地还没 pull —— 只比 HEAD 就会把「上游已经有的提交」算成待合入
+    // （点完「接一单」立刻冒出「合入 1」，其实这一单一个字都还没提交）。
+    // 所以主树上游与本地 HEAD 都算基准，两边都判「没进主树」才算真待合入。
+    const bases = [...new Set([upstreamOf(main), 'HEAD'].filter(Boolean))]
+    let pending = null
+    for (const base of bases) {
+      const out = gitOut(main, ['cherry', base, branch])
+      const plus = new Set((out ? out.split('\n') : [])
+        .filter((line) => line.startsWith('+'))
+        .map((line) => line.slice(1).trim()))
+      pending = pending ? new Set([...pending].filter((sha) => plus.has(sha))) : plus
+      if (!pending.size) return 0
+    }
+    return pending ? pending.size : 0
+  }
+
+  /** 主树当前分支的上游（如 origin/develop）。没配上游时返回空字符串。 */
+  function upstreamOf(main) {
+    return gitOut(main, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']) || ''
   }
 
   /** 仓库级 tapd-loop.json（run.doneStatus 这类只对某个仓库生效的配置）。 */
@@ -1256,7 +1328,7 @@ function resolveBash() {
     if (!station) return { ok: false, error: `没有叫 ${name} 的工位` }
     const main = String(input.workdir || config.workdir || '').trim()
     if (!main) return { ok: false, error: '先选主树工作目录' }
-    const live = runningAll().find((item) => item.workdir === station.path)
+    const live = runningAll().find((item) => samePath(item.workdir, station.path))
     if (live) return { ok: false, error: `${name} 上还有批次在跑，等它跑完再合入` }
 
     const branch = gitOut(station.path, ['rev-parse', '--abbrev-ref', 'HEAD'])
@@ -1568,7 +1640,7 @@ function resolveBash() {
 function summarizeQueue(queue, workdir) {
   return {
     workdir: queue.workdir,
-    match: queue.workdir === workdir,
+    match: samePath(queue.workdir, workdir),
     ok: Boolean(queue.ok),
     error: queue.error || '',
     at: queue.at,

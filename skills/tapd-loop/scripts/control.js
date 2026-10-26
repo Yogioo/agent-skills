@@ -93,6 +93,19 @@ function esc(text) {
   return String(text ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
 }
 
+/**
+ * 前端版的「同一个路径」：只抹平斜杠方向和结尾分隔符。
+ * loop 写进 progress.jsonl 的是反斜杠，工位表 / 面板里存的是正斜杠，直接 === 永远不等。
+ * 浏览器里没有 path.resolve，也不需要：两边都是同一台机器上的绝对路径。
+ */
+function samePath(a, b) {
+  const norm = (value) => {
+    const text = String(value || '').replace(/[\\/]+/g, '/').replace(/\/+$/, '')
+    return /^[A-Za-z]:\//.test(text) ? text.toLowerCase() : text
+  }
+  return Boolean(a) && Boolean(b) && norm(a) === norm(b)
+}
+
 function renderRunning(s) {
   const box = el('cRunning')
   if (!box) return
@@ -124,7 +137,9 @@ function renderStations(s) {
     .filter((job) => job.status === 'running' || job.status === 'unknown')
 
   const cards = stations.map((station) => {
-    const running = Boolean(station.card)
+    // 判「在干活」不能看 card：刚点「接一单」时批次已经起来了，卡片要等 TAPD 查完才有 id。
+    // 只看 card 会把正在跑的工位当成空闲，于是给它画「合入 N」和「接一单」。
+    const running = station.busy ?? !station.idle
     const unityOff = station.unity === 'off'
     const trouble = !station.exists ? '目录不见了'
       : !station.isRepo ? '不是一个 git 仓库'
@@ -136,32 +151,36 @@ function renderStations(s) {
     // booting：Unity 进程在、控制端点还没出来（首次导入）。这不是错误，是等。
     const booting = !trouble && (starting || station.unity === 'booting')
     const elapsed = Math.max(0, Number(s.now || Date.now()) - Number(station.startedAt || s.now || Date.now()))
-    const badge = trouble ? '<span class="badge bad">需要处理</span>'
-      : booting ? '<span class="badge run">Unity 启动中</span>'
-        : running ? `<span class="badge run">干活中 · ${esc(dur(elapsed))}</span>`
+    const badge = running ? `<span class="badge run">干活中 · ${esc(dur(elapsed))}</span>`
+      : trouble ? '<span class="badge bad">需要处理</span>'
+        : booting ? '<span class="badge run">Unity 启动中</span>'
           : '<span class="badge ok">空闲</span>'
-    const body = trouble
-      ? (unityOff ? '验证要连本树的 Unity，现在没开<br>点下面的按钮打开它'
-        : `${esc(trouble)}` + (station.behind ? ` · 落后 ${esc(String(station.behind))}` : '') + '<br>清一下就能接着干')
-      : booting
-        ? '首次导入约 4.5 分钟。超过 10 分钟还这样，点「检查端点」看看是不是没带控制开关'
-        : running
-          ? `<span class="t">${esc(station.card)}</span><br>跑完自动回到空闲`
+    // 在跑就先报在跑：批次跑卡时工作区必然是脏的，不能因此画成「需要处理 / 清理改动」——
+    // 那等于请人点一个会把 agent 活干掉的按钮。
+    const body = running
+      ? (station.card
+        ? `<span class="t">${esc(station.card)}</span><br>跑完自动回到空闲`
+        : '正在接单，还没分到卡片<br>跑完自动回到空闲')
+      : trouble
+        ? (unityOff ? '验证要连本树的 Unity，现在没开<br>点下面的按钮打开它'
+          : `${esc(trouble)}` + (station.behind ? ` · 落后 ${esc(String(station.behind))}` : '') + '<br>清一下就能接着干')
+        : booting
+          ? '首次导入约 4.5 分钟。超过 10 分钟还这样，点「检查端点」看看是不是没带控制开关'
           : (Number(station.pending) > 0
             ? `有 ${esc(String(station.pending))} 个提交待合入主树`
             : (station.behind ? `落后最新 ${esc(String(station.behind))} 个提交，开工前会自动更新` : '可以接活'))
-    const actions = trouble
-      ? (unityOff
-        ? `<button class="primary" data-sunity="${esc(station.name)}">打开 Unity</button>` +
-          `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删掉</button>`
-        : station.dirty
-          ? `<button class="primary" data-sclean="${esc(station.name)}">清理改动</button>` +
+    const actions = running
+      ? `<button data-sstop="${esc(station.name)}">跑完这张就停</button>`
+      : trouble
+        ? (unityOff
+          ? `<button class="primary" data-sunity="${esc(station.name)}">打开 Unity</button>` +
             `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删掉</button>`
-          : `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删掉这个工位</button>`)
-      : booting
-        ? `<button data-sprobe="${esc(station.name)}">检查端点</button>`
-        : running
-          ? `<button data-sstop="${esc(station.name)}">跑完这张就停</button>`
+          : station.dirty
+            ? `<button class="primary" data-sclean="${esc(station.name)}">清理改动</button>` +
+              `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删掉</button>`
+            : `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删掉这个工位</button>`)
+        : booting
+          ? `<button data-sprobe="${esc(station.name)}">检查端点</button>`
           : (Number(station.pending) > 0
             ? `<button class="primary" data-smerge="${esc(station.name)}">合入 ${esc(String(station.pending))}</button>` +
               `<button data-srun="${esc(station.name)}">接一单</button><button data-sdel="${esc(station.name)}">删掉</button>`
@@ -247,8 +266,8 @@ function renderSummary(s) {
     box.innerHTML = '<b>还没有工位</b> · 展开下面的「高级设置」建一个，或直接填项目路径单工位跑'
     return
   }
-  const running = stations.filter((station) => station.card).length
-  const trouble = stations.filter((station) => !station.usable && !station.card).length
+  const running = stations.filter((station) => station.busy || station.card).length
+  const trouble = stations.filter((station) => !station.usable && !station.busy && !station.card).length
   const idle = stations.length - running - trouble
   const parts = [`<b>${stations.length}</b> 个工位`]
   if (idle) parts.push(`<span class="ok">${idle} 空闲</span>`)
@@ -402,8 +421,9 @@ function render(s) {
   renderQueue(s)
   renderShare(s)
   // 多工位：按「当前选中的这个工位有没有批次」决定按钮，而不是全机有没有。
+  // loop 记的 workdir 是反斜杠、面板里的可能是正斜杠，直接比会把「判断不了」当成空闲。
   const runs = Array.isArray(s.runs) ? s.runs : (s.running ? [s.running] : [])
-  const busyHere = runs.some((item) => item.workdir === s.config.workdir)
+  const busyHere = runs.some((item) => samePath(item.workdir, s.config.workdir))
   if (el('cRun')) el('cRun').disabled = busyHere
   if (el('cRefRun')) el('cRefRun').disabled = busyHere || !s.config.workdir
   if (el('cQueue')) el('cQueue').disabled = !s.config.workdir
