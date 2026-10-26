@@ -691,6 +691,13 @@ export function preflight(card, { git, cfg, workdir, dir, log }) {
     } else {
       log('card_sync_skipped', { id: card.id, fatal: Boolean(result.fatal), reason: result.reason, files: result.files?.slice(0, 10) })
       if (result.fatal) return { ok: false, fatal: true, reason: result.reason }
+      // strict：同步没成功就不开工。默认关（通用行为：只是告警）。
+      // 多工位并行时建议打开：工位上一张卡留下的脏工作区会让 pull --rebase 静默跳过，
+      // 于是一整张卡都干在陈旧基线上，最后 cherry-pick 回主树才爆炸。
+      // 不设 fatal：这是这个工位的问题，不该把其他工位的批次一起停掉。
+      if (syncCfg.strict === true) {
+        return { ok: false, fatal: false, reason: `同步没成功（${result.reason}），sync.strict 下不在陈旧基线上开工` }
+      }
     }
   }
 
