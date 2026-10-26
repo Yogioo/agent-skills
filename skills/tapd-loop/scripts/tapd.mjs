@@ -461,6 +461,23 @@ export function createTapd(opts = {}) {
       return { ok: true, status: key, label: map[key], from: current }
     },
 
+    /**
+     * 交给创建人：合入完成后把处理人改回创建人（验收由他做）。
+     * TAPD 的 owner 多人用 `;` 分隔，回读时去掉尾部分号再比。
+     * 读不到创建人就跳过（不阻断回写）。
+     */
+    handToCreator(id) {
+      const story = getStory(id)
+      const creator = String(story.creator || '').trim()
+      if (!creator) return { ok: false, skipped: '读不到创建人' }
+      const current = String(story.owner || '').replace(/;+$/, '').trim()
+      if (current === creator) return { ok: true, unchanged: true, owner: creator }
+      call(['story', 'update', `workspaceid=${workspaceId}`, `id=${id}`, `owner=${creator}`], { lenient: true })
+      const back = String(getStory(id).owner || '').replace(/;+$/, '').trim()
+      if (back !== creator) throw new Error(`处理人没改成 ${creator}（现在是 ${back}）`)
+      return { ok: true, owner: creator, from: current }
+    },
+
     claim(id) {
       const story = getStory(id)
       const machine = machineOf(story.label)

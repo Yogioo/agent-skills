@@ -1181,7 +1181,7 @@ function resolveBash() {
       }
       const note = `[tapd-loop] 已合入主树：${branch} → ${String(cfg?.run?.targetBranch || 'develop')}，` +
         `合并后提交 ${after.slice(0, 10)}（工位原始提交 ${origin.slice(0, 10)}）。` +
-        (doneStatus ? `\n\n状态流转：${doneStatus}` : '')
+        (doneStatus ? `\n\n状态流转：${doneStatus}，处理人已交回创建人` : '')
       const one = { cardId, sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: true }
       try {
         tapd.addComment(cardId, note)
@@ -1200,6 +1200,15 @@ function resolveBash() {
         }
       } else {
         one.statusSkipped = '没配 run.doneStatus'
+      }
+      // 验收是创建人的事：状态流转的同时把处理人也交回去，否则卡会停在 agent 名上没人管。
+      try {
+        const handed = tapd.handToCreator(cardId)
+        one.owner = handed.owner || ''
+        one.ownerSkipped = handed.skipped || ''
+      } catch (err) {
+        one.ok = false
+        one.ownerError = err.message
       }
       results.push(one)
     }
