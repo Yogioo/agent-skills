@@ -127,6 +127,93 @@ function renderRunning(s) {
  * 工位卡片：给人看的版本。默认视图只回答三件事——谁能接活、谁在干活、谁需要处理。
  * 分支名 / 上游 / 绝对路径这些不进卡片正文（放 title），出错时给的是「怎么办」而不是「发生了什么」。
  */
+/**
+ * 主树卡片。以前看板上只有工位卡片，主树的事（合进去了没推、Unity 没开所以 verify 卡在
+ * 验证门、卡在 cherry-pick 冲突）只能翻日志才发现。跟工位卡片同一套皮肤和语义：
+ * 蓝 = 在忙、红 = 需要处理（包括「有提交没推」）、灰 = 干净。
+ */
+function renderMain(s) {
+  const box = el('cMain')
+  if (!box) return
+  const main = s.main
+  if (!main || !main.path) {
+    box.innerHTML = ''
+    return
+  }
+  const jobs = (Array.isArray(s.jobs) ? s.jobs : [])
+    .filter((item) => String(item.kind || '').startsWith('main-'))
+  const job = jobs.find((item) => item.status === 'running' || item.status === 'unknown')
+  const busy = Boolean(job)
+  const trouble = !main.exists ? '目录不见了'
+    : !main.isRepo ? '不是 git 仓库'
+      : main.conflict ? 'cherry-pick 冲突中'
+        : ''
+  const unpushed = Number(main.ahead) || 0
+  const behind = Number(main.behind) || 0
+
+  const badge = busy
+    ? `<span class="badge run">${esc(job.kind === 'main-push' ? '验证并推送中' : '验证中')}</span>`
+    : trouble ? '<span class="badge bad">需要处理</span>'
+      : unpushed > 0 ? `<span class="badge bad">${esc(String(unpushed))} 个提交没推</span>`
+        : behind > 0 ? `<span class="badge run">落后 ${esc(String(behind))}</span>`
+          : '<span class="badge ok">与远端一致</span>'
+
+  const bits = [esc(main.branch || '?') + (main.upstream ? ' ⟵ ' + esc(main.upstream) : '（没配上游）')]
+  if (trouble) bits.push(esc(trouble))
+  else {
+    bits.push(main.dirty ? '工作区有未提交改动' : '工作区干净')
+    bits.push(main.unity === 'on' ? 'Unity 在线'
+      : main.unity === 'booting' ? 'Unity 开着但没有控制端点（多半不是带 -unityPuerExecControl 开的）'
+        : 'Unity 没开')
+    if (unpushed > 0) bits.push('推送前会先跑验证门')
+  }
+
+  const actions = busy
+    ? `<button disabled>${esc(job.kind === 'main-push' ? '验证并推送中…' : '验证中…')}</button>`
+    : `<button class="primary" data-mpush="1">${unpushed > 0 ? `验证并推送 ${esc(main.target || 'develop')}` : '验证并推送'}</button>` +
+      '<button data-mverify="1">只验证</button>' +
+      (main.unity === 'off'
+        ? '<button data-munity="1">打开 Unity</button>'
+        : '<button data-mprobe="1">检查端点</button>')
+
+  const last = s.lastMerge
+  const lastText = last && last.results
+    ? `上次合入 ${new Date(Number(last.at) || 0).toLocaleTimeString()} · ` + last.results
+      .map((one) => `卡片 ${one.ok ? '' : '⚠ '}${one.cardId || '?'}${one.status ? '→' + one.status : ''}`)
+      .join('、')
+    : ''
+
+  const tone = busy ? 'run' : trouble || unpushed > 0 ? 'bad' : ''
+  box.innerHTML = '<div class="cards">' +
+    `<div class="card ${tone}" title="${esc(main.path)}">` +
+    `<div class="card-top"><span class="card-name">主树</span>${badge}</div>` +
+    `<div class="card-body">${bits.join('<br>')}${lastText ? '<br>' + esc(lastText) : ''}</div>` +
+    `<div class="card-actions">${actions}</div>` +
+    '</div></div>'
+
+  const run = (action) => {
+    stationAction(action, { workdir: s.config?.workdir || '' })
+      .catch(() => {})
+  }
+  box.querySelector('[data-mpush]')?.addEventListener('click', () => run('mainpush'))
+  box.querySelector('[data-mverify]')?.addEventListener('click', () => run('mainverify'))
+  box.querySelector('[data-munity]')?.addEventListener('click', () => run('mainunity'))
+  box.querySelector('[data-mprobe]')?.addEventListener('click', () => {
+    apiJson('api/stations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'mainprobe', path: main.path }),
+    })
+      .then((res) => {
+        const d = res.data || {}
+        if (res.ok && d.ok) say(`主树端点通了：端口 ${d.port} · pid ${d.pid}`, 'ok')
+        else say(`主树端点：${d.error || '连不上'}`, 'bad')
+        return poll()
+      })
+      .catch(() => {})
+  })
+}
+
 function renderStations(s) {
   const box = el('cStations')
   if (!box) return
@@ -423,6 +510,7 @@ function render(s) {
   renderSummary(s)
   renderConflict(s)
   renderStations(s)
+  renderMain(s)
   renderRunning(s)
   renderQueue(s)
   renderShare(s)
@@ -571,6 +659,17 @@ async function stop() {
   await poll()
 }
 
+/** job.kind → 人话。工位和主树共用一套。 */
+const JOB_LABEL = {
+  create: '建树',
+  remove: '删树',
+  merge: '合入',
+  'merge-resume': '续合入',
+  'main-push': '主树验证并推送',
+  'main-verify': '主树验证',
+  resolve: '解冲突',
+}
+
 async function stationAction(action, payload) {
   const res = await apiJson('api/stations', {
     method: 'POST',
@@ -578,8 +677,9 @@ async function stationAction(action, payload) {
     body: JSON.stringify({ ...payload, action }),
   })
   if (!res.ok) say(res.data?.error || `失败（HTTP ${res.status}）`, 'bad')
-  else if (res.data?.job) say(`已开始：${res.data.job.kind === 'create' ? '建树' : '删树'} ${res.data.job.name}（几分钟，日志 ${res.data.job.log || ''}）`, 'ok')
-  else say('工位表已更新', 'ok')
+  else if (res.data?.error) say(res.data.error, 'warn')
+  else if (res.data?.job) say(`已开始：${JOB_LABEL[res.data.job.kind] || res.data.job.kind} ${res.data.job.name || ''}（几分钟，日志 ${res.data.job.log || ''}）`, 'ok')
+  else say('已更新', 'ok')
   await poll()
 }
 

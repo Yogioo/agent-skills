@@ -66,6 +66,9 @@ th:nth-child(4),td:nth-child(4){width:7%;white-space:nowrap}
 #cRefBox .rmeta{color:#8b949e;margin-top:2px}
 #cRefBox a{color:#58a6ff}
 #cStations:empty{display:none}
+#cMain:empty{display:none}
+#cMain{margin:10px 0 0}
+#cMain .cards{display:flex;gap:8px;flex-wrap:wrap}
 #cStations{margin:10px 0 0;border-top:1px solid #21262d;padding-top:8px}
 #cStations .shead{display:flex;align-items:center;gap:10px;font-size:12px;color:#8b949e;margin:0 0 6px;flex-wrap:wrap}
 #cStations .slist{display:flex;flex-direction:column}
@@ -94,6 +97,7 @@ export function pageHtml() {
   </div>
   <div id="cMsg"></div>
   <div id="cConflict"></div>
+  <div id="cMain"></div>
   <div id="cStations"></div>
   <div id="cQueueBox"></div>
   <details id="cAdvanced">

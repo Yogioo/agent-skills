@@ -578,6 +578,9 @@ export function createControl(opts) {
       running: running[0] || null,
       runs: running,
       stations: stationState(config),
+      // 主树自己也是一张卡：分支、领先/落后 origin、脏不脏、Unity 开没开。
+      main: mainState(config.workdir),
+      lastMerge: raw().lastMerge || null,
       jobs: listJobs(),
       lastBatch: memory.lastBatch || raw().lastBatch || null,
       watch: {
@@ -901,7 +904,7 @@ export function createControl(opts) {
    * （进程 code 1、日志 0 字节，而同样的命令用 pipe 就正常）。自己重定向还有个好处：
    * 看板重启/退出后，子进程继续写自己的文件。
    */
-  function spawnJob({ kind, name, path, workdir, script, onDone, onConflict }) {
+  function spawnJob({ kind, name, path, workdir, script, onDone, onConflict, onSettled }) {
     mkdirSync(batchDir, { recursive: true })
     const log = join(batchDir, `station-${kind}-${name}-${stamp()}.log`)
     const cmdline = `exec > '${shPath(log)}' 2>&1; ${script}`
@@ -936,12 +939,22 @@ export function createControl(opts) {
     const settle = (status, code, error) => {
       if (settled) return
       settled = true
+      // onSettled 不分成败都会跑：合入可能在 verify 那一步退出非 0，可提交已经 cherry-pick
+      // 进本地 develop 了。以前只在 code 0 才回写 TAPD，于是「合进去了、工单没流转、也没推」。
+      let writeBack = null
+      if (onSettled) {
+        try {
+          writeBack = onSettled(status, code)
+        } catch {
+          // 回写炸了不影响 job 已记下的结果
+        }
+      }
       const done = raw()
       writeJson(controlFile, {
         ...done,
         jobs: (Array.isArray(done.jobs) ? done.jobs : [])
           .map((item) => (item.id === job.id
-            ? { ...item, status, code, endedAt: Date.now(), ...(error ? { error } : {}) }
+            ? { ...item, status, code, endedAt: Date.now(), ...(error ? { error } : {}), ...(writeBack ? { writeBack } : {}) }
             : item)),
       })
       if (status === 'done' && onDone) {
@@ -1133,11 +1146,31 @@ function resolveBash() {
     const name = String(input.name || '').trim()
     const station = config.stations.find((item) => item.name === name)
     if (!station) return { ok: false, error: `没有叫 ${name} 的工位` }
-    const path = station.path
+    return launchUnity(station.path, name)
+  }
+
+  /** 主树的 Unity：主树 verify 要连的就是它，合入时最容易因为它没开而卡在验证门。 */
+  function openMainUnity(input = {}) {
+    const main = String(input.workdir || read().workdir || '').trim()
+    if (!main) return { ok: false, error: '先选主树工作目录' }
+    if (!existsSync(main)) return { ok: false, error: `目录不存在：${main}` }
+    // 主树常见的坑不是「没开」，而是「开了但没带 -unityPuerExecControl」，
+    // 文件层面跟 booting 一模一样。这时直接拉第二个 Unity 会抢锁，只能让人先关掉那个。
+    if (unityState(main) === 'booting') {
+      return {
+        ok: false,
+        error: '主树的 Unity 开着，但没有控制端点：要么在它的菜单里点 Tools/UnityPuerExec/Activate CLI Control (this session)，要么关掉它再点这个按钮重开',
+      }
+    }
+    return launchUnity(main, '主树')
+  }
+
+  /** 真正拉起 Unity：工位和主树共用（参数就是树的根目录 + 给人看的名字）。 */
+  function launchUnity(path, label) {
     if (!existsSync(path)) return { ok: false, error: `目录不存在：${path}` }
     const state = unityState(path)
-    if (state === 'on') return { ok: false, error: `${name} 的 Unity 已经开着，控制端点也在` }
-    if (state === 'booting') return { ok: false, error: `${name} 的 Unity 正在启动（首次导入约 4.5 分钟），等它起来再点` }
+    if (state === 'on') return { ok: false, error: `${label} 的 Unity 已经开着，控制端点也在` }
+    if (state === 'booting') return { ok: false, error: `${label} 的 Unity 正在启动（首次导入约 4.5 分钟），等它起来再点` }
 
     // 版本从工程文件读，别写死。
     let version = ''
@@ -1292,7 +1325,7 @@ function resolveBash() {
    * 合入后回写 TAPD：每一条被 cherry-pick 进来的提交，带 `-x` 会写回原始 sha，
    * 用它在 run 记录里找回卡片，评论 + （配了 run.doneStatus 时）改状态。
    */
-  function writeBackMerged({ stationName, branch, main, before }) {
+  function writeBackMerged({ stationName, branch, main, before, via = '' }) {
     const after = gitOut(main, ['rev-parse', 'HEAD'])
     if (!before || !after || before === after) {
       return { ok: false, error: '主树 HEAD 没变，没有可回写的提交' }
@@ -1314,8 +1347,10 @@ function resolveBash() {
         results.push({ sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: false, reason: '找不到对应卡片' })
         continue
       }
-      const note = `[tapd-loop] 已合入主树：${branch} → ${String(cfg?.run?.targetBranch || 'develop')}，` +
-        `合并后提交 ${after.slice(0, 10)}（工位原始提交 ${origin.slice(0, 10)}）。` +
+      const note = (via
+        ? `[tapd-loop] 已推送到 ${String(cfg?.run?.targetBranch || 'develop')}（${via}）`
+        : `[tapd-loop] 已合入主树：${branch} → ${String(cfg?.run?.targetBranch || 'develop')}`) +
+        `，合并后提交 ${after.slice(0, 10)}（工位原始提交 ${origin.slice(0, 10)}）。` +
         (doneStatus ? `\n\n状态流转：${doneStatus}，处理人已交回创建人` : '')
       const one = { cardId, sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: true }
       try {
@@ -1366,6 +1401,95 @@ function resolveBash() {
    * 合入工位：跑主树的 Tools/Worktree/collect.mjs（pick → 导表 → verify → push），
    * 跑完回写 TAPD。跟其他长任务一样走 job，页面轮询看进度。
    */
+  /**
+   * 主树（develop）自己的状态。看板上以前只有工位卡片、没有主树，于是
+   * 「合进去了但没推」「主树 Unity 没开导致 verify 卡在验证门」这类事只能翻日志才能发现。
+   */
+  function mainState(workdir = '') {
+    const config = read()
+    const main = String(workdir || config.workdir || '').trim()
+    const base = {
+      path: main,
+      exists: Boolean(main) && existsSync(main),
+      isRepo: false,
+      branch: '',
+      upstream: '',
+      ahead: 0,
+      behind: 0,
+      dirty: false,
+      unity: 'off',
+      conflict: false,
+      target: String(loopConfig(main)?.run?.targetBranch || 'develop'),
+    }
+    if (!base.exists) return base
+    if (!gitOut(main, ['rev-parse', '--git-dir'])) return { ...base, exists: true }
+    const branch = gitOut(main, ['rev-parse', '--abbrev-ref', 'HEAD']) || ''
+    const upstream = gitOut(main, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']) || ''
+    let ahead = 0
+    let behind = 0
+    if (upstream) {
+      // 对本地 remote-tracking ref 算的：没 fetch 过就是上次 fetch 时的数字（页面会注明）。
+      const counts = gitOut(main, ['rev-list', '--left-right', '--count', `${upstream}...HEAD`]).split(/\s+/)
+      behind = Number(counts[0]) || 0
+      ahead = Number(counts[1]) || 0
+    }
+    return {
+      ...base,
+      exists: true,
+      isRepo: true,
+      branch,
+      upstream,
+      ahead,
+      behind,
+      dirty: Boolean(gitOut(main, ['status', '--porcelain', '--untracked-files=no'])),
+      unity: unityState(main),
+      conflict: Boolean(conflictState(main)),
+    }
+  }
+
+  /**
+   * 主树「验证并推送」：合入时 verify 没过（典型：主树 Unity 没开）会停在 push 之前，
+   * 提交已经在本地 develop 上，只是没推、也没回写 TAPD。collect --resume 就是为这种现场
+   * 准备的：跳过 pick，只做导表 → verify → push，成功后按落地的提交回写 TAPD。
+   */
+  function pushMain(input = {}) {
+    const config = read()
+    const main = String(input.workdir || config.workdir || '').trim()
+    if (!main || !existsSync(main)) return { ok: false, error: '先选主树工作目录' }
+    if (!gitOut(main, ['rev-parse', '--git-dir'])) return { ok: false, error: `不是 git 仓库：${main}` }
+    if (conflictState(main)) return { ok: false, error: '主树还停在 cherry-pick 冲突里，先解冲突' }
+    const script = join(main, 'Tools', 'Worktree', 'collect.mjs')
+    if (!existsSync(script)) return { ok: false, error: `主树没有合入脚本：${script}` }
+    const target = String(loopConfig(main)?.run?.targetBranch || 'develop')
+    const before = gitOut(main, ['rev-parse', '--verify', `origin/${target}`]) || ''
+    return spawnJob({
+      kind: 'main-push',
+      name: '(主树)',
+      path: main,
+      workdir: main,
+      script: `exec '${shPath(process.execPath)}' '${shPath(script)}' --resume`,
+      onSettled: () => writeBackMerged({ stationName: '(主树)', branch: target, main, before, via: '合入时验证没跑完，之后补推' }),
+    })
+  }
+
+  /** 只跑主树的验证门（想看现在到底绿不绿，但不想动 git）。 */
+  function verifyMain(input = {}) {
+    const config = read()
+    const main = String(input.workdir || config.workdir || '').trim()
+    if (!main || !existsSync(main)) return { ok: false, error: '先选主树工作目录' }
+    const script = join(main, '.workflow', 'verify', 'verify_unity.mjs')
+    if (!existsSync(script)) return { ok: false, error: `主树没有验证脚本：${script}` }
+    const target = String(loopConfig(main)?.run?.targetBranch || 'develop')
+    const base = gitOut(main, ['rev-parse', '--verify', `origin/${target}`]) || 'HEAD'
+    return spawnJob({
+      kind: 'main-verify',
+      name: '(主树)',
+      path: main,
+      workdir: main,
+      script: `exec '${shPath(process.execPath)}' '${shPath(script)}' --base '${base}'`,
+    })
+  }
+
   function mergeStation(input = {}) {
     const config = read()
     const name = String(input.name || '').trim()
@@ -1396,7 +1520,9 @@ function resolveBash() {
       // --resolve：冲突不 abort，保留现场（退出码 2）。
       // code 2 时 spawnJob 自动调 onConflict → 起 agent 解 → continue → collect --resume。
       script: `exec '${shPath(process.execPath)}' '${shPath(script)}' '${branch}' --resolve`,
-      onDone: () => writeBackMerged({ stationName: name, branch, main, before }),
+      // 用 onSettled 而不是 onDone：verify 挂了也会 exit != 0，但提交已经落地。
+      // 回写按「主树 HEAD 动了没」判（writeBackMerged 自己会查），不看退出码。
+      onSettled: () => writeBackMerged({ stationName: name, branch, main, before }),
       onConflict: () => resolveMerge({ name, workdir: main }),
     })
   }
@@ -1532,9 +1658,11 @@ function resolveBash() {
   async function probeUnity(input = {}) {
     const config = read()
     const name = String(input.name || '').trim()
-    const station = config.stations.find((item) => item.name === name)
-    if (!station) return { ok: false, error: `没有叫 ${name} 的工位` }
-    const path = station.path
+    const station = name ? config.stations.find((item) => item.name === name) : null
+    // 主树的端点也要能查：合入时 verify 就是因为它连不上而 exit 2。
+    const path = String(input.path || '').trim() || (station ? station.path : String(config.workdir || '').trim())
+    if (name && !station) return { ok: false, error: `没有叫 ${name} 的工位` }
+    if (!path) return { ok: false, error: '没给目标：要么写工位名，要么给树路径' }
     const state = unityState(path)
     if (state === 'off') return { ok: false, state, error: 'Unity 没开（Temp/UnityLockfile 没被占）' }
 
@@ -1673,6 +1801,9 @@ function resolveBash() {
     mergeStation,
     resolveMerge,
     openUnity,
+    openMainUnity,
+    pushMain,
+    verifyMain,
     probeUnity,
     cleanStation,
     onChange: (listener) => {

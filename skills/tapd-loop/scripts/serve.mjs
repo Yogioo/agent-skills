@@ -163,14 +163,19 @@ async function handle(req, res, url) {
     if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'GET/POST only' })
     const body = await readJsonBody(req)
     const action = String(body.action || '').trim()
-    const result = action === 'create' ? control.createStation(body)
+    // probeUnity 是 async：统一 await 一下，不然回给页面的是个 Promise。
+    const result = await Promise.resolve(action === 'create' ? control.createStation(body)
       : action === 'remove' ? control.removeStation(body)
         : action === 'register' ? control.registerStation(body)
           : action === 'forget' ? control.forgetStation(body)
             : action === 'clean' ? control.cleanStation(body)
               : action === 'merge' ? control.mergeStation(body)
                 : action === 'resolve' ? control.resolveMerge(body)
-                  : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / forget / clean / merge / resolve）` }
+                  : action === 'mainpush' ? control.pushMain(body)
+                    : action === 'mainverify' ? control.verifyMain(body)
+                      : action === 'mainunity' ? control.openMainUnity(body)
+                        : action === 'mainprobe' ? control.probeUnity({ path: body.path || '', name: body.name || '' })
+                          : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / forget / clean / merge / resolve / mainpush / mainverify / mainunity / mainprobe）` })
     return sendJson(res, result.ok ? 200 : 400, { ...result, ...boardStatus() })
   }
   if (path === '/api/dispatch') {
