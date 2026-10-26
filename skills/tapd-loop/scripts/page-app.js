@@ -21,6 +21,11 @@ try {
   const q = new URLSearchParams(location.search)
   if (q.get('run') && q.get('id')) deep = { runId: q.get('run'), cardId: q.get('id') }
 } catch {}
+// 深链只消费一次：这次打开后就把参数从 URL 抹掉，刷新一轮就回到列表。
+// （否则关了卡片刷新又弹回来——旧版 openCard 会把 run/id 写进 URL，关掉也不清。）
+if (deep) {
+  try { history.replaceState(null, '', location.pathname) } catch {}
+}
 
 const savedView = loadJson('tapd-loop-view', null)
 let view = savedView && typeof savedView.days === 'number' ? savedView : { days: 0, onlyAlive: false }
@@ -144,7 +149,8 @@ function openCard(runId, cardId) {
   stack = [{ type: 'card', runId, cardId }]
   cardSig = null
   armSig = null
-  try { history.replaceState(null, '', '?run=' + encodeURIComponent(runId) + '&id=' + encodeURIComponent(cardId)) } catch {}
+  // 不把 run/id 写进 URL：点开/关掉卡片是页内交互，刷新应该回到列表。
+  // 深链（?run=…&id=…）仍然支持——只在页面加载时读一次（见文件头的 deep）。
   render()
   showModal()
 }
@@ -169,6 +175,10 @@ function closeModal() {
   cardSig = null
   armSig = null
   document.getElementById('modal').classList.remove('on')
+  // 从分享链接进来的（URL 还带着 ?run=&id=）：关掉时清掉参数，否则刷新又弹回来。
+  try {
+    if (new URLSearchParams(location.search).has('run')) history.replaceState(null, '', location.pathname)
+  } catch {}
 }
 
 function showModal() {
