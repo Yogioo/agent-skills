@@ -721,7 +721,7 @@ export function createControl(opts) {
       // 主树未知或就是本树时按 0。
       const mainDir = String(config.workdir || '').trim()
       const pending = isRepo && branch && mainDir && resolve(mainDir) !== resolve(path)
-        ? Number(gitOut(mainDir, ['rev-list', '--count', `HEAD..${branch}`]) || '0') || 0
+        ? pendingCount(mainDir, branch)
         : 0
       return {
         name: station.name,
@@ -1088,6 +1088,17 @@ function resolveBash() {
     return { ok: true, cleaned: count, left: left ? left.split('\n').filter(Boolean).length : 0 }
   }
 
+  /**
+   * 工位分支上「真正还没进主树」的提交数。
+   * 不能用 rev-list HEAD..branch：cherry-pick 后 sha 变了，rev-list 会把已经合入的提交再算一遍。
+   * git cherry 按 patch 等价性判断，`+` 开头才是真没合入、`-` 是已有等价补丁。
+   */
+  function pendingCount(main, branch) {
+    if (!main || !branch) return 0
+    const out = gitOut(main, ['cherry', 'HEAD', branch])
+    return out ? out.split('\n').filter((line) => line.startsWith('+')).length : 0
+  }
+
   /** 仓库级 tapd-loop.json（run.doneStatus 这类只对某个仓库生效的配置）。 */
   function loopConfig(main) {
     const common = gitOut(main, ['rev-parse', '--git-common-dir'])
@@ -1223,7 +1234,7 @@ function resolveBash() {
 
     const branch = gitOut(station.path, ['rev-parse', '--abbrev-ref', 'HEAD'])
     if (!branch || branch === 'HEAD') return { ok: false, error: `${name} 读不到当前分支（detached？）` }
-    const pending = Number(gitOut(main, ['rev-list', '--count', `HEAD..${branch}`]) || '0') || 0
+    const pending = pendingCount(main, branch)
     if (!pending) return { ok: true, pending: 0, note: `${branch} 上没有未合入提交` }
     if (gitOut(main, ['status', '--porcelain', '--untracked-files=no'])) {
       return { ok: false, error: '主树有未提交改动，collect 会被挡住：先处理干净' }
@@ -1238,8 +1249,8 @@ function resolveBash() {
       name,
       path: station.path,
       workdir: main,
-      // collect 默认会 push；不给参数就是它自己的默认行为。
-      script: `exec '${shPath(process.execPath)}' '${shPath(script)}' '${branch}'`,
+      // --resolve：冲突不 abort，保留现场（退出码 2）。解完再跑 collect --resume。
+      script: `exec '${shPath(process.execPath)}' '${shPath(script)}' '${branch}' --resolve`,
       onDone: () => writeBackMerged({ stationName: name, branch, main, before }),
     })
   }
