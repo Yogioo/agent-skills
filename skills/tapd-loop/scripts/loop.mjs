@@ -170,7 +170,7 @@ async function main() {
   let boardUrl = ''
   if (!args.noBoard) {
     try {
-      const out = execFileSync(process.execPath, [join(HERE, 'start-board.mjs')], { encoding: 'utf8', timeout: 15000 })
+      const out = execFileSync(process.execPath, [join(HERE, 'start-board.mjs')], { encoding: 'utf8', timeout: 15000, windowsHide: true })
       boardUrl = JSON.parse(out).url
       process.stdout.write(`board: ${boardUrl}\n`)
     } catch {
@@ -475,6 +475,9 @@ function runVerify(command, workdir, dir) {
       encoding: 'buffer',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 600_000,
+      // 批次是被 detached + windowsHide 起的（没有控制台），子进程不显式给 CREATE_NO_WINDOW
+      // 就会被系统配一个新控制台 —— 那就是人看到的 cmd 弹窗。
+      windowsHide: true,
     }))
     writeFileSync(join(dir, 'verify.log'), output, 'utf8')
     return { ok: true, code: 0 }
@@ -547,7 +550,7 @@ function pickGitError(err) {
 export function createGit(cwd) {
   const tryRun = (args) => {
     try {
-      const out = execFileSync('git', args, { cwd, encoding: 'buffer', stdio: ['ignore', 'pipe', 'pipe'] })
+      const out = execFileSync('git', args, { cwd, encoding: 'buffer', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
       return { ok: true, out: decodeOutput(out).trim() }
     } catch (err) {
       return {
@@ -775,6 +778,7 @@ function runGuard(command, workdir, dir, timeoutSec) {
       encoding: 'buffer',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: Math.max(60, Number(timeoutSec) || 1800) * 1000,
+      windowsHide: true,
     }))
     write(output)
     return { ok: true, code: 0, elapsedMs: Date.now() - startedAt, logPath }
