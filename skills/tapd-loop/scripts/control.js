@@ -16,6 +16,9 @@ let msg = { text: '', cls: 'dim' }
 let saveTimer = 0
 let started = false
 
+/** 点过「打开 Unity」的工位：启动要几分钟，这期间卡片显示「正在启动」（本地状态，刷新即丢）。 */
+const unityPending = new Map()
+
 function editing() {
   const box = el('ctl')
   return Boolean(box && document.activeElement && box.contains(document.activeElement))
@@ -102,62 +105,96 @@ function renderRunning(s) {
   box.className = 'runline'
   box.innerHTML = runs.map((running) => {
     const elapsed = Date.now() + serverSkew - Number(running.startedAt || Date.now())
-    const where = running.runId || `pid ${running.pid}`
-    return '<div><span class="state-run">▶ 正在跑</span> · ' + esc(running.workdir || '') +
-      ' · ' + esc(where) + ' · 已跑 ' + esc(dur(elapsed)) + '</div>'
+    return '<div>' + esc(running.workdir || '') + ' · 已跑 ' + esc(dur(elapsed)) +
+      (running.card ? ' · 卡片 ' + esc(running.card) : '') + '</div>'
   }).join('')
 }
 
 /**
- * 工位面板：每个工位一行（名字 / 路径 / 分支 / 状态 / 开跑·停·删），上面一行是调度器状态。
- * 没登记工位时退化成单工位提示，行为跟以前一样。
+ * 工位卡片：给人看的版本。默认视图只回答三件事——谁能接活、谁在干活、谁需要处理。
+ * 分支名 / 上游 / 绝对路径这些不进卡片正文（放 title），出错时给的是「怎么办」而不是「发生了什么」。
  */
 function renderStations(s) {
   const box = el('cStations')
   if (!box) return
   const stations = Array.isArray(s.stations) ? s.stations : []
   const jobs = (Array.isArray(s.jobs) ? s.jobs : []).filter((job) => job.status === 'running' || job.alive)
-  const idle = stations.filter((station) => station.idle && station.usable).length
-  const watching = Boolean(s.config?.watch?.enabled)
 
-  const head = stations.length
-    ? '<div class="shead">' +
-      `<span class="ok">空闲 ${idle}/${stations.length}</span>` +
-      (watching
-        ? `<span class="dim">调度器开着 · 每 ${esc(String(s.config.watch.pollSec))}s 派一轮</span>`
-        : '<span class="dim">调度器关着</span>') +
-      '<button id="sDispatch">' + (watching ? '立刻派一轮' : '派一轮') + '</button>' +
+  const cards = stations.map((station) => {
+    const running = Boolean(station.card)
+    const unityOff = station.unity === 'off'
+    const trouble = !station.exists ? '目录不见了'
+      : !station.isRepo ? '不是一个 git 仓库'
+        : station.dirty ? '有没提交的改动'
+          : unityOff ? 'Unity 没开'
+            : ''
+    const pendingSince = unityPending.get(station.name)
+    const starting = Boolean(pendingSince) && Date.now() - pendingSince < 10 * 60_000
+    // booting：Unity 进程在、控制端点还没出来（首次导入）。这不是错误，是等。
+    const booting = !trouble && (starting || station.unity === 'booting')
+    const elapsed = Math.max(0, Number(s.now || Date.now()) - Number(station.startedAt || s.now || Date.now()))
+    const badge = trouble ? '<span class="badge bad">需要处理</span>'
+      : booting ? '<span class="badge run">Unity 启动中</span>'
+        : running ? `<span class="badge run">干活中 · ${esc(dur(elapsed))}</span>`
+          : '<span class="badge ok">空闲</span>'
+    const body = trouble
+      ? (unityOff ? '验证要连本树的 Unity，现在没开<br>点下面的按钮打开它'
+        : `${esc(trouble)}` + (station.behind ? ` · 落后 ${esc(String(station.behind))}` : '') + '<br>清一下就能接着干')
+      : booting
+        ? '首次导入约 4.5 分钟。超过 10 分钟还这样，点「检查端点」看看是不是没带控制开关'
+        : running
+          ? `<span class="t">${esc(station.card)}</span><br>跑完自动回到空闲`
+          : (station.behind ? `落后最新 ${esc(String(station.behind))} 个提交，开工前会自动更新` : '可以接活')
+    const actions = trouble
+      ? (unityOff
+        ? `<button class="primary" data-sunity="${esc(station.name)}">打开 Unity</button>` +
+          `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删掉</button>`
+        : station.dirty
+          ? `<button class="primary" data-sclean="${esc(station.name)}">清理改动</button>` +
+            `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删掉</button>`
+          : `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删掉这个工位</button>`)
+      : booting
+        ? `<button data-sprobe="${esc(station.name)}">检查端点</button>`
+        : running
+          ? `<button data-sstop="${esc(station.name)}">跑完这张就停</button>`
+          : `<button class="primary" data-srun="${esc(station.name)}">接一单</button><button data-sdel="${esc(station.name)}">删掉</button>`
+    return `<div class="card ${trouble ? 'bad' : running ? 'run' : ''}" title="${esc(station.path)}">` +
+      `<div class="card-top"><span class="card-name">${esc(station.name)}</span>${badge}</div>` +
+      `<div class="card-body">${body}</div>` +
+      `<div class="card-actions">${actions}</div>` +
       '</div>'
-    : '<div class="shead dim">还没登记工位：下面建一个或登记已有 worktree。没登记时按「工作目录」单工位跑。</div>'
-
-  const rows = stations.map((station) => {
-    const state = !station.exists ? '<span class="bad">目录不在</span>'
-      : !station.isRepo ? '<span class="bad">不是 git 仓库</span>'
-        : station.dirty ? '<span class="warn">工作区脏</span>'
-          : station.card ? `<span class="state-run">▶ ${esc(station.card)}</span>`
-            : '<span class="ok">空闲</span>'
-    const behind = station.behind ? ` <span class="warn">落后 ${esc(String(station.behind))}</span>` : ''
-    return '<div class="srow">' +
-      `<span class="sname">${esc(station.name)}</span>` +
-      `<span class="spath" title="${esc(station.path)}">${esc(station.path)}</span>` +
-      `<span class="dim">${esc(station.branch || '—')}</span>` +
-      `<span>${state}${behind}</span>` +
-      '<span class="sact">' +
-      `<button data-srun="${esc(station.name)}"${station.idle && station.usable ? '' : ' disabled'}>开跑</button>` +
-      `<button data-sstop="${esc(station.name)}"${station.card ? '' : ' disabled'}>停</button>` +
-      `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删</button>` +
-      '</span></div>'
   }).join('')
 
-  const jobRows = jobs.map((job) =>
-    `<div class="sjob">${job.kind === 'create' ? '建树' : '删树'} ${esc(job.name)} · ${esc(job.status || '')}` +
-    `${job.log ? ' · 日志 ' + esc(job.log) : ''}</div>`).join('')
+  // 正在建/删的工位也占一张卡，否则点完「建一棵」后页面看着像没反应。
+  const jobCards = jobs.map((job) =>
+    `<div class="card run"><div class="card-top"><span class="card-name">${esc(job.name)}</span>` +
+    `<span class="badge run">${job.kind === 'create' ? '正在准备' : '正在删除'}</span></div>` +
+    '<div class="card-body">第一次准备要几分钟，好了会自动出现</div>' +
+    `<div class="card-actions"><button data-joblog="${esc(job.id)}">看进度</button></div></div>`).join('')
 
-  box.innerHTML = head + (rows ? `<div class="slist">${rows}</div>` : '') + jobRows
+  box.innerHTML = cards || jobCards ? `<div class="cards">${cards}${jobCards}</div>` : ''
+
+  // Unity 已经起来后就把「正在启动」清掉（或者超过 10 分钟也清：多半是启失败了）。
+  for (const station of stations) {
+    if (station.unity === 'on') unityPending.delete(station.name)
+    else {
+      const since = unityPending.get(station.name)
+      if (since && Date.now() - since >= 10 * 60_000) unityPending.delete(station.name)
+    }
+  }
 
   // innerHTML 重建会丢监听器，所以每次都重新挂。
   const find = (name) => stations.find((station) => station.name === name)
-  el('sDispatch')?.addEventListener('click', () => { dispatchNow().catch(() => {}) })
+  const findJob = (id) => jobs.find((job) => job.id === id)
+  for (const btn of box.querySelectorAll('button[data-sunity]')) {
+    btn.onclick = () => { openUnity(find(btn.getAttribute('data-sunity'))).catch(() => {}) }
+  }
+  for (const btn of box.querySelectorAll('button[data-sprobe]')) {
+    btn.onclick = () => { probeStation(find(btn.getAttribute('data-sprobe'))).catch(() => {}) }
+  }
+  for (const btn of box.querySelectorAll('button[data-sclean]')) {
+    btn.onclick = () => { cleanStation(find(btn.getAttribute('data-sclean'))).catch(() => {}) }
+  }
   for (const btn of box.querySelectorAll('button[data-srun]')) {
     btn.onclick = () => { runStation(find(btn.getAttribute('data-srun'))).catch(() => {}) }
   }
@@ -167,6 +204,38 @@ function renderStations(s) {
   for (const btn of box.querySelectorAll('button[data-sdel]')) {
     btn.onclick = () => { removeStation(find(btn.getAttribute('data-sdel'))).catch(() => {}) }
   }
+  for (const btn of box.querySelectorAll('button[data-joblog]')) {
+    btn.onclick = () => {
+      const job = findJob(btn.getAttribute('data-joblog'))
+      say(job ? `日志：${job.log || '（未记录）'}` : '找不到这个任务', 'dim')
+    }
+  }
+}
+
+/** 顶上那一行：几个工位、几个空闲、几个在干活、自动接单开着没。 */
+function renderSummary(s) {
+  const box = el('cSummary')
+  if (!box) return
+  const stations = Array.isArray(s.stations) ? s.stations : []
+  const auto = Boolean(s.config?.watch?.enabled)
+  if (el('cAuto')) {
+    el('cAuto').textContent = auto ? '暂停自动接单' : '开始自动接单'
+    el('cAuto').className = auto ? '' : 'primary'
+    el('cAuto').title = auto ? '暂停后不会再派新活，在跑的不受影响' : '空闲工位会自动接 TAPD 上标了 ready-for-agent 的卡'
+  }
+  if (!stations.length) {
+    box.innerHTML = '<b>还没有工位</b> · 展开下面的「高级设置」建一个，或直接填项目路径单工位跑'
+    return
+  }
+  const running = stations.filter((station) => station.card).length
+  const trouble = stations.filter((station) => !station.usable && !station.card).length
+  const idle = stations.length - running - trouble
+  const parts = [`<b>${stations.length}</b> 个工位`]
+  if (idle) parts.push(`<span class="ok">${idle} 空闲</span>`)
+  if (running) parts.push(`<span class="state-run">${running} 干活中</span>`)
+  if (trouble) parts.push(`<span class="bad">${trouble} 需要处理</span>`)
+  if (!auto) parts.push('<span class="dim">自动接单关着</span>')
+  box.innerHTML = parts.join(' · ')
 }
 
 function renderQueue(s) {
@@ -178,14 +247,15 @@ function renderQueue(s) {
     return
   }
   const head = q.ok
-    ? `<span class="ok">就绪 ${q.ready.length} 张</span> · 被状态挡住 ${q.rejected.length} 张 · 查于 ${esc(clockOf(q.at))}` +
-      (q.allowedStatuses?.length ? ` · 允许接单状态 ${esc(q.allowedStatuses.join(', '))}` : '')
-    : `<span class="bad">拉队列失败</span> · ${esc(q.error)}`
-  const rows = q.ok
+    ? `<span class="ok">可接 ${q.ready.length} 张</span>` +
+      (q.rejected.length ? ` · <span class="dim">另有 ${q.rejected.length} 张被状态挡着</span>` : '') +
+      ` · <span class="dim">${esc(clockOf(q.at))} 查的</span>`
+    : `<span class="bad">拉不到 TAPD 队列</span> · ${esc(q.error)}`
+  const rows = q.ok && q.ready.length
     ? q.ready.map((card) => '<div class="qrow"><span class="qid">' + esc(card.id) + '</span>' +
       '<span class="qtitle" title="' + esc(card.title) + '">' + esc(card.title) + '</span>' +
-      '<span class="dim">' + esc(card.statusLabel || '') + (card.priorityLabel ? ' · ' + esc(card.priorityLabel) : '') + '</span>' +
-      '<button data-card="' + esc(card.id) + '">只跑这张</button></div>').join('')
+      '<span class="dim">' + esc(card.priorityLabel || '') + '</span>' +
+      '<button data-card="' + esc(card.id) + '">接这张</button></div>').join('')
     : ''
   const rejected = q.ok && q.rejected.length
     ? '<details class="qrej"><summary>被状态挡住的 ' + q.rejected.length + ' 张</summary>' +
@@ -251,6 +321,7 @@ function render(s) {
   view = s
   serverSkew = Number(s.now || Date.now()) - Date.now()
   fill(s)
+  renderSummary(s)
   renderStations(s)
   renderRunning(s)
   renderQueue(s)
@@ -278,7 +349,7 @@ function paintCountdown() {
   const stations = Array.isArray(s.stations) ? s.stations : []
   const idle = stations.filter((station) => station.idle && station.usable).length
   if (!w.enabled) {
-    box.textContent = stations.length ? `调度器关着 · 空闲 ${idle}/${stations.length}` : '定时接单已关'
+    box.textContent = stations.length ? `自动接单关着 · 空闲 ${idle}/${stations.length}` : '自动接单已关'
     return
   }
   if (w.draining) {
@@ -287,10 +358,10 @@ function paintCountdown() {
   }
   const left = Number(w.nextAt || 0) - (Date.now() + serverSkew)
   const tail = (stations.length ? ` · 空闲 ${idle}/${stations.length}` : '') +
-    (w.lastCheckAt ? ` · 上次 ${clockOf(w.lastCheckAt)} 就绪 ${w.lastReady} 张` : '')
-  const err = w.lastError ? ` · 上次：${w.lastError}` : ''
+    (w.lastCheckAt ? ` · 上次 ${clockOf(w.lastCheckAt)} 可接 ${w.lastReady} 张` : '')
+  const err = w.lastError ? ` · ${w.lastError}` : ''
   box.className = w.lastError ? 'warn' : 'dim'
-  box.textContent = (left > 0 ? `下次 ${Math.ceil(left / 1000)}s 后派` : '马上派') + tail + err
+  box.textContent = (left > 0 ? `${Math.ceil(left / 1000)}s 后看一次` : '马上看') + tail + err
 }
 
 async function poll() {
@@ -442,6 +513,70 @@ async function removeStation(station) {
   await stationAction('remove', { name: station.name, workdir: form().workdir, confirm: true })
 }
 
+async function toggleAuto() {
+  const next = !Boolean(view?.config?.watch?.enabled)
+  if (el('cWatch')) el('cWatch').checked = next
+  clearTimeout(saveTimer)
+  const res = await apiJson('api/control', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(form()),
+  })
+  if (!res.ok) say(res.data?.error || `没保存上（HTTP ${res.status}）`, 'bad')
+  else say(next ? '自动接单已开：有空位就会自己接活' : '自动接单已关（在跑的不受影响）', next ? 'ok' : 'warn')
+  await poll()
+}
+
+async function openUnity(station) {
+  if (!station) return
+  unityPending.set(station.name, Date.now())
+  say(`正在打开 ${station.name} 的 Unity…（首次约 4.5 分钟，好了卡片会自己变空闲）`, 'dim')
+  const res = await apiJson('api/unity', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: station.name }),
+  })
+  if (!res.ok) {
+    unityPending.delete(station.name)
+    say(res.data?.error || `打不开（HTTP ${res.status}）`, 'bad')
+  } else {
+    say(`已启动 ${station.name} 的 Unity（pid ${res.data.pid}）· 首次约 4.5 分钟`, 'ok')
+  }
+  await poll()
+}
+
+async function cleanStation(station) {
+  if (!station) return
+  const ok = window.confirm(
+    `丢掉 ${station.name} 上未提交的改动？\n\n` +
+    '只会丢【已跟踪文件】的改动，未跟踪文件不动。\n' +
+    '如果是 Unity 第一次打开产生的生成物，清掉是安全的。'
+  )
+  if (!ok) return
+  const res = await apiJson('api/stations', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'clean', name: station.name, confirm: true }),
+  })
+  if (!res.ok) say(res.data?.error || `清理失败（HTTP ${res.status}）`, 'bad')
+  else if (!res.data.cleaned) say('本来就没改动', 'dim')
+  else say(`已清理 ${res.data.cleaned} 个改动${res.data.left ? `，还剩 ${res.data.left} 个` : ''}`, 'ok')
+  await poll()
+}
+
+async function probeStation(station) {
+  if (!station) return
+  say(`正在连 ${station.name} 的 Unity 端点…`, 'dim')
+  const res = await apiJson('api/unity', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'probe', name: station.name }),
+  })
+  if (res.ok) say(`${station.name} 的 Unity 就绪：端口 ${res.data.port} · pid ${res.data.pid}`, 'ok')
+  else say(`${station.name}：${res.data?.error || '连不上'}`, 'bad')
+  await poll()
+}
+
 async function dispatchNow() {
   say('派一轮…', 'dim')
   const res = await apiJson('api/dispatch', {
@@ -487,6 +622,8 @@ export function mountControl() {
   })
   el('cQueue')?.addEventListener('click', () => { queue(true).catch(() => {}) })
   el('cStop')?.addEventListener('click', () => { stop().catch(() => {}) })
+  el('cAuto')?.addEventListener('click', () => { toggleAuto().catch(() => {}) })
+  el('cPickOne')?.addEventListener('click', () => { dispatchNow().catch(() => {}) })
   el('cStationCreate')?.addEventListener('click', () => {
     const name = String(el('cStationName')?.value || '').trim()
     if (!name) {

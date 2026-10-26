@@ -167,7 +167,8 @@ async function handle(req, res, url) {
       : action === 'remove' ? control.removeStation(body)
         : action === 'register' ? control.registerStation(body)
           : action === 'forget' ? control.forgetStation(body)
-            : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / forget）` }
+            : action === 'clean' ? control.cleanStation(body)
+              : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / forget / clean）` }
     return sendJson(res, result.ok ? 200 : 400, { ...result, ...boardStatus() })
   }
   if (path === '/api/dispatch') {
@@ -180,6 +181,14 @@ async function handle(req, res, url) {
     // force：手动派一次不进节流（定时器自己调的时候不传）。
     const tick = await control.tick({ force: true })
     return sendJson(res, 200, { ok: true, tick, ...boardStatus() })
+  }
+  if (path === '/api/unity') {
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+    const body = await readJsonBody(req)
+    const result = String(body.action || '') === 'probe'
+      ? await control.probeUnity(body)
+      : control.openUnity(body)
+    return sendJson(res, result.ok ? 200 : 400, { ...result, ...boardStatus() })
   }
   if (path.startsWith('/img/')) return sendImage(res, url)
   return send(res, 404, 'not found')

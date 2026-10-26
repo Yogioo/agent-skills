@@ -19,6 +19,7 @@
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
+  appendFileSync,
   closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
@@ -218,6 +219,16 @@ function gitOut(cwd, args) {
     }).trim()
   } catch {
     return ''
+  }
+}
+
+/** 只关心成败的 git 命令（restore 这类没有输出）。 */
+function gitRun(cwd, args) {
+  try {
+    execFileSync('git', args, { cwd, stdio: 'ignore', windowsHide: true, timeout: 120_000 })
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -702,6 +713,7 @@ export function createControl(opts) {
       const dirty = isRepo ? Boolean(gitOut(path, ['status', '--porcelain', '--untracked-files=no'])) : false
       const upstream = isRepo && branch ? gitOut(path, ['rev-parse', '--abbrev-ref', '@{u}']) : ''
       const behind = upstream ? Number(gitOut(path, ['rev-list', '--count', `HEAD..@{u}`]) || '0') || 0 : 0
+      const unity = exists && isRepo ? unityState(path) : 'off'
       const batch = active.find((item) => item.workdir === path) || null
       return {
         name: station.name,
@@ -713,9 +725,10 @@ export function createControl(opts) {
         upstream,
         behind,
         dirty,
+        unity,
         idle: !batch,
-        // 可用 = 目录在 + 是 git 仓库 + 工作区没改已跟踪文件（脏工作区开工必然失败）
-        usable: exists && isRepo && !dirty,
+        // 可用 = 目录在 + 是 git 仓库 + 工作区没改已跟踪文件 + Unity 在线（端点能用）
+        usable: exists && isRepo && !dirty && unity === 'on',
         card: batch ? String(batch.card || '') : '',
         runId: batch ? String(batch.runId || '') : '',
         pid: batch ? Number(batch.pid) || 0 : 0,
@@ -762,19 +775,25 @@ export function createControl(opts) {
     return { ok: true, stations: read().stations }
   }
 
-  /** 后台跑一个长命令，状态记进 jobs。页面轮询看进度，日志落在 board-batches/。 */
-  function spawnJob({ kind, name, path, workdir, cmd, argv, onDone }) {
+  /**
+   * 后台跑一个长命令，状态记进 jobs。页面轮询看进度。
+   *
+   * 输出重定向交给 bash 自己（`exec > log 2>&1`），不用 Node 的 fd 继承：
+   * 实测 Windows 上 `stdio: ['ignore', fd, fd]` + detached 会把子进程的输出全丢掉
+   * （进程 code 1、日志 0 字节，而同样的命令用 pipe 就正常）。自己重定向还有个好处：
+   * 看板重启/退出后，子进程继续写自己的文件。
+   */
+  function spawnJob({ kind, name, path, workdir, script, onDone }) {
     mkdirSync(batchDir, { recursive: true })
     const log = join(batchDir, `station-${kind}-${name}-${stamp()}.log`)
-    const fd = openSync(log, 'a')
+    const cmdline = `exec > '${shPath(log)}' 2>&1; ${script}`
+    const bash = resolveBash()
     let child
     try {
-      child = spawn(cmd, argv, { cwd: workdir, detached: true, windowsHide: true, stdio: ['ignore', fd, fd] })
+      child = spawn(bash, ['-c', cmdline], { cwd: workdir, detached: true, windowsHide: true, stdio: 'ignore' })
     } catch (err) {
-      closeSync(fd)
       return { ok: false, error: `起不来：${err.message}` }
     }
-    closeSync(fd)
     child.once('error', () => {})
     const job = {
       id: `job-${stamp()}-${child.pid || 0}`,
@@ -792,16 +811,22 @@ export function createControl(opts) {
       .filter((item) => item && (item.status === 'running' ? pidAlive(Number(item.pid)) : true))
       .slice(-9)
     writeJson(controlFile, { ...current, jobs: [...jobs, job] })
-    child.once('exit', (code) => {
+
+    // spawn 失败（找不到可执行文件、权限）不会进 exit，必须在这里收尸，
+    // 否则 job 永远停在 running，页面一直显示「正在准备」。
+    let settled = false
+    const settle = (status, code, error) => {
+      if (settled) return
+      settled = true
       const done = raw()
-      const status = code === 0 ? 'done' : 'failed'
       writeJson(controlFile, {
         ...done,
         jobs: (Array.isArray(done.jobs) ? done.jobs : [])
-          .map((item) => (item.id === job.id ? { ...item, status, code: code ?? -1, endedAt: Date.now() } : item)),
+          .map((item) => (item.id === job.id
+            ? { ...item, status, code, endedAt: Date.now(), ...(error ? { error } : {}) }
+            : item)),
       })
-      // 只有成功才动注册表：失败了让人先看日志，不要把半成品登记进工位表。
-      if (code === 0 && onDone) {
+      if (status === 'done' && onDone) {
         try {
           onDone()
         } catch {
@@ -809,15 +834,89 @@ export function createControl(opts) {
         }
       }
       emit()
+    }
+
+    child.once('error', (err) => {
+      try {
+        appendFileSync(log, `[spawn 失败] ${err.message}\n`, 'utf8')
+      } catch {
+        // 日志写不进去也不能把错误吞掉：下面会把 message 记进 job
+      }
+      settle('failed', -1, err.message)
+    })
+    child.once('exit', (code) => {
+      // 退出码非 0 且日志一字没有：把「到底跑了什么」写进日志，否则只能靠猜。
+      if (code !== 0) {
+        try {
+          if (statSync(log).size === 0) {
+            appendFileSync(log, `[诊断] 命令没有产生任何输出（code ${code}）\n  bash: ${bash}\n  cmdline: ${cmdline}\n`, 'utf8')
+          }
+        } catch {
+          // 诊断写不进去就算了
+        }
+      }
+      settle(code === 0 ? 'done' : 'failed', code ?? -1)
     })
     child.unref()
     emit()
     return { ok: true, job }
   }
 
-  /** 建树脚本约定的目录：<主树的兄弟目录>/<主树名>-wt-<名字>（见 Tools/Worktree/new-worktree.sh）。 */
+/**
+ * 给 bash 的 Windows 路径必须转正斜杠。
+ * 反斜杠在 bash 里是转义字符：`bash "C:\a\b.sh"` 实际收到的是 `C:ab.sh`，
+ * 报 “No such file or directory” 然后 exit 1，而 stdout/stderr 可能一行都不剩。
+ */
+function shPath(p) {
+  return String(p || '').replace(/\\/g, '/')
+}
+
+/**
+ * Windows 上自己找 bash。PATH 里 `C:\Windows\System32\bash.exe`（WSL）和
+ * `%LOCALAPPDATA%\Microsoft\WindowsApps\bash.exe` 都可能排在 GitBash 前面，
+ * 而它们跑不了 Windows 路径的 sh 脚本。默认直接拿 Git for Windows 的绝对路径。
+ */
+function resolveBash() {
+  const candidates = [
+    process.env.TAPD_LOOP_BASH || '',
+    'C:/Program Files/Git/bin/bash.exe',
+    'C:/Program Files (x86)/Git/bin/bash.exe',
+    'C:/Program Files/Git/usr/bin/bash.exe',
+  ].filter(Boolean)
+  for (const file of candidates) if (existsSync(file)) return file
+  return 'bash'
+}
+
+/**
+ * 建树脚本约定的目录：<主树的兄弟目录>/<主树名>-wt-<名字>（见 Tools/Worktree/new-worktree.sh）。 */
   function defaultStationPath(main, name) {
     return join(dirname(main), `${basename(main)}-wt-${name}`)
+  }
+
+  /**
+   * Unity 在不在线。验证门（verify_unity.mjs）靠本树的 puer-exec 端点，Unity 没开就必然 exit 2，
+   * 所以「Unity 没开」的工位等于不可用——接单只会白跑一张卡再判失败。
+   *
+   * 三态（同步、廉价，页面每 3 秒问一次）：
+   *   off     ── Temp/UnityLockfile 不存在或没被独占
+   *   booting ── 进程开着，但 endpoint.json 还没写出来（首次导入约 4.5 分钟）
+   *   on      ── 端点文件在，CLI 能连
+   *
+   * booting 和「开着但没带 -unityPuerExecControl」在文件层面一模一样，
+   * 区分不了就归 booting，让用户点「检查端点」去确认（真 ping 一次 /health）。
+   */
+  function unityState(treePath) {
+    const lock = join(treePath, 'Temp', 'UnityLockfile')
+    let running = false
+    if (existsSync(lock)) {
+      try {
+        closeSync(openSync(lock, 'r+'))
+      } catch {
+        running = true
+      }
+    }
+    if (!running) return 'off'
+    return existsSync(join(treePath, 'Temp', 'UnityPuerExec', 'endpoint.json')) ? 'on' : 'booting'
   }
 
   /**
@@ -842,8 +941,8 @@ export function createControl(opts) {
       name,
       path,
       workdir: main,
-      cmd: 'bash',
-      argv: [script, name],
+      // 路径必须转正斜杠（反斜杠会被 bash 当转义吃掉）。
+      script: `exec '${shPath(script)}' '${name}'`,
       onDone: () => addStation({ name, path }),
     })
   }
@@ -881,8 +980,7 @@ export function createControl(opts) {
       path: station.path,
       workdir: mainDir,
       // junction / 硬链接不会被 git worktree remove 清掉，rm -rf 兜底（文档 §7）。
-      cmd: 'bash',
-      argv: ['-c', `git worktree remove --force '${station.path}' 2>/dev/null; rm -rf '${station.path}'`],
+      script: `git worktree remove --force '${shPath(station.path)}' 2>/dev/null; rm -rf '${shPath(station.path)}'`,
       onDone: () => dropStation(name),
     })
   }
@@ -898,6 +996,131 @@ export function createControl(opts) {
     if (live) return { ok: false, error: `${hit.name} 上还有批次在跑，先停再移除` }
     dropStation(hit.name)
     return { ok: true, stations: read().stations }
+  }
+
+  /**
+   * 打开本工位的 Unity（带 puer-exec 控制开关）。
+   * 首次导入约 4.5 分钟，开了之后 stationState 的 unity 会变成 'on'，卡片自己变空闲。
+   */
+  function openUnity(input = {}) {
+    const config = read()
+    const name = String(input.name || '').trim()
+    const station = config.stations.find((item) => item.name === name)
+    if (!station) return { ok: false, error: `没有叫 ${name} 的工位` }
+    const path = station.path
+    if (!existsSync(path)) return { ok: false, error: `目录不存在：${path}` }
+    const state = unityState(path)
+    if (state === 'on') return { ok: false, error: `${name} 的 Unity 已经开着，控制端点也在` }
+    if (state === 'booting') return { ok: false, error: `${name} 的 Unity 正在启动（首次导入约 4.5 分钟），等它起来再点` }
+
+    // 版本从工程文件读，别写死。
+    let version = ''
+    try {
+      const text = readFileSync(join(path, 'ProjectSettings', 'ProjectVersion.txt'), 'utf8')
+      version = (text.match(/m_EditorVersion:\s*(\S+)/) || [])[1] || ''
+    } catch {
+      version = ''
+    }
+    if (!version) return { ok: false, error: '读不到 Unity 版本（ProjectSettings/ProjectVersion.txt）' }
+    const exe = `C:/Program Files/Unity ${version}/Editor/Unity.exe`
+    if (!existsSync(exe)) return { ok: false, error: `找不到 Unity：${exe}` }
+
+    const log = join(path, 'Temp', 'UnityPuerExec', 'Editor.log')
+    mkdirSync(dirname(log), { recursive: true })
+    let child
+    try {
+      child = spawn(exe, ['-projectPath', path, '-unityPuerExecControl', '-logFile', log], {
+        cwd: path,
+        detached: true,
+        windowsHide: true,
+        stdio: 'ignore',
+      })
+    } catch (err) {
+      return { ok: false, error: `起不来：${err.message}` }
+    }
+    child.once('error', () => {})
+    child.unref()
+    return {
+      ok: true,
+      pid: child.pid || 0,
+      version,
+      log,
+      note: '首次导入约 4.5 分钟；好了卡片会自己变成空闲',
+    }
+  }
+
+  /**
+   * 丢掉工位上未提交的改动（已跟踪文件恢复到 HEAD）。
+   *
+   * 用途：新树第一次开 Unity 会把 Spine / EditorSetting 那批生成物重写一遍，
+   * git diff 是空的（只是 stat/size 变了）但 status 报脏，脏工作区开不了工。
+   *
+   * 危险：它真的会丢东西（agent 没提交的改动一起没）。所以：有活批次直接拒，
+   * 不带 confirm 不执行，未跟踪文件不碰（只 git restore -- .，不 git clean）。
+   */
+  function cleanStation(input = {}) {
+    const config = read()
+    const name = String(input.name || '').trim()
+    const station = config.stations.find((item) => item.name === name)
+    if (!station) return { ok: false, error: `没有叫 ${name} 的工位` }
+    const path = station.path
+    if (!existsSync(path)) return { ok: false, error: `目录不存在：${path}` }
+    const live = runningAll().find((item) => item.workdir === path)
+    if (live) return { ok: false, error: `${name} 上还有批次在跑，不能清理` }
+
+    const dirty = gitOut(path, ['status', '--porcelain', '--untracked-files=no'])
+    const count = dirty ? dirty.split('\n').filter(Boolean).length : 0
+    if (!count) return { ok: true, cleaned: 0, note: '工作区本来就是干净的' }
+    if (!input.confirm) {
+      return { ok: false, error: `要丢撈 ${name} 上 ${count} 个未提交改动，带 confirm: true 再调一次` }
+    }
+    if (!gitRun(path, ['restore', '--', '.'])) return { ok: false, error: '清理失败（git restore 报错）' }
+    const left = gitOut(path, ['status', '--porcelain', '--untracked-files=no'])
+    return { ok: true, cleaned: count, left: left ? left.split('\n').filter(Boolean).length : 0 }
+  }
+
+  /**
+   * 真的去 ping 一次控制端点（/health）。卡片上的 on/booting 是看文件的猜测，这个是实况，
+   * 用来区分「还在导入」和「开着但没带控制开关 / 已经卡死」。
+   */
+  async function probeUnity(input = {}) {
+    const config = read()
+    const name = String(input.name || '').trim()
+    const station = config.stations.find((item) => item.name === name)
+    if (!station) return { ok: false, error: `没有叫 ${name} 的工位` }
+    const path = station.path
+    const state = unityState(path)
+    if (state === 'off') return { ok: false, state, error: 'Unity 没开（Temp/UnityLockfile 没被占）' }
+
+    const endpointFile = join(path, 'Temp', 'UnityPuerExec', 'endpoint.json')
+    if (!existsSync(endpointFile)) {
+      return {
+        ok: false,
+        state,
+        error: '控制端点文件还没出来：Unity 还在导入，或者它不是带 -unityPuerExecControl 启动的',
+      }
+    }
+    let info = {}
+    try {
+      info = JSON.parse(readFileSync(endpointFile, 'utf8'))
+    } catch (err) {
+      return { ok: false, state, error: `endpoint.json 读不出来：${err.message}` }
+    }
+    const base = `http://127.0.0.1:${info.port}`
+    try {
+      const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(3000) })
+      const body = await res.json().catch(() => ({}))
+      return {
+        ok: Boolean(body.ok),
+        state,
+        port: info.port,
+        pid: info.unity_pid,
+        status: String(body.status || ''),
+        error: body.ok ? '' : `端点回了 ${res.status}`,
+      }
+    } catch (err) {
+      return { ok: false, state, port: info.port, error: `连不上 ${base}：${err.message}` }
+    }
   }
 
   /**
@@ -929,7 +1152,13 @@ export function createControl(opts) {
       // 全满或全都不可用：别等完整轮询间隔，工位一空就能接上。
       memory.nextAt = Date.now() + Math.min(30, config.watch.pollSec) * 1000
       if (stations.length && !stations.every((s) => s.usable)) {
-        memory.lastError = `没有可用工位：${stations.filter((s) => !s.usable).map((s) => `${s.name}(${!s.exists ? '目录不在' : !s.isRepo ? '不是仓库' : '工作区脏'})`).join('、')}`
+        const why = (s) => (!s.exists ? '目录不在'
+          : !s.isRepo ? '不是仓库'
+            : s.dirty ? '工作区脏'
+              : s.unity === 'off' ? 'Unity 没开'
+                : s.unity === 'booting' ? 'Unity 正在启动'
+                  : '不可用')
+        memory.lastError = `没有可用工位：${stations.filter((s) => !s.usable).map((s) => `${s.name}(${why(s)})`).join('、')}`
       }
       return { skipped: stations.length ? 'no-idle' : 'no-station', stations: stations.length }
     }
@@ -995,6 +1224,9 @@ export function createControl(opts) {
     removeStation,
     registerStation,
     forgetStation,
+    openUnity,
+    probeUnity,
+    cleanStation,
     onChange: (listener) => {
       listeners.add(listener)
       return () => listeners.delete(listener)
