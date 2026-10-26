@@ -1,4 +1,5 @@
 import { createTapd } from './tapd.mjs'
+import { runTurn } from './turn.mjs'
 
 /**
  * 看板的控制面：按一下就跑、按一下停、定时查看 TAPD 并自动接单。
@@ -494,6 +495,12 @@ export function createControl(opts) {
         lastReady: memory.lastReady || 0,
         lastError: memory.lastError || '',
       },
+      // 主树是否停在 cherry-pick 冲突里（卡片据此给「让 AI 解冲突」）。
+      conflict: (() => {
+        const main = String(config.workdir || '').trim()
+        if (!main || !existsSync(main)) return null
+        return conflictState(main)
+      })(),
       queue: memory.queue ? summarizeQueue(memory.queue, config.workdir) : null,
       workdirs: workdirs(),
       // 机器级配置里已经写好的值：面板留空时按它走（空 = 沿用 CLI 的解析结果，
@@ -1264,6 +1271,130 @@ function resolveBash() {
     })
   }
 
+  /** 主树是不是停在 cherry-pick 中间态；返回冲突文件和其中不可自动解的表格。 */
+  function conflictState(main) {
+    const own = resolve(main, gitOut(main, ['rev-parse', '--git-dir']) || '.git')
+    if (!existsSync(join(own, 'CHERRY_PICK_HEAD'))) return null
+    const files = gitOut(main, ['diff', '--name-only', '--diff-filter=U'])
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+    return { files, xlsx: files.filter((file) => /\.(xlsx|xlsm)$/i.test(file)) }
+  }
+
+  /**
+   * 起一个 agent 按 digitdoor-git-pull-rebase 技能解冲突，解完自动续跑 collect --resume。
+   *
+   * 两个硬约束：
+   *   - 只允许改「冲突文件」—— brief 里写明，且解完后重新检查 UU 清单
+   *   - 表格冲突（xlsx/xlsm）直接拒，必须人工用 xlsx-cell-diff overlay 合（自动会丢行）
+   */
+  function resolveMerge(input = {}) {
+    const config = read()
+    const name = String(input.name || '').trim()
+    const main = String(input.workdir || config.workdir || '').trim()
+    if (!main) return { ok: false, error: '先选主树工作目录' }
+    const station = config.stations.find((item) => item.name === name)
+    const conflict = conflictState(main)
+    if (!conflict) return { ok: false, error: '主树不在 cherry-pick 中间态，没有要解的冲突' }
+    if (conflict.xlsx.length) {
+      return { ok: false, error: `这批是表格冲突，必须人工用 xlsx-cell-diff 合：${conflict.xlsx.join('、')}` }
+    }
+
+    const dir = join(batchDir, `resolve-${stamp()}`)
+    mkdirSync(dir, { recursive: true })
+    const log = join(dir, 'agent.log')
+    const job = {
+      id: `job-${stamp()}-resolve`,
+      kind: 'resolve',
+      name: name || '(主树)',
+      path: main,
+      workdir: main,
+      // 这个 job 是一条异步 Promise（起 agent），没有子进程 pid。
+      // 用看板自己的 pid 占位：只要看板还活着就算 running，看板重启后自然消失（异步任务也真没了）。
+      pid: process.pid,
+      startedAt: Date.now(),
+      status: 'running',
+      log,
+    }
+    const current = raw()
+    const jobs = (Array.isArray(current.jobs) ? current.jobs : [])
+      .filter((item) => (item.status === 'running' ? pidAlive(Number(item.pid)) : true))
+      .slice(-9)
+    writeJson(controlFile, { ...current, jobs: [...jobs, job] })
+    emit()
+
+    const branch = station ? gitOut(station.path, ['rev-parse', '--abbrev-ref', 'HEAD']) : ''
+    const target = String(loopConfig(main)?.run?.targetBranch || 'develop')
+    const before = gitOut(main, ['rev-parse', `origin/${target}`])
+    void runResolver({ name, main, conflict, dir, job, branch, before }).catch(() => {})
+
+    return { ok: true, job, conflicted: conflict.files }
+  }
+
+  async function runResolver({ name, main, conflict, dir, job, branch, before }) {
+    const settle = (status, extra = {}) => {
+      const done = raw()
+      writeJson(controlFile, {
+        ...done,
+        jobs: (done.jobs || []).map((item) => (item.id === job.id ? { ...item, status, endedAt: Date.now(), ...extra } : item)),
+      })
+      emit()
+    }
+
+    try {
+      const brief = join(dir, 'brief.md')
+      writeFileSync(brief, [
+        `主树 develop 在 cherry-pick 工位 ${name || ''} 的提交时冲突了。`,
+        '',
+        '冲突文件（只有这些可以改，别动其他文件）：',
+        ...conflict.files.map((file) => `- ${file}`),
+        '',
+        '按技能流程做：',
+        '1. 逐个读冲突文件，理解双方意图（<<<<<<< = 主树已有，>>>>>>> = 工位带来的）',
+        '2. 双方改动互不冲突就保留双方；真冲突就合出一个语义正确的实现，不要丢掉任何一方的行为',
+        '3. 解完 `git add` 这些文件，然后 `git cherry-pick --continue`（不要 push）',
+        '4. 最后输出一行 `RESOLVED: <一句话总结改了什么>`',
+      ].join('\n'), 'utf8')
+
+      const skillDir = join(main, '.agents', 'skills', 'digitdoor-git-pull-rebase')
+      const result = await runTurn({
+        workdir: main,
+        promptFile: brief,
+        outDir: dir,
+        skillPath: existsSync(skillDir) ? skillDir : '',
+        sessionId: `resolve-${name || 'main'}-${Date.now()}`,
+        timeoutMs: 30 * 60_000,
+      })
+      if (result.timedOut) throw new Error('agent 解冲突超时（30 分钟）：看 agent.log')
+
+      const left = conflictState(main)
+      if (left) throw new Error(`还有未解冲突：${left.files.join('、')}`)
+
+      // agent 不一定记得 --continue，这里补一次。
+      const own = resolve(main, gitOut(main, ['rev-parse', '--git-dir']) || '.git')
+      if (existsSync(join(own, 'CHERRY_PICK_HEAD'))) {
+        if (!gitRun(main, ['cherry-pick', '--continue', '--no-edit'])) {
+          throw new Error('agent 解完了，但 git cherry-pick --continue 失败')
+        }
+      }
+
+      // 续跑：导表 → verify → push，成功后回写 TAPD。
+      const collect = join(main, 'Tools', 'Worktree', 'collect.mjs')
+      const resumed = spawnJob({
+        kind: 'merge-resume',
+        name: name || '(主树)',
+        path: main,
+        workdir: main,
+        script: `exec '${shPath(process.execPath)}' '${shPath(collect)}' --resume`,
+        onDone: () => writeBackMerged({ stationName: name || '(主树)', branch, main, before }),
+      })
+      settle('done', { resumed: resumed.ok, resumedJob: resumed.job?.id || '' })
+    } catch (err) {
+      settle('failed', { error: err.message })
+    }
+  }
+
   /**
    * 真的去 ping 一次控制端点（/health）。卡片上的 on/booting 是看文件的猜测，这个是实况，
    * 用来区分「还在导入」和「开着但没带控制开关 / 已经卡死」。
@@ -1410,6 +1541,7 @@ function resolveBash() {
     registerStation,
     forgetStation,
     mergeStation,
+    resolveMerge,
     openUnity,
     probeUnity,
     cleanStation,

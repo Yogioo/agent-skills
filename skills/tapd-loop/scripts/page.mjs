@@ -93,6 +93,7 @@ export function pageHtml() {
     </div>
   </div>
   <div id="cMsg"></div>
+  <div id="cConflict"></div>
   <div id="cStations"></div>
   <div id="cQueueBox"></div>
   <details id="cAdvanced">

@@ -325,11 +325,66 @@ function renderRef() {
     '<div class="' + (blocked ? 'bad' : 'ok') + '">' + (blocked ? '不能接：' + esc(blocked) : '可以接（开跑会占卡、加 afk-claimed，跑完写评论）') + '</div>'
 }
 
+/**
+ * 主树停在 cherry-pick 冲突里时，顶一条横幅：冲突文件 + 「让 AI 解冲突」。
+ * 表格冲突不给一键（必须人工用 xlsx-cell-diff overlay 合）。
+ */
+function renderConflict(s) {
+  const box = el('cConflict')
+  if (!box) return
+  const c = s.conflict
+  if (!c || !(c.files || []).length) {
+    box.innerHTML = ''
+    return
+  }
+  const xlsx = c.xlsx || []
+  box.innerHTML = '<div class="card bad" style="max-width:none;margin:0 0 12px">' +
+    '<div class="card-top"><span class="card-name">合入冲突</span>' +
+    `<span class="badge bad">${c.files.length} 个文件</span></div>` +
+    `<div class="card-body">${c.files.map(esc).join('<br>')}` +
+    (xlsx.length
+      ? `<br><span class="bad">表格冲突要人工用 xlsx-cell-diff 合：${xlsx.map(esc).join('、')}</span>`
+      : '<br>可以让 AI 按 digitdoor-git-pull-rebase 技能解，它只改这些文件') +
+    '</div>' +
+    '<div class="card-actions">' +
+    (xlsx.length ? '' : '<button class="primary" data-resolve>让 AI 解冲突</button>') +
+    '<button data-resolvecmd>复制手工命令</button></div></div>'
+  box.querySelector('[data-resolve]')?.addEventListener('click', () => { resolveConflict().catch(() => {}) })
+  box.querySelector('[data-resolvecmd]')?.addEventListener('click', () => {
+    const cmd = `cd "${form().workdir || 'C:/projects/DigitDoor'}" && git status && git add <冲突文件> && git cherry-pick --continue && node Tools/Worktree/collect.mjs --resume`
+    try {
+      navigator.clipboard.writeText(cmd)
+      say('手工命令已复制', 'ok')
+    } catch {
+      say(cmd, 'dim')
+    }
+  })
+}
+
+async function resolveConflict() {
+  const ok = window.confirm(
+    '让 AI 按 digitdoor-git-pull-rebase 技能解主树的 cherry-pick 冲突？\n\n' +
+    '只允许改冲突文件；解完自动 continue → 导表 → verify → push → 回写 TAPD。\n' +
+    '表格冲突不会走这条（必须人工合）。'
+  )
+  if (!ok) return
+  say('正在起 agent 解冲突…', 'dim')
+  const res = await apiJson('api/stations', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'resolve', workdir: form().workdir }),
+  })
+  if (!res.ok) say(res.data?.error || `起不来（HTTP ${res.status}）`, 'bad')
+  else say(`已起 agent 解冲突（${(res.data.conflicted || []).length} 个文件），解完会自动续跑合入`, 'ok')
+  await poll()
+}
+
 function render(s) {
   view = s
   serverSkew = Number(s.now || Date.now()) - Date.now()
   fill(s)
   renderSummary(s)
+  renderConflict(s)
   renderStations(s)
   renderRunning(s)
   renderQueue(s)

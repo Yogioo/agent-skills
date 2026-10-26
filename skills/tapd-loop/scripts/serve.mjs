@@ -169,7 +169,8 @@ async function handle(req, res, url) {
           : action === 'forget' ? control.forgetStation(body)
             : action === 'clean' ? control.cleanStation(body)
               : action === 'merge' ? control.mergeStation(body)
-                : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / forget / clean / merge）` }
+                : action === 'resolve' ? control.resolveMerge(body)
+                  : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / forget / clean / merge / resolve）` }
     return sendJson(res, result.ok ? 200 : 400, { ...result, ...boardStatus() })
   }
   if (path === '/api/dispatch') {
