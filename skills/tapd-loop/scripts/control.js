@@ -6,6 +6,7 @@
  */
 
 import { apiJson } from '/auth.js'
+import { openFile } from '/fileview.js'
 
 const el = (id) => document.getElementById(id)
 
@@ -298,7 +299,7 @@ function renderStations(s) {
     return `<div class="card run"><div class="card-top"><span class="card-name">${esc(job.name)}</span>` +
       `<span class="badge run">${esc(badge)}</span></div>` +
       `<div class="card-body">${esc(body)}</div>` +
-      `<div class="card-actions"><button data-joblog="${esc(job.id)}">看进度</button></div></div>`
+      `<div class="card-actions">${job.log ? `<button data-joblog="${esc(job.log)}">看日志</button>` : ''}</div></div>`
   }).join('')
 
   box.innerHTML = cards || jobCards ? `<div class="cards">${cards}${jobCards}</div>` : ''
@@ -337,10 +338,8 @@ function renderStations(s) {
     btn.onclick = () => { removeStation(find(btn.getAttribute('data-sdel'))).catch(() => {}) }
   }
   for (const btn of box.querySelectorAll('button[data-joblog]')) {
-    btn.onclick = () => {
-      const job = findJob(btn.getAttribute('data-joblog'))
-      say(job ? `日志：${job.log || '（未记录）'}` : '找不到这个任务', 'dim')
-    }
+    // 日志不再是“把绝对路径打到提示里”，而是一个按钮 → 弹窗看尾部。
+    btn.onclick = () => openFile(btn.getAttribute('data-joblog'))
   }
 }
 
@@ -678,7 +677,7 @@ async function stationAction(action, payload) {
   })
   if (!res.ok) say(res.data?.error || `失败（HTTP ${res.status}）`, 'bad')
   else if (res.data?.error) say(res.data.error, 'warn')
-  else if (res.data?.job) say(`已开始：${JOB_LABEL[res.data.job.kind] || res.data.job.kind} ${res.data.job.name || ''}（几分钟，日志 ${res.data.job.log || ''}）`, 'ok')
+  else if (res.data?.job) say(`已开始：${JOB_LABEL[res.data.job.kind] || res.data.job.kind} ${res.data.job.name || ''}（几分钟；卡片上的「看日志」就地打开）`, 'ok')
   else say('已更新', 'ok')
   await poll()
 }
@@ -762,7 +761,7 @@ async function mergeStation(station) {
   })
   if (!res.ok) say(res.data?.error || `合入起不来（HTTP ${res.status}）`, 'bad')
   else if (res.data?.pending === 0) say(res.data.note || '没有未合入提交', 'dim')
-  else say(`已开始合入 ${station.name}（几分钟，日志 ${res.data.job?.log || ''}）`, 'ok')
+  else say(`已开始合入 ${station.name}（几分钟；卡片上的「看日志」就地打开）`, 'ok')
   await poll()
 }
 

@@ -3,8 +3,8 @@
  * 只读，不碰 TAPD，不碰工作区。
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs'
+import { basename, join, resolve, sep } from 'node:path'
 import { fromPiEvent, fromProgressEvent } from '../../../lib/web-ui/events.mjs'
 
 const ALIVE_WINDOW_MS = 10 * 60 * 1000
@@ -27,6 +27,44 @@ export function readRun(root, runId) {
   const dir = join(root, safeName(runId))
   if (!existsSync(dir)) return null
   return summarizeRun(dir)
+}
+
+/**
+ * 看板上的「文件」按钮读这里：给一份日志的信息 + 尾部内容，不用人再去资源管理器里找。
+ *
+ * 只读 <home> 下这三棵目录（runs / cards / board-batches）。看板默认绑 0.0.0.0，
+ * 哪怕带了密钥也不该变成一个任意读盘的接口 —— 路径不在白名单里就直接拒。
+ */
+export function readFileInfo(home, wanted, { bytes = 64 * 1024 } = {}) {
+  const abs = resolve(String(wanted || ''))
+  const roots = ['runs', 'cards', 'board-batches'].map((name) => resolve(home, name))
+  if (!roots.some((root) => abs === root || abs.startsWith(root + sep))) {
+    return { ok: false, path: abs, error: `只给看 ${home} 下的日志（runs / cards / board-batches）` }
+  }
+  if (!existsSync(abs)) return { ok: false, path: abs, error: '文件还不存在（可能还没写出来）' }
+  const stat = statSync(abs)
+  if (stat.isDirectory()) return { ok: false, path: abs, error: '这是个目录，不给看' }
+
+  const fd = openSync(abs, 'r')
+  let text = ''
+  try {
+    const start = Math.max(0, stat.size - bytes)
+    const buf = Buffer.alloc(stat.size - start)
+    readSync(fd, buf, 0, buf.length, start)
+    // 日志里有 GBK（cmd/powershell 的中文）时 utf8 会出 ，但不影响看结构。
+    text = buf.toString('utf8')
+  } finally {
+    closeSync(fd)
+  }
+  return {
+    ok: true,
+    path: abs,
+    name: basename(abs),
+    size: stat.size,
+    mtime: stat.mtimeMs,
+    truncated: stat.size > bytes,
+    tail: text,
+  }
 }
 
 export function readCard(root, runId, cardId) {

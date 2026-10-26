@@ -69,6 +69,16 @@ th:nth-child(4),td:nth-child(4){width:7%;white-space:nowrap}
 #cMain:empty{display:none}
 #cMain{margin:10px 0 0}
 #cMain .cards{display:flex;gap:8px;flex-wrap:wrap}
+#fileview{position:fixed;inset:0;display:none;z-index:60}
+#fileview.on{display:block}
+#fileview .fv-mask{position:absolute;inset:0;background:#000a}
+#fileview .fv-panel{position:absolute;inset:6vh 6vw;background:#0d1117;border:1px solid #30363d;border-radius:10px;display:flex;flex-direction:column;gap:8px;padding:12px 14px;box-shadow:0 10px 40px #000b}
+#fileview .fv-top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+#fileview .fv-name{font-size:14px;color:#e6edf3;font-weight:600}
+#fileview .fv-meta{font-size:12px;color:#8b949e}
+#fileview .fv-path{font-size:11px;color:#6e7681;word-break:break-all;font-family:ui-monospace,Consolas,monospace}
+#fileview .fv-body{flex:1;margin:0;overflow:auto;background:#010409;border:1px solid #21262d;border-radius:6px;padding:8px 10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.5;color:#c9d1d9;white-space:pre-wrap}
+#fileview .fv-actions{display:flex;gap:8px;justify-content:flex-end}
 #cStations{margin:10px 0 0;border-top:1px solid #21262d;padding-top:8px}
 #cStations .shead{display:flex;align-items:center;gap:10px;font-size:12px;color:#8b949e;margin:0 0 6px;flex-wrap:wrap}
 #cStations .slist{display:flex;flex-direction:column}

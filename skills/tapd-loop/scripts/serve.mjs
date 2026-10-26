@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readAsset, sharedAsset } from '../../../lib/web-ui/assets.mjs'
 import { createControl, ensureKey, isLoopbackHost, sameKey } from './control.mjs'
-import { listRuns, readArm, readCard } from './read-run.mjs'
+import { listRuns, readArm, readCard, readFileInfo } from './read-run.mjs'
 import { pageHtml } from './page.mjs'
 
 const args = process.argv.slice(2)
@@ -96,7 +96,7 @@ async function handle(req, res, url) {
   const asset = path.startsWith('/assets/') ? sharedAsset(path.slice('/assets/'.length)) : null
   if (asset) return sendAsset(res, asset)
   // 页面模块的名字和对外的路由名不一样（app.js 就是 page-app.js），所以这里查表。
-  const own = { '/app.js': 'page-app.js', '/control.js': 'control.js', '/auth.js': 'auth.js' }[path]
+  const own = { '/app.js': 'page-app.js', '/control.js': 'control.js', '/auth.js': 'auth.js', '/fileview.js': 'fileview.js' }[path]
   if (own) return sendAsset(res, readAsset(join(HERE, own)))
 
   if (!path.startsWith('/api/')) return send(res, 404, 'not found')
@@ -111,6 +111,11 @@ async function handle(req, res, url) {
   if (path === '/api/card') {
     const card = readCard(ROOT, url.searchParams.get('run') || '', url.searchParams.get('id') || '')
     return sendJson(res, card ? 200 : 404, card || { ok: false, error: 'card not found' })
+  }
+  if (path === '/api/file') {
+    // 日志弹窗用：一份文件的信息 + 尾部内容。路径白名单在 readFileInfo 里定。
+    const info = readFileInfo(HOME, url.searchParams.get('path') || '')
+    return sendJson(res, info.ok ? 200 : 404, info)
   }
   if (path === '/api/arm') {
     const data = readArm(ROOT, url.searchParams.get('run') || '', url.searchParams.get('id') || '', url.searchParams.get('arm') || '')
