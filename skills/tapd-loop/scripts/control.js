@@ -119,7 +119,7 @@ function renderRunning(s) {
   box.innerHTML = runs.map((running) => {
     const elapsed = Date.now() + serverSkew - Number(running.startedAt || Date.now())
     return '<div>' + esc(running.workdir || '') + ' · 已跑 ' + esc(dur(elapsed)) +
-      (running.card ? ' · 卡片 ' + esc(running.card) : '') + '</div>'
+      (running.card ? ' · ' + esc(running.cardTitle || running.card) : '') + '</div>'
   }).join('')
 }
 
@@ -157,9 +157,11 @@ function renderStations(s) {
           : '<span class="badge ok">空闲</span>'
     // 在跑就先报在跑：批次跑卡时工作区必然是脏的，不能因此画成「需要处理 / 清理改动」——
     // 那等于请人点一个会把 agent 活干掉的按钮。
+    // 在跑就先把运行状态报出来：卡片名优先用标题，19 位 id 在人眼里跟随机数一样。
+    const cardLabel = running ? (station.cardTitle || station.card || '') : ''
     const body = running
-      ? (station.card
-        ? `<span class="t">${esc(station.card)}</span><br>跑完自动回到空闲`
+      ? (cardLabel
+        ? `<span class="t">${esc(cardLabel)}</span><br>跑完自动回到空闲`
         : '正在接单，还没分到卡片<br>跑完自动回到空闲')
       : trouble
         ? (unityOff ? '验证要连本树的 Unity，现在没开<br>点下面的按钮打开它'
@@ -185,7 +187,11 @@ function renderStations(s) {
             ? `<button class="primary" data-smerge="${esc(station.name)}">合入 ${esc(String(station.pending))}</button>` +
               `<button data-srun="${esc(station.name)}">接一单</button><button data-sdel="${esc(station.name)}">删掉</button>`
             : `<button class="primary" data-srun="${esc(station.name)}">接一单</button><button data-sdel="${esc(station.name)}">删掉</button>`)
-    return `<div class="card ${trouble ? 'bad' : running ? 'run' : ''}" title="${esc(station.path)}">` +
+    // 框颜色：在跑优先。在跑的时候工作区必然是脏的（agent 正在改文件），trouble 里那条
+    // 「有没提交的改动」不是问题，不能因此把框画成红的——那会让人以为工位坏了。
+    const tone = running ? 'run' : trouble ? 'bad' : ''
+    const hover = [station.path, station.card ? `卡片 ${station.card}` : ''].filter(Boolean).join('\n')
+    return `<div class="card ${tone}" title="${esc(hover)}">` +
       `<div class="card-top"><span class="card-name">${esc(station.name)}</span>${badge}</div>` +
       `<div class="card-body">${body}</div>` +
       `<div class="card-actions">${actions}</div>` +

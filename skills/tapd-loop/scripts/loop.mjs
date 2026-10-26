@@ -21,6 +21,8 @@ const CONFIG_NAME = 'tapd-loop.json'
 const HEARTBEAT_SEC = 15
 /** 当前处理到哪张卡。信号中断时靠它给正在跑的那张写 card_interrupted。 */
 let currentCardId = ''
+/** 卡的标题。看板拿它显示「在跑哪张」，比一串 19 位 id 好认。心跳里一起带出去。 */
+let currentCardTitle = ''
 
 /**
  * 仓库级配置放 .git/ 下，不放工作区。
@@ -219,7 +221,7 @@ async function main() {
     host: hostname(),
   })
 
-  const beat = setInterval(() => log('heartbeat', { pid: process.pid, card: currentCardId }), HEARTBEAT_SEC * 1000)
+  const beat = setInterval(() => log('heartbeat', { pid: process.pid, card: currentCardId, title: currentCardTitle }), HEARTBEAT_SEC * 1000)
   beat.unref?.()
   // 能收到信号就自己把现场写完；收不到（taskkill /F、断电）就由看板按 pid 是否还在直接判中断。
   // 信号里不跑 git/TAPD：它们会 block 很久，也可能把半完成的收尾写进去。
@@ -257,6 +259,7 @@ async function main() {
 
     const outcome = await runCard(card, { tapd, git, cfg, runDir, workdir, args, log })
     currentCardId = ''
+    currentCardTitle = ''
     ledger.push(outcome)
     taskCount += 1
     // blocked 是环境/前置条件坏了（同步冲突、护栏留下脏改动），不是这张卡的问题：
@@ -296,6 +299,7 @@ async function runCard(card, ctx) {
   const log = ctx.log || (() => {})
   log('card_start', { id: card.id, title: card.title, priorityLabel: card.priorityLabel, statusLabel: card.statusLabel })
   currentCardId = card.id
+  currentCardTitle = String(card.title || '')
 
   if (!tapd.statuses.includes(card.status)) {
     log('card_skipped', { id: card.id, reason: `状态 ${card.statusLabel}，不在可接单范围` })

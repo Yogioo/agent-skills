@@ -285,6 +285,7 @@ function allRuns(runsRoot, limit = PROBE_DIRS) {
     const tail = tailText(file, TAIL_BYTES)
     if (tail.includes('"loop_end"')) continue
     if (!pidAlive(Number(start.pid))) continue
+    const card = cardFromTail(tail)
     out.push({
       kind: 'run',
       runId: name,
@@ -292,8 +293,9 @@ function allRuns(runsRoot, limit = PROBE_DIRS) {
       pid: Number(start.pid) || 0,
       startedAt: Number(start.t) || 0,
       maxTasks: Number(start.maxTasks) || 0,
-      // 刚开跑时还没有卡（card_start 要等 TAPD 查完），所以这个字段可以是空的。
-      card: cardFromTail(tail),
+      // 刚开跑时还没有卡（card_start 要等 TAPD 查完），所以这两个字段可以是空的。
+      card: card.id,
+      cardTitle: card.title || cardTitleFromRun(runsRoot, name, card.id),
     })
   }
   return out
@@ -305,7 +307,8 @@ function allRuns(runsRoot, limit = PROBE_DIRS) {
  * 这时不要倒着找出上一张 card_done 的 id，否则「跑完一张、下一张还没接」会显示成上一张。
  */
 function cardFromTail(tail) {
-  if (!tail) return ''
+  const none = { id: '', title: '' }
+  if (!tail) return none
   const events = []
   for (const line of tail.split('\n')) {
     if (!line.startsWith('{')) continue
@@ -315,19 +318,60 @@ function cardFromTail(tail) {
       // 尾巴第一行多半被截断了，跳过
     }
   }
+  let id = ''
   for (let i = events.length - 1; i >= 0; i -= 1) {
-    if (events[i].event === 'heartbeat') return String(events[i].card || '')
-    if (events[i].event === 'card_done' || events[i].event === 'card_failed') return ''
+    if (events[i].event === 'heartbeat') { id = String(events[i].card || ''); break }
+    if (events[i].event === 'card_done' || events[i].event === 'card_failed') return none
   }
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const id = String(events[i].id || events[i].card || '')
-    if (/^\d{10,}$/.test(id)) return id
+  if (!id) {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const candidate = String(events[i].id || events[i].card || '')
+      if (/^\d{10,}$/.test(candidate)) { id = candidate; break }
+    }
   }
-  return ''
+  // 标题：心跳（新版本带 title）优先，退一步找这张卡的 card_start。
+  // 卡片名给看板显示用，比 19 位 id 好认。
+  let title = ''
+  if (id) {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i]
+      if (String(event.card || event.id || '') !== id) continue
+      if (event.title) { title = String(event.title); break }
+    }
+  }
+  return { id, title }
 }
 
-/** 某个工位上有没有活批次。不传 workdir 就是全机（老语义）。 */
-function probeRun(runsRoot, workdir = '') {
+/**
+ * 标题的退路：长跑的心跳早就把 card_start 挤出尾部 8KB 了（老版本心跳不带 title），
+ * 这时直接读这张卡开工时落盘的 card.json / card.md。标题一批之内不会变，读到就记住。
+ */
+const titleCache = new Map()
+function cardTitleFromRun(runsRoot, runId, cardId) {
+  if (!runId || !cardId) return ''
+  const key = `${runId}/${cardId}`
+  if (titleCache.has(key)) return titleCache.get(key)
+  const dir = join(runsRoot, runId, cardId)
+  let title = ''
+  try {
+    const saved = JSON.parse(readFileSync(join(dir, 'card.json'), 'utf8'))
+    title = String(saved?.card?.title || saved?.detail?.title || '')
+  } catch {
+    // 没有 card.json 就看 card.md 的 H1
+  }
+  if (!title) {
+    try {
+      const line = readFileSync(join(dir, 'card.md'), 'utf8').split('\n').find((text) => text.startsWith('# '))
+      if (line) title = line.slice(2).trim()
+    } catch {
+      // 卡还没落盘：下次再读
+    }
+  }
+  if (title) titleCache.set(key, title)
+  return title
+}
+
+/** 某个工位上有没有活批次。不传 workdir 就是全机（老语义）。 */function probeRun(runsRoot, workdir = '') {
   return allRuns(runsRoot).find((run) => !workdir || samePath(run.workdir, workdir)) || null
 }
 
@@ -800,6 +844,7 @@ export function createControl(opts) {
         // 可用 = 目录在 + 是 git 仓库 + 工作区没改已跟踪文件 + Unity 在线（端点能用）
         usable: exists && isRepo && !dirty && unity === 'on',
         card: batch ? String(batch.card || '') : '',
+        cardTitle: batch ? String(batch.cardTitle || '') : '',
         runId: batch ? String(batch.runId || '') : '',
         pid: batch ? Number(batch.pid) || 0 : 0,
         startedAt: batch ? Number(batch.startedAt) || 0 : 0,
