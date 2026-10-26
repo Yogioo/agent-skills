@@ -76,7 +76,6 @@ th:nth-child(4),td:nth-child(4){width:7%;white-space:nowrap}
 #fileview .fv-top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 #fileview .fv-name{font-size:14px;color:#e6edf3;font-weight:600}
 #fileview .fv-meta{font-size:12px;color:#8b949e}
-#fileview .fv-path{font-size:11px;color:#6e7681;word-break:break-all;font-family:ui-monospace,Consolas,monospace}
 #fileview .fv-body{flex:1;margin:0;overflow:auto;background:#010409;border:1px solid #21262d;border-radius:6px;padding:8px 10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.5;color:#c9d1d9;white-space:pre-wrap}
 #fileview .fv-actions{display:flex;gap:8px;justify-content:flex-end}
 #cStations{margin:10px 0 0;border-top:1px solid #21262d;padding-top:8px}
@@ -123,6 +122,11 @@ export function pageHtml() {
       <label><input type="checkbox" id="cWatch">自动接单</label>
       <span>每</span><input id="cPollSec" type="number" min="30" max="86400" step="30" style="width:6.5em"><span>秒</span>
       <span id="cNext" class="dim"></span>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="cAutoPush">主树自动验证并推送</label>
+      <span>每</span><input id="cAutoPushSec" type="number" min="30" max="86400" step="30" style="width:6.5em"><span>秒探一次</span>
+      <span id="cAutoPushHint" class="dim"></span>
     </div>
     <div class="row">
       <label><input type="checkbox" id="cAllowDirty">允许脏工作区（脏改动会被算进本卡提交）</label>

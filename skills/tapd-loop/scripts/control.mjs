@@ -53,6 +53,8 @@ export const DEFAULTS = {
   allowDirty: false,
   noWrite: false,
   watch: { enabled: false, pollSec: 300 },
+  /** 主树自动验证并推送：主树有没推的提交、Unity 在线、没冲突时就自己跑 collect --resume。 */
+  autoPush: { enabled: false, pollSec: 120 },
   /** 工位注册表。空 = 老的单工位行为（只认 workdir 那一个）。 */
   stations: [],
 }
@@ -146,6 +148,10 @@ export function sanitizeControl(input = {}, base = DEFAULTS) {
       enabled: Boolean(base.watch?.enabled),
       pollSec: clampInt(base.watch?.pollSec, MIN_POLL_SEC, MAX_POLL_SEC, DEFAULTS.watch.pollSec),
     },
+    autoPush: {
+      enabled: Boolean(base.autoPush?.enabled),
+      pollSec: clampInt(base.autoPush?.pollSec, MIN_POLL_SEC, MAX_POLL_SEC, DEFAULTS.autoPush.pollSec),
+    },
     stations: normalizeStations(base.stations),
   }
   if (!input || typeof input !== 'object') return out
@@ -157,6 +163,10 @@ export function sanitizeControl(input = {}, base = DEFAULTS) {
   if (input.watch && typeof input.watch === 'object') {
     if ('enabled' in input.watch) out.watch.enabled = Boolean(input.watch.enabled)
     if ('pollSec' in input.watch) out.watch.pollSec = clampInt(input.watch.pollSec, MIN_POLL_SEC, MAX_POLL_SEC, out.watch.pollSec)
+  }
+  if (input.autoPush && typeof input.autoPush === 'object') {
+    if ('enabled' in input.autoPush) out.autoPush.enabled = Boolean(input.autoPush.enabled)
+    if ('pollSec' in input.autoPush) out.autoPush.pollSec = clampInt(input.autoPush.pollSec, MIN_POLL_SEC, MAX_POLL_SEC, out.autoPush.pollSec)
   }
   if ('stations' in input) out.stations = normalizeStations(input.stations)
   return out
@@ -464,6 +474,8 @@ export function createControl(opts) {
     lastBatch: null,
     /** 本 tick 刚派出去的卡（spawn 到 progress.jsonl 出现之间有空窗，靠这个防重复派）。 */
     dispatched: [],
+    /** 主树自动推送的现场：上次开跑时间、连续失败数、下次最早什么时候再试。 */
+    autoPush: { at: 0, nextAt: 0, fails: 0, lastJobId: '', lastResult: '', lastError: '' },
   }
 
   function raw() {
@@ -583,6 +595,17 @@ export function createControl(opts) {
       lastMerge: raw().lastMerge || null,
       jobs: listJobs(),
       lastBatch: memory.lastBatch || raw().lastBatch || null,
+      // 主树自动验证并推送的现场：开关、退避、上次结果。
+      autoPush: {
+        enabled: Boolean(config.autoPush?.enabled),
+        pollSec: Number(config.autoPush?.pollSec) || DEFAULTS.autoPush.pollSec,
+        lastAt: Number(memory.autoPush.at) || 0,
+        nextAt: Number(memory.autoPush.nextAt) || 0,
+        fails: Number(memory.autoPush.fails) || 0,
+        lastJobId: memory.autoPush.lastJobId || '',
+        lastResult: memory.autoPush.lastResult || '',
+        lastError: memory.autoPush.lastError || '',
+      },
       watch: {
         enabled: config.watch.enabled,
         pollSec: config.watch.pollSec,
@@ -690,8 +713,9 @@ export function createControl(opts) {
     if (!config.workdir) return { ok: false, error: '先选工作目录' }
     if (!isAbsolute(config.workdir)) return { ok: false, error: `工作目录要写绝对路径：${config.workdir}` }
     const workdir = resolve(config.workdir)
-    if (!existsSync(workdir)) return { ok: false, error: `工作目录不存在：${workdir}` }
-    if (!gitOut(workdir, ['rev-parse', '--git-dir'])) return { ok: false, error: `不是 git 仓库：${workdir}` }
+    // 报错不带本机绝对路径：看板是远程用的，开发机是黑箱，路径只会增加噪音。
+    if (!existsSync(workdir)) return { ok: false, error: '主树工作目录不存在（去「高级设置」里改「项目（主树）」）' }
+    if (!gitOut(workdir, ['rev-parse', '--git-dir'])) return { ok: false, error: '这个主树工作目录不是 git 仓库' }
     const running = busy(workdir)
     if (running) {
       return { ok: false, error: `这个工位已经有一批在跑（${running.runId || running.pid}），等它跑完或先点停止`, running }
@@ -787,7 +811,7 @@ export function createControl(opts) {
     const errors = []
     for (const workdir of targets) {
       if (!existsSync(workdir)) {
-        errors.push(`${workdir}: 目录不存在`)
+        errors.push('有一个登记过的工作目录不存在了')
         continue
       }
       const file = stopFilePath(workdir)
@@ -796,7 +820,7 @@ export function createControl(opts) {
         writeFileSync(file, `${new Date().toISOString()}\n`, 'utf8')
         files.push(file)
       } catch (err) {
-        errors.push(`${workdir}: ${err.message}`)
+        errors.push(`工位建树失败：${err.message}`)
       }
     }
     if (!files.length) return { ok: false, error: `写停止文件失败：${errors.join('；')}` }
@@ -885,8 +909,8 @@ export function createControl(opts) {
     const path = String(input.path || '').trim()
     if (!STATION_NAME_RE.test(name)) return { ok: false, error: '工位名只能 1~24 位字母数字/下划线/短横线' }
     if (!path || !isAbsolute(path)) return { ok: false, error: '工位路径要写绝对路径' }
-    if (!existsSync(path)) return { ok: false, error: `目录不存在：${path}` }
-    if (!gitOut(path, ['rev-parse', '--git-dir'])) return { ok: false, error: `不是 git 仓库：${path}` }
+    if (!existsSync(path)) return { ok: false, error: '这个路径不存在' }
+    if (!gitOut(path, ['rev-parse', '--git-dir'])) return { ok: false, error: '这个路径不是 git 仓库' }
     const current = read()
     if (current.stations.some((station) => station.name === name)) return { ok: false, error: `已经有叫 ${name} 的工位` }
     if (current.stations.some((station) => station.path.toLowerCase() === path.toLowerCase())) {
@@ -1069,11 +1093,11 @@ function resolveBash() {
     if (config.stations.some((station) => station.name === name)) return { ok: false, error: `已经有叫 ${name} 的工位` }
     const main = String(input.workdir || config.workdir || '').trim()
     if (!main) return { ok: false, error: '先选主树工作目录（建树脚本在主树里）' }
-    if (!existsSync(main)) return { ok: false, error: `主树不存在：${main}` }
+    if (!existsSync(main)) return { ok: false, error: '主树目录不存在' }
     const script = join(main, 'Tools', 'Worktree', 'new-worktree.sh')
-    if (!existsSync(script)) return { ok: false, error: `主树里没有建树脚本：${script}` }
+    if (!existsSync(script)) return { ok: false, error: '主树里没有建树脚本 Tools/Worktree/new-worktree.sh' }
     const path = String(input.path || '').trim() || defaultStationPath(main, name)
-    if (existsSync(path)) return { ok: false, error: `目录已存在：${path}（要复用就用「登记已有工位」）` }
+    if (existsSync(path)) return { ok: false, error: '这个工位目录已经存在（要复用就用「登记已有工位」）' }
     if (runningAll().some((item) => samePath(item.workdir, path))) return { ok: false, error: '这个路径上还有批次在跑' }
     return spawnJob({
       kind: 'create',
@@ -1153,7 +1177,7 @@ function resolveBash() {
   function openMainUnity(input = {}) {
     const main = String(input.workdir || read().workdir || '').trim()
     if (!main) return { ok: false, error: '先选主树工作目录' }
-    if (!existsSync(main)) return { ok: false, error: `目录不存在：${main}` }
+    if (!existsSync(main)) return { ok: false, error: '主树工作目录不存在' }
     // 主树常见的坑不是「没开」，而是「开了但没带 -unityPuerExecControl」，
     // 文件层面跟 booting 一模一样。这时直接拉第二个 Unity 会抢锁，只能让人先关掉那个。
     if (unityState(main) === 'booting') {
@@ -1167,7 +1191,7 @@ function resolveBash() {
 
   /** 真正拉起 Unity：工位和主树共用（参数就是树的根目录 + 给人看的名字）。 */
   function launchUnity(path, label) {
-    if (!existsSync(path)) return { ok: false, error: `目录不存在：${path}` }
+    if (!existsSync(path)) return { ok: false, error: `${label}的目录不存在` }
     const state = unityState(path)
     if (state === 'on') return { ok: false, error: `${label} 的 Unity 已经开着，控制端点也在` }
     if (state === 'booting') return { ok: false, error: `${label} 的 Unity 正在启动（首次导入约 4.5 分钟），等它起来再点` }
@@ -1182,7 +1206,7 @@ function resolveBash() {
     }
     if (!version) return { ok: false, error: '读不到 Unity 版本（ProjectSettings/ProjectVersion.txt）' }
     const exe = `C:/Program Files/Unity ${version}/Editor/Unity.exe`
-    if (!existsSync(exe)) return { ok: false, error: `找不到 Unity：${exe}` }
+    if (!existsSync(exe)) return { ok: false, error: `找不到 Unity ${version}（这台机器没装这个版本）` }
 
     const log = join(path, 'Temp', 'UnityPuerExec', 'Editor.log')
     mkdirSync(dirname(log), { recursive: true })
@@ -1223,7 +1247,7 @@ function resolveBash() {
     const station = config.stations.find((item) => item.name === name)
     if (!station) return { ok: false, error: `没有叫 ${name} 的工位` }
     const path = station.path
-    if (!existsSync(path)) return { ok: false, error: `目录不存在：${path}` }
+    if (!existsSync(path)) return { ok: false, error: `${name} 的工位目录不存在` }
     const live = runningAll().find((item) => samePath(item.workdir, path))
     if (live) return { ok: false, error: `${name} 上还有批次在跑，不能清理` }
 
@@ -1288,70 +1312,76 @@ function resolveBash() {
   }
 
   /** 提交 sha → 卡片 id：从跑过的 run 记录里查（card_done 事件带 commit）。 */
+  /**
+   * 提交 sha → 卡片 id。
+   *
+   * 只看批次的 progress.jsonl（`<run>/progress.jsonl`，一行一个事件）：card_done 那行同时带 id
+   * 和 commit。以前这里去读 `<run>/<card>/progress.jsonl` —— 那个文件根本不存在（卡片目录里
+   * 只有 events.jsonl / pi.json…），于是合入后永远「找不到对应卡片」，工单也就永远不流转。
+   */
   function cardIdByCommit(sha) {
     const needle = String(sha || '').trim().toLowerCase().slice(0, 10)
     if (needle.length < 7) return ''
     let runs = []
     try {
-      runs = readdirSync(runsRoot).filter((name) => name.startsWith('run-')).sort().reverse().slice(0, 40)
+      runs = readdirSync(runsRoot).filter((name) => name.startsWith('run-')).sort().reverse().slice(0, 60)
     } catch {
       return ''
     }
     for (const run of runs) {
-      let cards = []
+      let text = ''
       try {
-        cards = readdirSync(join(runsRoot, run))
+        text = readFileSync(join(runsRoot, run, 'progress.jsonl'), 'utf8')
       } catch {
         continue
       }
-      for (const card of cards) {
-        const file = join(runsRoot, run, card, 'progress.jsonl')
-        if (!existsSync(file)) continue
-        let text = ''
-        try {
-          text = readFileSync(file, 'utf8')
-        } catch {
-          continue
-        }
-        if (!text.toLowerCase().includes(needle)) continue
-        const commits = [...text.matchAll(/"event":"card_done"[^\n]*?"commit":"([0-9a-f]+)"/g)].map((m) => m[1])
-        if (commits.some((commit) => commit.toLowerCase().startsWith(needle))) return card
-      }
+      if (!text.toLowerCase().includes(needle)) continue
+      const hit = [...text.matchAll(/"event":"card_done"[^\n]*?"id":"(\d+)"[^\n]*?"commit":"([0-9a-f]+)"/g)]
+        .find((m) => m[2].toLowerCase().startsWith(needle))
+      if (hit) return hit[1]
     }
     return ''
   }
 
+  /** 已经回写过的工位提交（origin sha）。重复跑合入/补回写时靠它去重，不重复评论。 */
+  function flowedShas() {
+    return new Set((Array.isArray(raw().flowed) ? raw().flowed : []).map(String))
+  }
+
   /**
-   * 合入后回写 TAPD：每一条被 cherry-pick 进来的提交，带 `-x` 会写回原始 sha，
-   * 用它在 run 记录里找回卡片，评论 + （配了 run.doneStatus 时）改状态。
+   * 把一批主树提交回写到 TAPD：评论 +（配了 run.doneStatus 时）状态流转 + 处理人交回创建人。
+   * writeBackMerged 和补回写（backfillMain）共用这一段。
    */
-  function writeBackMerged({ stationName, branch, main, before, via = '' }) {
-    const after = gitOut(main, ['rev-parse', 'HEAD'])
-    if (!before || !after || before === after) {
-      return { ok: false, error: '主树 HEAD 没变，没有可回写的提交' }
-    }
-    const raw = gitOut(main, ['log', `--format=%H%x09%B%x00`, `${before}..${after}`])
-    const blocks = raw.split('\u0000').map((block) => block.trim()).filter(Boolean)
+  function flowBlocks({ main, blocks, via = '', branch = '', after = '' }) {
     const cfg = loopConfig(main)
     const doneStatus = String(cfg?.run?.doneStatus || cfg?.task?.doneStatus || '').trim()
+    const target = String(cfg?.run?.targetBranch || 'develop')
     const tapd = tapdClient(main)
+    const already = flowedShas()
     const results = []
+    const flowed = []
 
     for (const block of blocks) {
-      const [sha, ...rest] = block.split('\t')
+      const [sha, ...rest] = String(block || '').split('	')
       if (!sha) continue
-      const body = rest.join('\t')
+      const body = rest.join('	')
       const origin = (/cherry picked from commit ([0-9a-f]{7,40})/.exec(body) || [])[1] || sha
       const cardId = cardIdByCommit(origin)
       if (!cardId) {
-        results.push({ sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: false, reason: '找不到对应卡片' })
+        results.push({ sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: false, reason: '找不到对应卡片（run 记录里没有这个 commit）' })
+        continue
+      }
+      if (already.has(origin.toLowerCase())) {
+        results.push({ cardId, sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: true, skipped: '已经回写过' })
         continue
       }
       const note = (via
-        ? `[tapd-loop] 已推送到 ${String(cfg?.run?.targetBranch || 'develop')}（${via}）`
-        : `[tapd-loop] 已合入主树：${branch} → ${String(cfg?.run?.targetBranch || 'develop')}`) +
-        `，合并后提交 ${after.slice(0, 10)}（工位原始提交 ${origin.slice(0, 10)}）。` +
-        (doneStatus ? `\n\n状态流转：${doneStatus}，处理人已交回创建人` : '')
+        ? `[tapd-loop] 已推送到 ${target}（${via}）`
+        : `[tapd-loop] 已合入主树：${branch || target} → ${target}`) +
+        `，合并后提交 ${String(after || sha).slice(0, 10)}（工位原始提交 ${origin.slice(0, 10)}）。` +
+        (doneStatus ? `
+
+状态流转：${doneStatus}，处理人已交回创建人` : '')
       const one = { cardId, sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: true }
       try {
         tapd.addComment(cardId, note)
@@ -1380,22 +1410,72 @@ function resolveBash() {
         one.ok = false
         one.ownerError = err.message
       }
+      if (one.ok) flowed.push(origin.toLowerCase())
       results.push(one)
     }
 
     try {
-      const done = raw().jobs || []
+      const current = raw()
+      const keep = [...new Set([...(Array.isArray(current.flowed) ? current.flowed : []), ...flowed])].slice(-300)
+      writeJson(controlFile, { ...current, flowed: keep })
+    } catch {
+      // 记不上流水不影响已经写进 TAPD 的东西
+    }
+    return results
+  }
+
+  /**
+   * 合入后回写 TAPD：每一条被 cherry-pick 进来的提交，带 `-x` 会写回原始 sha，
+   * 用它在 run 记录里找回卡片，评论 + （配了 run.doneStatus 时）改状态。
+   */
+  function writeBackMerged({ stationName, branch, main, before, via = '' }) {
+    const after = gitOut(main, ['rev-parse', 'HEAD'])
+    if (!before || !after || before === after) {
+      return { ok: false, error: '主树 HEAD 没变，没有可回写的提交' }
+    }
+    const logText = gitOut(main, ['log', '--format=%H%x09%B%x00', `${before}..${after}`])
+    const blocks = logText.split(' ').map((block) => block.trim()).filter(Boolean)
+    const results = flowBlocks({ main, blocks, via, branch, after })
+
+    try {
       writeJson(controlFile, {
         ...raw(),
         lastMerge: { station: stationName, branch, before, after, at: Date.now(), results },
       })
-      void done
     } catch {
       // 记不上 lastMerge 不影响已经写进 TAPD 的东西
     }
     emit()
+    return { ok: results.length > 0 && results.every((item) => item.ok), results }
+  }
+
+  /**
+   * 补回写：提交已经在主树/远端了（HEAD 没变，`before..after` 是空的），但 TAPD 那次没写成。
+   * 典型就是这次：collect 停在 verify、后来手动/自动推上去，结果 push 成功的那次拿不到
+   * 「合入前」的基线，回写就整段跳过了。这里从主树最近 N 个提交里找带 cherry-pick 尾巴的，
+   * 对上卡片、且没回写过的就补一条，并记进 flowed 去重。
+   */
+  function backfillMain(input = {}) {
+    const config = read()
+    const main = String(input.workdir || config.workdir || '').trim()
+    if (!main || !existsSync(main)) return { ok: false, error: '先选主树工作目录' }
+    if (!gitOut(main, ['rev-parse', '--git-dir'])) return { ok: false, error: '主树工作目录不是 git 仓库' }
+    const limit = Math.min(100, Math.max(1, Number(input.limit) || 20))
+    const logText = gitOut(main, ['log', `-n${limit}`, '--format=%H%x09%B%x00'])
+    const blocks = logText.split(' ').map((block) => block.trim()).filter(Boolean)
+    const picked = blocks.filter((block) => /cherry picked from commit [0-9a-f]{7,40}/.test(block))
+    if (!picked.length) return { ok: true, note: `最近 ${limit} 个提交里没有合入痕迹（cherry-pick）`, results: [] }
+    const head = gitOut(main, ['rev-parse', 'HEAD'])
+    const results = flowBlocks({ main, blocks: picked, via: '补回写', after: head })
+    try {
+      writeJson(controlFile, { ...raw(), lastMerge: { station: '(主树)', branch: '', before: '', after: head, at: Date.now(), results } })
+    } catch {
+      // 同上
+    }
+    emit()
     return { ok: results.every((item) => item.ok), results }
   }
+
 
   /**
    * 合入工位：跑主树的 Tools/Worktree/collect.mjs（pick → 导表 → verify → push），
@@ -1451,25 +1531,125 @@ function resolveBash() {
    * 主树「验证并推送」：合入时 verify 没过（典型：主树 Unity 没开）会停在 push 之前，
    * 提交已经在本地 develop 上，只是没推、也没回写 TAPD。collect --resume 就是为这种现场
    * 准备的：跳过 pick，只做导表 → verify → push，成功后按落地的提交回写 TAPD。
+   *
+   * byAuto = 自动推的：失败要记进退避，不然一个真红的验证门会被每 2 分钟拉起来重跑一次。
    */
   function pushMain(input = {}) {
     const config = read()
     const main = String(input.workdir || config.workdir || '').trim()
     if (!main || !existsSync(main)) return { ok: false, error: '先选主树工作目录' }
-    if (!gitOut(main, ['rev-parse', '--git-dir'])) return { ok: false, error: `不是 git 仓库：${main}` }
+    if (!gitOut(main, ['rev-parse', '--git-dir'])) return { ok: false, error: '主树工作目录不是 git 仓库' }
     if (conflictState(main)) return { ok: false, error: '主树还停在 cherry-pick 冲突里，先解冲突' }
     const script = join(main, 'Tools', 'Worktree', 'collect.mjs')
-    if (!existsSync(script)) return { ok: false, error: `主树没有合入脚本：${script}` }
+    if (!existsSync(script)) return { ok: false, error: '主树里没有 Tools/Worktree/collect.mjs（合入脚本）' }
     const target = String(loopConfig(main)?.run?.targetBranch || 'develop')
     const before = gitOut(main, ['rev-parse', '--verify', `origin/${target}`]) || ''
+    const byAuto = Boolean(input.auto)
     return spawnJob({
       kind: 'main-push',
-      name: '(主树)',
+      name: byAuto ? '(主树·自动)' : '(主树)',
       path: main,
       workdir: main,
       script: `exec '${shPath(process.execPath)}' '${shPath(script)}' --resume`,
-      onSettled: () => writeBackMerged({ stationName: '(主树)', branch: target, main, before, via: '合入时验证没跑完，之后补推' }),
+      onSettled: (status, code) => {
+        const back = writeBackMerged({
+          stationName: '(主树)',
+          branch: target,
+          main,
+          before,
+          via: byAuto ? '自动补推' : '合入时验证没跑完，之后补推',
+        })
+        // 自动模式的退避：2 → 4 → 8 → 16 → 30 分钟。手动点的不改退避（人自己盯着）。
+        if (byAuto) {
+          if (status === 'done') {
+            memory.autoPush.fails = 0
+            memory.autoPush.lastResult = '已推送'
+            memory.autoPush.nextAt = 0
+          } else {
+            memory.autoPush.fails = (memory.autoPush.fails || 0) + 1
+            memory.autoPush.lastResult = `失败（exit ${code}）`
+            const waitMin = Math.min(30, 2 ** Math.max(0, memory.autoPush.fails - 1))
+            memory.autoPush.nextAt = Date.now() + waitMin * 60_000
+          }
+        }
+        return back
+      },
     })
+  }
+
+  /**
+   * 主树自动验证并推送：人不用盯着「verify 失败 → 补 Unity → 再点一次」。
+   *
+   * 只做“该做且现在能做成”的那一次：主树领先 origin、没冲突、工作区干净、Unity 端点在线、
+   * 没有别的主树任务在跑。失败按 2/4/8/16/30 分钟退避，成功自动清零。
+   * 每次 tick 只试一次，不排队：挂不上的东西排着队只会越跑越乱。
+   */
+  function autoPushTick() {
+    const config = read()
+    if (!config.autoPush?.enabled) {
+      memory.autoPush.nextAt = 0
+      return { skipped: 'off' }
+    }
+    const main = String(config.workdir || '').trim()
+    if (!main) return { skipped: 'no-workdir' }
+    if (listJobs().some((job) => String(job.kind || '').startsWith('main-') && (job.status === 'running' || job.status === 'unknown'))) {
+      return { skipped: 'busy' }
+    }
+    const state = mainState(main)
+    if (!state.exists || !state.isRepo) return { skipped: 'no-main' }
+    if (state.conflict) return { skipped: 'conflict' }
+    if (state.dirty) return { skipped: 'dirty' }
+    if (Number(state.ahead) <= 0) {
+      // 已经都推上去了：把失败记忆清掉，下次再攒出一批提交时不用等退避。
+      if (memory.autoPush.fails) {
+        memory.autoPush.fails = 0
+        memory.autoPush.lastResult = ''
+      }
+      memory.autoPush.nextAt = 0
+      return { skipped: 'clean' }
+    }
+    // verify 要连本树的 Unity：端点不在，开了也是 exit 2，不如等着。
+    if (state.unity !== 'on') return { skipped: 'no-unity' }
+    if (Date.now() < Number(memory.autoPush.nextAt || 0)) {
+      return { skipped: 'backoff', nextInMs: Number(memory.autoPush.nextAt) - Date.now() }
+    }
+
+    const started = pushMain({ workdir: main, auto: true })
+    if (!started.ok) {
+      memory.autoPush.lastError = String(started.error || '')
+      memory.autoPush.nextAt = Date.now() + 60_000
+      return { skipped: 'start-failed', error: started.error || '' }
+    }
+    memory.autoPush.at = Date.now()
+    memory.autoPush.lastJobId = started.job?.id || ''
+    memory.autoPush.lastError = ''
+    memory.autoPush.nextAt = Date.now() + Math.max(60, Number(config.autoPush.pollSec) || 120) * 1000
+    emit()
+    return { started: true, job: started.job?.id || '', ahead: Number(state.ahead) || 0 }
+  }
+
+  /**
+   * 主树工作区恢复干净（只动已跟踪文件，不碰未跟踪）。
+   * 合入/推送都要求工作区干净；而主树的 Unity 一开，常会把几个 .meta / 生成物重写一遍，
+   * 于是「自动推送」被一条脏改动永远挡住。这一步就是给它解围的，代价是丢掉没提交的改动。
+   */
+  function cleanMain(input = {}) {
+    const config = read()
+    const main = String(input.workdir || config.workdir || '').trim()
+    if (!main || !existsSync(main)) return { ok: false, error: '先选主树工作目录' }
+    if (!input.confirm) return { ok: false, error: '这会把主树里没提交的改动丢掉，需要 confirm' }
+    if (runningAll().some((item) => samePath(item.workdir, main))) {
+      return { ok: false, error: '主树上还有一批在跑，等它跑完再说' }
+    }
+    if (listJobs().some((job) => String(job.kind || '').startsWith('main-') && (job.status === 'running' || job.status === 'unknown'))) {
+      return { ok: false, error: '主树还有任务在跑（推送/验证），等它结束' }
+    }
+    const dirty = gitOut(main, ['status', '--porcelain', '--untracked-files=no']).split('\n').map((line) => line.trim()).filter(Boolean)
+    if (!dirty.length) return { ok: true, note: '主树本来就是干净的', paths: [] }
+    const ok = gitRun(main, ['restore', '--', '.'])
+    if (!ok) return { ok: false, error: 'git restore 失败，去主树手动处理', paths: dirty }
+    emit()
+    return { ok: true, restored: dirty.length, paths: dirty.slice(0, 20) }
   }
 
   /** 只跑主树的验证门（想看现在到底绿不绿，但不想动 git）。 */
@@ -1478,7 +1658,7 @@ function resolveBash() {
     const main = String(input.workdir || config.workdir || '').trim()
     if (!main || !existsSync(main)) return { ok: false, error: '先选主树工作目录' }
     const script = join(main, '.workflow', 'verify', 'verify_unity.mjs')
-    if (!existsSync(script)) return { ok: false, error: `主树没有验证脚本：${script}` }
+    if (!existsSync(script)) return { ok: false, error: '主树里没有 .workflow/verify/verify_unity.mjs（验证门脚本）' }
     const target = String(loopConfig(main)?.run?.targetBranch || 'develop')
     const base = gitOut(main, ['rev-parse', '--verify', `origin/${target}`]) || 'HEAD'
     return spawnJob({
@@ -1509,7 +1689,7 @@ function resolveBash() {
     }
 
     const script = join(main, 'Tools', 'Worktree', 'collect.mjs')
-    if (!existsSync(script)) return { ok: false, error: `主树没有合入脚本：${script}` }
+    if (!existsSync(script)) return { ok: false, error: '主树里没有 Tools/Worktree/collect.mjs（合入脚本）' }
     const before = gitOut(main, ['rev-parse', 'HEAD'])
 
     return spawnJob({
@@ -1678,7 +1858,7 @@ function resolveBash() {
     try {
       info = JSON.parse(readFileSync(endpointFile, 'utf8'))
     } catch (err) {
-      return { ok: false, state, error: `endpoint.json 读不出来：${err.message}` }
+      return { ok: false, state, error: `端点文件读不出来：${err.message}` }
     }
     const base = `http://127.0.0.1:${info.port}`
     try {
@@ -1804,6 +1984,9 @@ function resolveBash() {
     openMainUnity,
     pushMain,
     verifyMain,
+    backfillMain,
+    cleanMain,
+    autoPushTick,
     probeUnity,
     cleanStation,
     onChange: (listener) => {

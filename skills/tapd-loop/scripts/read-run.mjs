@@ -39,11 +39,11 @@ export function readFileInfo(home, wanted, { bytes = 64 * 1024 } = {}) {
   const abs = resolve(String(wanted || ''))
   const roots = ['runs', 'cards', 'board-batches'].map((name) => resolve(home, name))
   if (!roots.some((root) => abs === root || abs.startsWith(root + sep))) {
-    return { ok: false, path: abs, error: `只给看 ${home} 下的日志（runs / cards / board-batches）` }
+    return { ok: false, error: '只给看看板自己的日志目录（runs / cards / board-batches）' }
   }
-  if (!existsSync(abs)) return { ok: false, path: abs, error: '文件还不存在（可能还没写出来）' }
+  if (!existsSync(abs)) return { ok: false, error: '文件还不存在（可能还没写出来）' }
   const stat = statSync(abs)
-  if (stat.isDirectory()) return { ok: false, path: abs, error: '这是个目录，不给看' }
+  if (stat.isDirectory()) return { ok: false, error: '这是个目录，不给看' }
 
   const fd = openSync(abs, 'r')
   let text = ''
@@ -58,7 +58,6 @@ export function readFileInfo(home, wanted, { bytes = 64 * 1024 } = {}) {
   }
   return {
     ok: true,
-    path: abs,
     name: basename(abs),
     size: stat.size,
     mtime: stat.mtimeMs,

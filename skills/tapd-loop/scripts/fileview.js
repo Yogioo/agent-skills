@@ -2,7 +2,8 @@
  * 看板上的「文件」弹窗：点一下就地把日志摊开，不用人照着绝对路径去资源管理器里找。
  *
  * 服务端是 `/api/file`（只认 ~/.tapd-loop 下 runs / cards / board-batches 里的文件）。
- * 这里只做三件事：拉一次文件信息、画一个浮层、给「刷新 / 复制路径 / 关闭」。
+ * 这里只做三件事：拉一次文件信息、画一个浮层、给「刷新 / 复制内容 / 关闭」。
+ * 不显示、也不给复制本机绝对路径：看板是远程看的，开发机是黑箱。
  *
  * 两个模块（control.js 和 page-app.js）都可能用到，所以单独成模块，别各写一份。
  */
@@ -20,11 +21,10 @@ function ensureLayer() {
     '<div class="fv-mask"></div>' +
     '<div class="fv-panel" role="dialog" aria-modal="true">' +
     '<div class="fv-top"><span class="fv-name"></span><span class="fv-meta"></span></div>' +
-    '<div class="fv-path"></div>' +
     '<pre class="fv-body"></pre>' +
     '<div class="fv-actions">' +
     '<button data-fv-refresh>刷新</button>' +
-    '<button data-fv-copy>复制路径</button>' +
+    '<button data-fv-copy>复制内容</button>' +
     '<button data-fv-close>关闭</button>' +
     '</div></div>'
   document.body.appendChild(box)
@@ -33,11 +33,11 @@ function ensureLayer() {
   box.querySelector('[data-fv-refresh]').addEventListener('click', () => load(currentPath))
   box.querySelector('[data-fv-copy]').addEventListener('click', () => {
     // 剪贴板 API 在 http 的非 localhost 下不可用，退回 textarea + execCommand。
-    const text = currentPath
+    const text = box.querySelector('.fv-body').textContent || ''
     const done = () => {
       const btn = box.querySelector('[data-fv-copy]')
       btn.textContent = '已复制'
-      setTimeout(() => { btn.textContent = '复制路径' }, 1200)
+      setTimeout(() => { btn.textContent = '复制内容' }, 1200)
     }
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done))
@@ -79,10 +79,8 @@ async function load(path) {
   currentPath = path
   const name = box.querySelector('.fv-name')
   const meta = box.querySelector('.fv-meta')
-  const pathBox = box.querySelector('.fv-path')
   const body = box.querySelector('.fv-body')
   name.textContent = String(path || '').split(/[\\/]/).pop() || '(未给路径)'
-  pathBox.textContent = path || ''
   meta.textContent = '读取中…'
   body.textContent = ''
 

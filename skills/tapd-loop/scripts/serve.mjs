@@ -161,7 +161,8 @@ async function handle(req, res, url) {
     if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
     const body = await readJsonBody(req)
     const result = control.stop(body)
-    return sendJson(res, result.ok ? 200 : 400, { ...result, ...boardStatus() })
+    // 只有「带 error 的拒绝」才算 400；补回写这种「部分提交找不到卡片」是结果，不是失败。
+    return sendJson(res, result.error ? 400 : 200, { ...result, ...boardStatus() })
   }
   if (path === '/api/stations') {
     if (req.method === 'GET') return sendJson(res, 200, { ok: true, ...boardStatus() })
@@ -180,7 +181,9 @@ async function handle(req, res, url) {
                     : action === 'mainverify' ? control.verifyMain(body)
                       : action === 'mainunity' ? control.openMainUnity(body)
                         : action === 'mainprobe' ? control.probeUnity({ path: body.path || '', name: body.name || '' })
-                          : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / forget / clean / merge / resolve / mainpush / mainverify / mainunity / mainprobe）` })
+                          : action === 'mainbackfill' ? control.backfillMain(body)
+                            : action === 'mainclean' ? control.cleanMain(body)
+                          : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / forget / clean / merge / resolve / mainpush / mainverify / mainunity / mainprobe / mainbackfill / mainclean）` })
     return sendJson(res, result.ok ? 200 : 400, { ...result, ...boardStatus() })
   }
   if (path === '/api/dispatch') {
@@ -309,9 +312,12 @@ const timer = setInterval(() => {
   control.tick().catch(() => {
     // 一次 tick 出错不能让定时器死掉：下一轮还会试
   })
+  // 主树自动验证并推送：开关关着时它只读一次配置就返回，代价可以忽略。
+  try { control.autoPushTick() } catch { /* 下一轮再试 */ }
 }, TICK_MS)
 timer.unref?.()
 control.tick().catch(() => {})
+try { control.autoPushTick() } catch { /* 下一轮再试 */ }
 
 function send(res, code, body, type = 'text/plain; charset=utf-8') {
   res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' })

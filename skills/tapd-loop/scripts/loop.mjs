@@ -257,7 +257,7 @@ async function main() {
       continue
     }
 
-    const outcome = await runCard(card, { tapd, git, cfg, runDir, workdir, args, log })
+    const outcome = await runCard(card, { tapd, git, cfg, runDir, workdir, args, log, boardUrl })
     currentCardId = ''
     currentCardTitle = ''
     ledger.push(outcome)
@@ -383,7 +383,9 @@ async function runCard(card, ctx) {
     log('turn_end', { id: card.id, code: result.code, timedOut: result.timedOut, durationMs: result.durationMs })
     const settled = readSettled(result.eventsPath)
     const changed = git.changedSince(baseline)
-    const evidence = `日志 ${plainPath(result.eventsPath)}`
+    // 证据给的是看板深链，不是本机路径：开发机是黑箱，评论的读者在浏览器里。
+    const link = cardLink(ctx.boardUrl, runDir, card.id)
+    const evidence = link ? `现场：${link}` : ''
 
     if (result.timedOut) return finishFailed(card, `超时 ${cfg.run.timeoutSec}s。${evidence}`, dir, startedAt, { tapd, git, baseline, log, args: ctx.args })
     if (!settled.settled || settled.aborted) {
@@ -425,7 +427,7 @@ async function runCard(card, ctx) {
       published.pushed
         ? `提交：${sha.slice(0, 10)}（已推送 ${published.remote}/${published.branch}）`
         : `提交：${sha.slice(0, 10)}（未推送，留在本地：${published.reason}）`,
-      `证据：${plainPath(join(dir, 'events.jsonl'))}`,
+      ctx.boardUrl ? `证据（看板）：${cardLink(ctx.boardUrl, runDir, card.id)}` : '',
     ].filter(Boolean).join('\n\n')
     let writeBack = ''
     if (!ctx.args.noWrite) {
@@ -734,7 +736,7 @@ export function preflight(card, { git, cfg, workdir, dir, log }) {
     return {
       ok: false,
       fatal: true,
-      reason: `afterSync 失败（exit ${guard.code}），导出/生成物还是旧的，开了工也白做：${guard.tail || '原因见日志'}（日志 ${plainPath(guard.logPath)}）`,
+      reason: `afterSync 失败（exit ${guard.code}），导出/生成物还是旧的，开了工也白做：${guard.tail || '原因见 after-sync 日志'}`,
     }
   }
   log('card_after_sync', { id: card.id, elapsedMs: guard.elapsedMs })
@@ -958,6 +960,22 @@ function clip(text, max) {
  * 路径写进 TAPD 评论时统一用正斜杠：Markdown 把 `\.` 当转义，`C:\\Users\\EDY\\.tapd-loop` 会变成
  * `C:\\Users\\EDY.tapd-loop`，人照着复制就找不到了。Windows 本身也认正斜杠。
  */
+/**
+ * 看板上这张卡的深链。评论里给这个而不是本机绝对路径：
+ * 读评论的人在浏览器里，路径对他既是噪音又点不动。
+ */
+function cardLink(boardUrl, runDir, cardId) {
+  if (!boardUrl) return ''
+  try {
+    const url = new URL(boardUrl)
+    url.searchParams.set('run', basename(runDir))
+    url.searchParams.set('id', String(cardId))
+    return url.toString()
+  } catch {
+    return ''
+  }
+}
+
 function plainPath(path) {
   return String(path || '').replace(/\\/g, '/')
 }

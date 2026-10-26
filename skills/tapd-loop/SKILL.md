@@ -173,6 +173,7 @@ node <技能根>/scripts/start-board.mjs --port 7400 --host 192.168.1.5
 | 接单开跑 / 只跑这张 | 真跑，等同 `loop.mjs --workdir … --max-tasks n [--card id]` |
 | 停止（下一张前） | 写 `<git-dir>/tapd-loop-stop`，和 CLI 的 `--stop` 一样不杀当前卡 |
 | 定时查看 TAPD 并接单 | 开关 + 间隔秒（30 秒起，默认 300），等于 CLI 的 `--watch` 配 `run.pollSec` |
+| 主树自动验证并推送 | 开关 + 间隔秒（30 秒起，默认 120）。主树领先 origin、没冲突、工作区干净、Unity 端点在线、没有别的主树任务在跑时，自己跑 `collect --resume`（导表 → verify → push → 回写 TAPD）；失败按 2/4/8/16/30 分钟退避，成功清零 |
 | 指定工单：贴链接 + 查看这张 / 接这张开跑 | 先 `--show <id>` 看清楚，再 `--card <id>` 真跑（永远只跑一张） |
 
 **一次只允许一批**：判活看 `progress.jsonl` 里的 pid，所以命令行起的批次也算，网页和 CLI 不会在同一个仓库上撞车。工作区不干净、目录不是 git 仓库、已经有一批在跑，都会在开跑前直接拒掉（不在 spawn 之后才失败）。

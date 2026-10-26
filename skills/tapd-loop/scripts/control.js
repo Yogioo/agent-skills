@@ -36,6 +36,10 @@ function form() {
       enabled: Boolean(el('cWatch')?.checked),
       pollSec: Number(el('cPollSec')?.value || 300),
     },
+    autoPush: {
+      enabled: Boolean(el('cAutoPush')?.checked),
+      pollSec: Number(el('cAutoPushSec')?.value || 120),
+    },
   }
 }
 
@@ -74,6 +78,14 @@ function fill(s) {
   if (el('cNoWrite')) el('cNoWrite').checked = Boolean(config.noWrite)
   if (el('cWatch')) el('cWatch').checked = Boolean(config.watch?.enabled)
   if (el('cPollSec')) el('cPollSec').value = String(config.watch?.pollSec ?? 300)
+  if (el('cAutoPush')) el('cAutoPush').checked = Boolean(config.autoPush?.enabled)
+  if (el('cAutoPushSec')) el('cAutoPushSec').value = String(config.autoPush?.pollSec ?? 120)
+  if (el('cAutoPushHint')) {
+    const auto = s.autoPush || {}
+    el('cAutoPushHint').textContent = !auto.enabled ? ''
+      : auto.fails > 0 ? `连续失败 ${auto.fails} 次${auto.nextAt > Date.now() ? `，${Math.ceil((auto.nextAt - Date.now()) / 60000)} 分钟后重试` : ''}`
+        : auto.lastResult ? `上次：${auto.lastResult}` : '等着主树攒出没推的提交'
+  }
 }
 
 function dur(ms) {
@@ -117,10 +129,14 @@ function renderRunning(s) {
     return
   }
   box.className = 'runline'
+  const stationOf = (workdir) => (Array.isArray(s.stations) ? s.stations : [])
+    .find((station) => samePath(station.path, workdir))
   box.innerHTML = runs.map((running) => {
     const elapsed = Date.now() + serverSkew - Number(running.startedAt || Date.now())
-    return '<div>' + esc(running.workdir || '') + ' · 已跑 ' + esc(dur(elapsed)) +
-      (running.card ? ' · ' + esc(running.cardTitle || running.card) : '') + '</div>'
+    // 不显示仓库绝对路径：看板是给人远程看的，本机路径对他没意义（开发机是黑箱）。
+    const who = stationOf(running.workdir)?.name || '一批任务'
+    const what = running.cardTitle || running.card || ''
+    return `<div>${esc(who)} · 已跑 ${esc(dur(elapsed))}${what ? ' · ' + esc(what) : ''}</div>`
   }).join('')
 }
 
@@ -167,6 +183,14 @@ function renderMain(s) {
       : main.unity === 'booting' ? 'Unity 开着但没有控制端点（多半不是带 -unityPuerExecControl 开的）'
         : 'Unity 没开')
     if (unpushed > 0) bits.push('推送前会先跑验证门')
+    const auto = s.autoPush || {}
+    if (auto.enabled) {
+      const wait = Number(auto.nextAt) > Date.now() ? `，${Math.ceil((Number(auto.nextAt) - Date.now()) / 60000)} 分钟后重试` : ''
+      bits.push(!main.unity || main.unity !== 'on'
+        ? '自动推送：等 Unity 端点（verify 要连它）'
+        : auto.fails > 0 ? `自动推送：失败 ${auto.fails} 次${wait}`
+          : auto.lastResult ? `自动推送：${auto.lastResult}` : '自动推送：开（有没推的提交就跑）')
+    }
   }
 
   const actions = busy
@@ -175,7 +199,9 @@ function renderMain(s) {
       '<button data-mverify="1">只验证</button>' +
       (main.unity === 'off'
         ? '<button data-munity="1">打开 Unity</button>'
-        : '<button data-mprobe="1">检查端点</button>')
+        : '<button data-mprobe="1">检查端点</button>') +
+      (main.dirty ? '<button data-mclean="1">清理改动</button>' : '') +
+      '<button data-mbackfill="1">补回写 TAPD</button>'
 
   const last = s.lastMerge
   const lastText = last && last.results
@@ -186,7 +212,7 @@ function renderMain(s) {
 
   const tone = busy ? 'run' : trouble || unpushed > 0 ? 'bad' : ''
   box.innerHTML = '<div class="cards">' +
-    `<div class="card ${tone}" title="${esc(main.path)}">` +
+    `<div class="card ${tone}" title="${esc(main.branch ? '主树 ' + main.branch : '主树')}">` +
     `<div class="card-top"><span class="card-name">主树</span>${badge}</div>` +
     `<div class="card-body">${bits.join('<br>')}${lastText ? '<br>' + esc(lastText) : ''}</div>` +
     `<div class="card-actions">${actions}</div>` +
@@ -199,6 +225,14 @@ function renderMain(s) {
   box.querySelector('[data-mpush]')?.addEventListener('click', () => run('mainpush'))
   box.querySelector('[data-mverify]')?.addEventListener('click', () => run('mainverify'))
   box.querySelector('[data-munity]')?.addEventListener('click', () => run('mainunity'))
+  box.querySelector('[data-mclean]')?.addEventListener('click', () => {
+    if (!window.confirm('把主树里没提交的改动恢复成 HEAD？（未跟踪文件不动，推送/合入需要干净工作区）')) return
+    stationAction('mainclean', { workdir: main.path, confirm: true }).catch(() => {})
+  })
+  // 提交早就合进去/推上去了，但 TAPD 那次没写成时用这个补上（按 cherry-pick 尾巴找卡片，记过的不重发）。
+  box.querySelector('[data-mbackfill]')?.addEventListener('click', () => {
+    stationAction('mainbackfill', { workdir: main.path }).catch(() => {})
+  })
   box.querySelector('[data-mprobe]')?.addEventListener('click', () => {
     apiJson('api/stations', {
       method: 'POST',
@@ -278,7 +312,8 @@ function renderStations(s) {
     // 框颜色：在跑优先。在跑的时候工作区必然是脏的（agent 正在改文件），trouble 里那条
     // 「有没提交的改动」不是问题，不能因此把框画成红的——那会让人以为工位坏了。
     const tone = running ? 'run' : trouble ? 'bad' : ''
-    const hover = [station.path, station.card ? `卡片 ${station.card}` : ''].filter(Boolean).join('\n')
+    // 悬停只给卡片号：开发机是黑箱，本机绝对路径对远程看板的人没有意义。
+    const hover = station.card ? `卡片 ${station.card}` : ''
     return `<div class="card ${tone}" title="${esc(hover)}">` +
       `<div class="card-top"><span class="card-name">${esc(station.name)}</span>${badge}</div>` +
       `<div class="card-body">${body}</div>` +
@@ -474,7 +509,7 @@ function renderConflict(s) {
     '<button data-resolvecmd>复制手工命令</button></div></div>'
   box.querySelector('[data-resolve]')?.addEventListener('click', () => { resolveConflict().catch(() => {}) })
   box.querySelector('[data-resolvecmd]')?.addEventListener('click', () => {
-    const cmd = `cd "${form().workdir || 'C:/projects/DigitDoor'}" && git status && git add <冲突文件> && git cherry-pick --continue && node Tools/Worktree/collect.mjs --resume`
+    const cmd = 'git status && git add <冲突文件> && git cherry-pick --continue && node Tools/Worktree/collect.mjs --resume'
     try {
       navigator.clipboard.writeText(cmd)
       say('手工命令已复制', 'ok')
@@ -677,6 +712,12 @@ async function stationAction(action, payload) {
   })
   if (!res.ok) say(res.data?.error || `失败（HTTP ${res.status}）`, 'bad')
   else if (res.data?.error) say(res.data.error, 'warn')
+  else if (Array.isArray(res.data?.results)) {
+    const flows = res.data.results.filter((one) => one.cardId)
+    say(flows.length
+      ? '回写：' + flows.map((one) => `卡片 ${one.cardId}${one.status ? '→' + one.status : ''}${one.skipped ? `（${one.skipped}）` : ''}`).join('、')
+      : (res.data.note || '没有可回写的提交'), flows.length ? 'ok' : 'warn')
+  }
   else if (res.data?.job) say(`已开始：${JOB_LABEL[res.data.job.kind] || res.data.job.kind} ${res.data.job.name || ''}（几分钟；卡片上的「看日志」就地打开）`, 'ok')
   else say('已更新', 'ok')
   await poll()
@@ -708,7 +749,7 @@ async function stopStation(station) {
 
 async function removeStation(station) {
   if (!station) return
-  const ok = window.confirm(`真的删掉工位「${station.name}」？\n\n${station.path}\n\n会 git worktree remove + 删目录。有未合入提交时服务端会拒。`)
+  const ok = window.confirm(`真的删掉工位「${station.name}」？\n\n会 git worktree remove + 删目录。有未合入提交时服务端会拒。`)
   if (!ok) return
   await stationAction('remove', { name: station.name, workdir: form().workdir, confirm: true })
 }
@@ -821,7 +862,7 @@ export function mountControl() {
     el('cWorkdirText').value = value
     save().catch(() => {})
   })
-  for (const field of ['cWorkdirText', 'cAssignee', 'cMaxTasks', 'cAllowDirty', 'cNoWrite', 'cWatch', 'cPollSec']) {
+  for (const field of ['cWorkdirText', 'cAssignee', 'cMaxTasks', 'cAllowDirty', 'cNoWrite', 'cWatch', 'cPollSec', 'cAutoPush', 'cAutoPushSec']) {
     el(field)?.addEventListener('input', () => scheduleSave())
     el(field)?.addEventListener('change', () => scheduleSave())
   }

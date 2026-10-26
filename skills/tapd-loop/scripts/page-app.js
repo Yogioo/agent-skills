@@ -108,7 +108,7 @@ function render() {
     const head = document.createElement('tr')
     head.className = 'faded'
     head.innerHTML = '<td colspan="4" style="padding-top:14px;color:#8b949e">' +
-      esc(run.runId) + ' · ' + esc(run.workdir || '') + ' · ' + esc(run.alive ? '运行中' : run.reason || '已结束') + ' · ' + esc(rel(run.startedAt)) + '</td>'
+      esc(run.runId) + ' · ' + esc(run.alive ? '运行中' : run.reason || '已结束') + ' · ' + esc(rel(run.startedAt)) + '</td>'
     rowsEl.appendChild(head)
     for (const card of run.cards) {
       total++
