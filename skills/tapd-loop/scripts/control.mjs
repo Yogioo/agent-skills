@@ -753,13 +753,16 @@ export function createControl(opts) {
     })
   }
 
-  /** 建树 / 删树的长任务。活着的按 pid 判，跑完的看退出码。 */
+  /** 建树 / 删树 / 合入 / 解冲突这些长任务。只有 running 的才看 pid 判活。 */
   function listJobs() {
     const saved = raw()
     const jobs = Array.isArray(saved.jobs) ? saved.jobs : []
     return jobs.map((job) => {
-      const alive = job.pid ? pidAlive(Number(job.pid)) : false
-      const status = job.status === 'running' && !alive ? 'unknown' : job.status
+      // 只有 running 才用 pid 判活。否则 resolve 这种用看板 pid 占位的 job 会永远 alive，
+      // 完成了也不从页面消失（pin 到 done 之后还会被前端当「还在跑」画出来）。
+      const running = job.status === 'running'
+      const alive = running && job.pid ? pidAlive(Number(job.pid)) : false
+      const status = running && !alive ? 'unknown' : job.status
       return { ...job, alive, status }
     })
   }
@@ -799,7 +802,7 @@ export function createControl(opts) {
    * （进程 code 1、日志 0 字节，而同样的命令用 pipe 就正常）。自己重定向还有个好处：
    * 看板重启/退出后，子进程继续写自己的文件。
    */
-  function spawnJob({ kind, name, path, workdir, script, onDone }) {
+  function spawnJob({ kind, name, path, workdir, script, onDone, onConflict }) {
     mkdirSync(batchDir, { recursive: true })
     const log = join(batchDir, `station-${kind}-${name}-${stamp()}.log`)
     const cmdline = `exec > '${shPath(log)}' 2>&1; ${script}`
@@ -847,6 +850,14 @@ export function createControl(opts) {
           onDone()
         } catch {
           // onDone 炸了不影响 job 已记下的结果
+        }
+      }
+      // code 2 = collect --resolve 遇到冲突、现场已保留：自动起 agent 解，不用人再点。
+      if (code === 2 && onConflict) {
+        try {
+          onConflict()
+        } catch (err) {
+          appendFileSync(log, `\n[自动解冲突失败] ${err.message}\n`, 'utf8')
         }
       }
       emit()
@@ -1265,9 +1276,11 @@ function resolveBash() {
       name,
       path: station.path,
       workdir: main,
-      // --resolve：冲突不 abort，保留现场（退出码 2）。解完再跑 collect --resume。
+      // --resolve：冲突不 abort，保留现场（退出码 2）。
+      // code 2 时 spawnJob 自动调 onConflict → 起 agent 解 → continue → collect --resume。
       script: `exec '${shPath(process.execPath)}' '${shPath(script)}' '${branch}' --resolve`,
       onDone: () => writeBackMerged({ stationName: name, branch, main, before }),
+      onConflict: () => resolveMerge({ name, workdir: main }),
     })
   }
 

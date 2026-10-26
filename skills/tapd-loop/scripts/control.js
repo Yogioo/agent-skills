@@ -118,7 +118,10 @@ function renderStations(s) {
   const box = el('cStations')
   if (!box) return
   const stations = Array.isArray(s.stations) ? s.stations : []
-  const jobs = (Array.isArray(s.jobs) ? s.jobs : []).filter((job) => job.status === 'running' || job.alive)
+  // 只画还在跑的：done / failed 的 job 不该再占卡片（以前 resolve 用看板 pid
+  // 占位，alive 恒真，、合入完了还挂着一张「正在删除」）。
+  const jobs = (Array.isArray(s.jobs) ? s.jobs : [])
+    .filter((job) => job.status === 'running' || job.status === 'unknown')
 
   const cards = stations.map((station) => {
     const running = Boolean(station.card)
@@ -170,12 +173,21 @@ function renderStations(s) {
       '</div>'
   }).join('')
 
-  // 正在建/删的工位也占一张卡，否则点完「建一棵」后页面看着像没反应。
-  const jobCards = jobs.map((job) =>
-    `<div class="card run"><div class="card-top"><span class="card-name">${esc(job.name)}</span>` +
-    `<span class="badge run">${job.kind === 'create' ? '正在准备' : '正在删除'}</span></div>` +
-    '<div class="card-body">第一次准备要几分钟，好了会自动出现</div>' +
-    `<div class="card-actions"><button data-joblog="${esc(job.id)}">看进度</button></div></div>`).join('')
+  // 正在建/删/合入/解冲突的工位也占一张卡，否则点完按钮页面看着像没反应。
+  const JOB_TEXT = {
+    create: ['正在准备', '第一次准备要几分钟，好了会自动出现'],
+    remove: ['正在删除', '删完会自动从工位表里消失'],
+    merge: ['正在合入', 'pick → 导表 → verify → push，跑完自动回写 TAPD'],
+    resolve: ['AI 解冲突中', '解完自动 continue，然后续跑合入'],
+    'merge-resume': ['合入续跑中', '导表 → verify → push'],
+  }
+  const jobCards = jobs.map((job) => {
+    const [badge, body] = JOB_TEXT[job.kind] || ['处理中', '']
+    return `<div class="card run"><div class="card-top"><span class="card-name">${esc(job.name)}</span>` +
+      `<span class="badge run">${esc(badge)}</span></div>` +
+      `<div class="card-body">${esc(body)}</div>` +
+      `<div class="card-actions"><button data-joblog="${esc(job.id)}">看进度</button></div></div>`
+  }).join('')
 
   box.innerHTML = cards || jobCards ? `<div class="cards">${cards}${jobCards}</div>` : ''
 
@@ -344,7 +356,7 @@ function renderConflict(s) {
     `<div class="card-body">${c.files.map(esc).join('<br>')}` +
     (xlsx.length
       ? `<br><span class="bad">表格冲突要人工用 xlsx-cell-diff 合：${xlsx.map(esc).join('、')}</span>`
-      : '<br>可以让 AI 按 digitdoor-git-pull-rebase 技能解，它只改这些文件') +
+      : '<br><span class="bad">自动解冲突没成功</span>（AI 解完但仍剩冲突）。可以重试或手工解') +
     '</div>' +
     '<div class="card-actions">' +
     (xlsx.length ? '' : '<button class="primary" data-resolve>让 AI 解冲突</button>') +
@@ -363,9 +375,9 @@ function renderConflict(s) {
 
 async function resolveConflict() {
   const ok = window.confirm(
-    '让 AI 按 digitdoor-git-pull-rebase 技能解主树的 cherry-pick 冲突？\n\n' +
-    '只允许改冲突文件；解完自动 continue → 导表 → verify → push → 回写 TAPD。\n' +
-    '表格冲突不会走这条（必须人工合）。'
+    '重试让 AI 解主树的 cherry-pick 冲突？\n\n' +
+    '（正常点「合入」就会自动解，只有自动解失败时才需要点这里）\n' +
+    '只允许改冲突文件；解完自动 continue → 导表 → verify → push → 回写 TAPD。'
   )
   if (!ok) return
   say('正在起 agent 解冲突…', 'dim')
