@@ -144,7 +144,9 @@ function renderStations(s) {
         ? '首次导入约 4.5 分钟。超过 10 分钟还这样，点「检查端点」看看是不是没带控制开关'
         : running
           ? `<span class="t">${esc(station.card)}</span><br>跑完自动回到空闲`
-          : (station.behind ? `落后最新 ${esc(String(station.behind))} 个提交，开工前会自动更新` : '可以接活')
+          : (Number(station.pending) > 0
+            ? `有 ${esc(String(station.pending))} 个提交待合入主树`
+            : (station.behind ? `落后最新 ${esc(String(station.behind))} 个提交，开工前会自动更新` : '可以接活'))
     const actions = trouble
       ? (unityOff
         ? `<button class="primary" data-sunity="${esc(station.name)}">打开 Unity</button>` +
@@ -157,7 +159,10 @@ function renderStations(s) {
         ? `<button data-sprobe="${esc(station.name)}">检查端点</button>`
         : running
           ? `<button data-sstop="${esc(station.name)}">跑完这张就停</button>`
-          : `<button class="primary" data-srun="${esc(station.name)}">接一单</button><button data-sdel="${esc(station.name)}">删掉</button>`
+          : (Number(station.pending) > 0
+            ? `<button class="primary" data-smerge="${esc(station.name)}">合入 ${esc(String(station.pending))}</button>` +
+              `<button data-srun="${esc(station.name)}">接一单</button><button data-sdel="${esc(station.name)}">删掉</button>`
+            : `<button class="primary" data-srun="${esc(station.name)}">接一单</button><button data-sdel="${esc(station.name)}">删掉</button>`)
     return `<div class="card ${trouble ? 'bad' : running ? 'run' : ''}" title="${esc(station.path)}">` +
       `<div class="card-top"><span class="card-name">${esc(station.name)}</span>${badge}</div>` +
       `<div class="card-body">${body}</div>` +
@@ -194,6 +199,9 @@ function renderStations(s) {
   }
   for (const btn of box.querySelectorAll('button[data-sclean]')) {
     btn.onclick = () => { cleanStation(find(btn.getAttribute('data-sclean'))).catch(() => {}) }
+  }
+  for (const btn of box.querySelectorAll('button[data-smerge]')) {
+    btn.onclick = () => { mergeStation(find(btn.getAttribute('data-smerge'))).catch(() => {}) }
   }
   for (const btn of box.querySelectorAll('button[data-srun]')) {
     btn.onclick = () => { runStation(find(btn.getAttribute('data-srun'))).catch(() => {}) }
@@ -542,6 +550,26 @@ async function openUnity(station) {
   } else {
     say(`已启动 ${station.name} 的 Unity（pid ${res.data.pid}）· 首次约 4.5 分钟`, 'ok')
   }
+  await poll()
+}
+
+async function mergeStation(station) {
+  if (!station) return
+  const ok = window.confirm(
+    `把 ${station.name} 的 ${station.pending} 个提交合入主树？\n\n` +
+    '会跑：cherry-pick → 导表 → verify → push develop。\n' +
+    '冲突会停在那里等人处理（表格冲突要手合）。\n\n' +
+    '合入成功后会自动给对应卡片评论并改状态。'
+  )
+  if (!ok) return
+  const res = await apiJson('api/stations', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'merge', name: station.name, workdir: form().workdir }),
+  })
+  if (!res.ok) say(res.data?.error || `合入起不来（HTTP ${res.status}）`, 'bad')
+  else if (res.data?.pending === 0) say(res.data.note || '没有未合入提交', 'dim')
+  else say(`已开始合入 ${station.name}（几分钟，日志 ${res.data.job?.log || ''}）`, 'ok')
   await poll()
 }
 

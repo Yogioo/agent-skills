@@ -1,3 +1,5 @@
+import { createTapd } from './tapd.mjs'
+
 /**
  * 看板的控制面：按一下就跑、按一下停、定时查看 TAPD 并自动接单。
  *
@@ -715,6 +717,12 @@ export function createControl(opts) {
       const behind = upstream ? Number(gitOut(path, ['rev-list', '--count', `HEAD..@{u}`]) || '0') || 0 : 0
       const unity = exists && isRepo ? unityState(path) : 'off'
       const batch = active.find((item) => item.workdir === path) || null
+      // 这个工位有多少提交还没进主树（卡片据此给「合入」按钮）。
+      // 主树未知或就是本树时按 0。
+      const mainDir = String(config.workdir || '').trim()
+      const pending = isRepo && branch && mainDir && resolve(mainDir) !== resolve(path)
+        ? Number(gitOut(mainDir, ['rev-list', '--count', `HEAD..${branch}`]) || '0') || 0
+        : 0
       return {
         name: station.name,
         path,
@@ -726,6 +734,7 @@ export function createControl(opts) {
         behind,
         dirty,
         unity,
+        pending,
         idle: !batch,
         // 可用 = 目录在 + 是 git 仓库 + 工作区没改已跟踪文件 + Unity 在线（端点能用）
         usable: exists && isRepo && !dirty && unity === 'on',
@@ -1079,6 +1088,162 @@ function resolveBash() {
     return { ok: true, cleaned: count, left: left ? left.split('\n').filter(Boolean).length : 0 }
   }
 
+  /** 仓库级 tapd-loop.json（run.doneStatus 这类只对某个仓库生效的配置）。 */
+  function loopConfig(main) {
+    const common = gitOut(main, ['rev-parse', '--git-common-dir'])
+    if (!common) return {}
+    const file = join(isAbsolute(common) ? common : resolve(main, common), 'tapd-loop.json')
+    return readJson(file) || {}
+  }
+
+  /** 造一个 tapd-cli 客户端（任务配置沿用机器级 config.json）。 */
+  function tapdClient(main) {
+    const saved = readJson(join(home, 'config.json')) || {}
+    return createTapd({
+      cwd: main,
+      workspaceId: String(saved?.task?.workspaceId || ''),
+      assignee: String(saved?.task?.assignee || ''),
+      commentAuthor: String(saved?.task?.commentAuthor || ''),
+      labels: saved?.task?.labels || {},
+    })
+  }
+
+  /** 提交 sha → 卡片 id：从跑过的 run 记录里查（card_done 事件带 commit）。 */
+  function cardIdByCommit(sha) {
+    const needle = String(sha || '').trim().toLowerCase().slice(0, 10)
+    if (needle.length < 7) return ''
+    let runs = []
+    try {
+      runs = readdirSync(runsRoot).filter((name) => name.startsWith('run-')).sort().reverse().slice(0, 40)
+    } catch {
+      return ''
+    }
+    for (const run of runs) {
+      let cards = []
+      try {
+        cards = readdirSync(join(runsRoot, run))
+      } catch {
+        continue
+      }
+      for (const card of cards) {
+        const file = join(runsRoot, run, card, 'progress.jsonl')
+        if (!existsSync(file)) continue
+        let text = ''
+        try {
+          text = readFileSync(file, 'utf8')
+        } catch {
+          continue
+        }
+        if (!text.toLowerCase().includes(needle)) continue
+        const commits = [...text.matchAll(/"event":"card_done"[^\n]*?"commit":"([0-9a-f]+)"/g)].map((m) => m[1])
+        if (commits.some((commit) => commit.toLowerCase().startsWith(needle))) return card
+      }
+    }
+    return ''
+  }
+
+  /**
+   * 合入后回写 TAPD：每一条被 cherry-pick 进来的提交，带 `-x` 会写回原始 sha，
+   * 用它在 run 记录里找回卡片，评论 + （配了 run.doneStatus 时）改状态。
+   */
+  function writeBackMerged({ stationName, branch, main, before }) {
+    const after = gitOut(main, ['rev-parse', 'HEAD'])
+    if (!before || !after || before === after) {
+      return { ok: false, error: '主树 HEAD 没变，没有可回写的提交' }
+    }
+    const raw = gitOut(main, ['log', `--format=%H%x09%B%x00`, `${before}..${after}`])
+    const blocks = raw.split('\u0000').map((block) => block.trim()).filter(Boolean)
+    const cfg = loopConfig(main)
+    const doneStatus = String(cfg?.run?.doneStatus || cfg?.task?.doneStatus || '').trim()
+    const tapd = tapdClient(main)
+    const results = []
+
+    for (const block of blocks) {
+      const [sha, ...rest] = block.split('\t')
+      if (!sha) continue
+      const body = rest.join('\t')
+      const origin = (/cherry picked from commit ([0-9a-f]{7,40})/.exec(body) || [])[1] || sha
+      const cardId = cardIdByCommit(origin)
+      if (!cardId) {
+        results.push({ sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: false, reason: '找不到对应卡片' })
+        continue
+      }
+      const note = `[tapd-loop] 已合入主树：${branch} → ${String(cfg?.run?.targetBranch || 'develop')}，` +
+        `合并后提交 ${after.slice(0, 10)}（工位原始提交 ${origin.slice(0, 10)}）。` +
+        (doneStatus ? `\n\n状态流转：${doneStatus}` : '')
+      const one = { cardId, sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: true }
+      try {
+        tapd.addComment(cardId, note)
+      } catch (err) {
+        one.ok = false
+        one.commentError = err.message
+      }
+      if (doneStatus) {
+        try {
+          const moved = tapd.setStatus(cardId, doneStatus)
+          one.status = moved.label || doneStatus
+          one.statusSkipped = moved.skipped || ''
+        } catch (err) {
+          one.ok = false
+          one.statusError = err.message
+        }
+      } else {
+        one.statusSkipped = '没配 run.doneStatus'
+      }
+      results.push(one)
+    }
+
+    try {
+      const done = raw().jobs || []
+      writeJson(controlFile, {
+        ...raw(),
+        lastMerge: { station: stationName, branch, before, after, at: Date.now(), results },
+      })
+      void done
+    } catch {
+      // 记不上 lastMerge 不影响已经写进 TAPD 的东西
+    }
+    emit()
+    return { ok: results.every((item) => item.ok), results }
+  }
+
+  /**
+   * 合入工位：跑主树的 Tools/Worktree/collect.mjs（pick → 导表 → verify → push），
+   * 跑完回写 TAPD。跟其他长任务一样走 job，页面轮询看进度。
+   */
+  function mergeStation(input = {}) {
+    const config = read()
+    const name = String(input.name || '').trim()
+    const station = config.stations.find((item) => item.name === name)
+    if (!station) return { ok: false, error: `没有叫 ${name} 的工位` }
+    const main = String(input.workdir || config.workdir || '').trim()
+    if (!main) return { ok: false, error: '先选主树工作目录' }
+    const live = runningAll().find((item) => item.workdir === station.path)
+    if (live) return { ok: false, error: `${name} 上还有批次在跑，等它跑完再合入` }
+
+    const branch = gitOut(station.path, ['rev-parse', '--abbrev-ref', 'HEAD'])
+    if (!branch || branch === 'HEAD') return { ok: false, error: `${name} 读不到当前分支（detached？）` }
+    const pending = Number(gitOut(main, ['rev-list', '--count', `HEAD..${branch}`]) || '0') || 0
+    if (!pending) return { ok: true, pending: 0, note: `${branch} 上没有未合入提交` }
+    if (gitOut(main, ['status', '--porcelain', '--untracked-files=no'])) {
+      return { ok: false, error: '主树有未提交改动，collect 会被挡住：先处理干净' }
+    }
+
+    const script = join(main, 'Tools', 'Worktree', 'collect.mjs')
+    if (!existsSync(script)) return { ok: false, error: `主树没有合入脚本：${script}` }
+    const before = gitOut(main, ['rev-parse', 'HEAD'])
+
+    return spawnJob({
+      kind: 'merge',
+      name,
+      path: station.path,
+      workdir: main,
+      // collect 默认会 push；不给参数就是它自己的默认行为。
+      script: `exec '${shPath(process.execPath)}' '${shPath(script)}' '${branch}'`,
+      onDone: () => writeBackMerged({ stationName: name, branch, main, before }),
+    })
+  }
+
   /**
    * 真的去 ping 一次控制端点（/health）。卡片上的 on/booting 是看文件的猜测，这个是实况，
    * 用来区分「还在导入」和「开着但没带控制开关 / 已经卡死」。
@@ -1224,6 +1389,7 @@ function resolveBash() {
     removeStation,
     registerStation,
     forgetStation,
+    mergeStation,
     openUnity,
     probeUnity,
     cleanStation,

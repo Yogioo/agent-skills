@@ -435,6 +435,32 @@ export function createTapd(opts = {}) {
     addComment,
     updateComment,
 
+    /**
+     * 改需求状态（合入主树、推送之后调）。
+     * wanted 可以写 status key（developing）或中文名（待验收）——中文名先反查 key。
+     * 写完回读校验：TAPD 的状态流转可能被工作流规则拦住（必填字段/必填意见），静默失败很难查。
+     */
+    setStatus(id, wanted) {
+      const map = statusLabels()
+      const label = String(wanted || '').trim()
+      if (!label) return { ok: false, skipped: '没配状态' }
+      const key = map[label]
+        ? label
+        : Object.entries(map).find(([, text]) => String(text) === label)?.[0]
+      if (!key) {
+        const options = Object.entries(map).map(([k, v]) => `${k}(${v})`).join('、')
+        throw new Error(`认不出状态「${label}」：${options || 'TAPD 没返回可选状态'}`)
+      }
+      const current = String(getStory(id).status || '')
+      if (current === key) return { ok: true, status: key, label: map[key], unchanged: true }
+      call(['story', 'update', `workspaceid=${workspaceId}`, `id=${id}`, `status=${key}`], { lenient: true })
+      const back = String(getStory(id).status || '')
+      if (back !== key) {
+        throw new Error(`状态没改成 ${key}（现在是 ${back}）：TAPD 的状态流转可能要求必填字段或意见`)
+      }
+      return { ok: true, status: key, label: map[key], from: current }
+    },
+
     claim(id) {
       const story = getStory(id)
       const machine = machineOf(story.label)
