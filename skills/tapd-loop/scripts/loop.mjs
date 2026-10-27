@@ -159,6 +159,13 @@ async function main() {
     return
   }
 
+  // 无人值守标记：项目里的 hook / 工具看到它就别弹交互。弹出来没人点，git commit 或
+  // gen.bat 的 pause 会永久挂住，整批冻死在收尾阶段（实测 run-20261027091042）。
+  // 只补缺省值，不覆盖用户自己设的。子进程（git / verify / afterSync / pi）都继承。
+  for (const [key, value] of Object.entries({ TAPD_LOOP: '1', LUBAN_NO_PAUSE: '1', GIT_TERMINAL_PROMPT: '0' })) {
+    if (!process.env[key]) process.env[key] = value
+  }
+
   const git = createGit(workdir)
   if (!git.isRepo()) throw new Error(`不是 git 仓库: ${workdir}`)
   // --dry-run 只看配置，不写任何东西，脏工作区也让它跑；否则想看「生效的是哪份配置」反而看不到。
