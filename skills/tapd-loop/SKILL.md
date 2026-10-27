@@ -110,7 +110,9 @@ TAPD 上给需求标了前后置关系（「A 完成后 B 才能开始」）时�
 5. 起一次 `pi --print --mode json`，技能的**正文由 pi 读进系统提示**（`--append-system-prompt <SKILL.md>`），brief 只描述这张卡与边界，不再叫它去读技能
 6. 判定：进程正常结束 → 有 git 改动（或新 commit）→ `verify` 通过
 7. 通过则提交；**提交之后再同步一次并 `git push`**（`publish`，默认关闭），然后撤 `afk-claimed`、加 `afk-delivered`、评论总结与最终提交号
-8. 判定失败则 `git reset --hard <基线>` + `git clean -fd`，**撕 `afk-claimed` 和 `ready-for-agent`、加 `afk-failed`**，评论写清原因和「怎么重跑」
+8. 判定失败则**先把工作区原样存成 `tapd-loop-failed/<卡片id>` 分支**，再 `git reset --hard <基线>` + `git clean -fd`，**撕 `afk-claimed` 和 `ready-for-agent`、加 `afk-failed`**，评论写清原因、改动存在哪个分支、以及「怎么重跑」
+
+失败不等于白干：六个小时的活蒸发在 `reset --hard` 里比什么都贵。所以失败时先做一份存档提交（`--no-verify`，不走钩子），挂到 `tapd-loop-failed/<卡片id>`（同名已存在就 `-2`、`-3`…），再回滚到干净基线。工作区是干净的（不污染下一张卡），改动也还在：`git diff <基线>..tapd-loop-failed/<卡片id>`。`<runDir>/<卡片id>/diff.txt` 也留了一份。
 
 失败为什么连 `ready-for-agent` 一起摘（2026-10-27 定的）：失败通常是拆卡、改配置、看环境这类要人先过一手的事；留着 ready 只会让下一批把同一张卡再踩一遍，还多花钱多占工位。摘掉之后想重跑：
 
@@ -123,7 +125,9 @@ node <技能根>/scripts/loop.mjs --workdir <仓库> --retry <需求id> --dry-ru
 
 内循环的启动参数（实测过，别改回去）：技能正文靠 `--append-system-prompt <SKILL.md 路径>` 注入，pi 给路径时读的是文件内容。只给 `--skill` 不够：它**只**在系统提示里登记 name/description/path，不注入正文，而 yogioo-mode 的 frontmatter 还带 `disable-model-invocation: true`，连自动选择都关掉了。只给 `--skill` 时系统提示里搜不到 `Non-negotiables`；加上 `--append-system-prompt` 后正文进了 system message，整轮 **零工具调用**。brief 里因此不需要（也不应该）再写「先 read SKILL.md」。
 
-状态检查通过之后、**取基线之前**还有一段前置（`preflight`）：`sync`（`git pull --rebase`）→ `afterSync`。顺序不能换：rebase 会改写历史，基线若取在它前面，失败回滚 `reset --hard <基线>` 会把刚拉到的上游 commit 一起抹掉。
+状态检查通过之后、**取基线之前**还有一段前置（`preflight`）：`salvage`（清掉上一批留下的脏工作区）→ `sync`（`git pull --rebase`）→ `afterSync`。顺序不能换：rebase 会改写历史，基线若取在它前面，失败回滚 `reset --hard <基线>` 会把刚拉到的上游 commit 一起抹掉；而脏工作区会让 rebase 直接被 git 拒掉。
+
+`salvage` 是干什么的：被 `taskkill /F`、断电、关终端杀掉的那一批不会走失败收尾，工作区里就留着半截改动。那些东西既挡 rebase（于是整张卡干在陈旧基线上），又会被本卡的 `git add -A` 一起提交——`1005133` 那种「被杀的 run」就是这么污染下一张卡的。所以开工前先把它存成 `tapd-loop-orphan/<卡片id>` 分支（`<runDir>/<卡片id>/orphan.patch` 也落一份）再清干净；存不进去就整批停（`blocked`），宁可不跑也不让别人的 diff 混进来。不想要这个行为：`run.salvageDirty: false`。
 
 前置失败分两种，区别是「这张卡的问题」还是「环境的问题」：
 
@@ -199,6 +203,8 @@ node <技能根>/scripts/start-board.mjs --port 7400 --host 192.168.1.5
 - **验证并推送**（主树卡片上的按钮 / 自动推送）= `collect.mjs --resume`：提交已经在主树本地了、只是没推（典型：合入时 verify 挂了）才用它，它跳过 pick。
 
 自动合入的门槛都是硬性的：主树干净 + 没冲突 + Unity 在线 + 没有主树任务在跑，一次只合一个工位（verify 只有一块 Unity，两棵树同时 pick 会互相踩）。冲突时 `--resolve` 保留现场并自动起 agent 解；**xlsx 表格冲突直接拒**（自动合会丢行），退避拉满 30 分钟等人来。
+
+**collect 的退出码就是 job 的状态**：`0` 完成、`1` 真失败（代码/推送被拒）、`2` 冲突已保留现场（触发自动解冲突）、`3` 环境未就绪（这棵树的 Unity 端点不在线）。`3` 在页面上是 `⏸ 等环境/等人`，不是红——它不是代码问题，拿它去查代码只会白花时间。collect 自己在 pick/导表之前先探一次端点（缺 endpoint.json / pid 已死 / 端口连不上都算），不在线就不开工，不再「pick 完了才在 verify 那步炸」。
 
 「指定工单」是给「别人在聊天里丢一条链接过来」用的：把 `https://www.tapd.cn/tapd_fe/<项目>/story/detail/<id>`、`.../prong/stories/view/<id>` 或者 19 位 id 直接贴进去。
 

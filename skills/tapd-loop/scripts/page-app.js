@@ -49,6 +49,7 @@ const STATUS = {
   running: ['▶', '运行中', 'state-run'],
   done: ['●', '完成', 'ok'],
   failed: ['✕', '失败', 'bad'],
+  pending: ['⏸', '等环境/等人', 'warn'],
   interrupted: ['⊘', '已中断', 'warn'],
   preview: ['◐', '预览', 'warn'],
   blocked: ['⊘', '状态挡住', 'dim'],

@@ -1093,7 +1093,9 @@ export function createControl(opts) {
           // 诊断写不进去就算了
         }
       }
-      settle(code === 0 ? 'done' : 'failed', code ?? -1)
+      // 退出码 3 = 环境未就绪（典型：这棵树的 Unity 端点不在线）。这不是代码问题，
+      // 记成 pending 而不是 failed：页面上应该写「等环境」，而不是一片红让人去查代码。
+      settle(code === 0 ? 'done' : code === 3 ? 'pending' : 'failed', code ?? -1)
     })
     child.unref()
     emit()
@@ -1679,7 +1681,10 @@ function resolveBash() {
           } else {
             memory.autoPush.fails = (memory.autoPush.fails || 0) + 1
             // 有那句人话就用它（验证门红了 / 端点连不上 / 推送被拒…），退避提示才有信息量。
-            memory.autoPush.lastResult = summary ? `失败：${clip(summary, 120)}` : `失败（exit ${code}）`
+            // pending 是「环境没就绪」，别写成失败让人误以为代码坏了。
+            memory.autoPush.lastResult = status === 'pending'
+              ? `等环境就绪：${summary ? clip(summary, 110) : 'Unity 端点不在线'}`
+              : summary ? `失败：${clip(summary, 120)}` : `失败（exit ${code}）`
             const waitMin = Math.min(30, 2 ** Math.max(0, memory.autoPush.fails - 1))
             memory.autoPush.nextAt = Date.now() + waitMin * 60_000
           }
@@ -1926,6 +1931,7 @@ function resolveBash() {
           if (status === 'done') autoMergeRecord(name, { ok: true, merged: (back?.results || []).length })
           // 冲突不算「这个工位不行」：现场已经交给解冲突的 agent，只等 2 分钟别抢在它前面。
           else if (code === 2) autoMergeRecord(name, { soft: true, error: '冲突，交给解冲突 agent' })
+          else if (code === 3) autoMergeRecord(name, { soft: true, error: summary || '环境未就绪（Unity 端点不在线）' })
           else autoMergeRecord(name, { code, error: summary })
         }
         return back

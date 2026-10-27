@@ -502,21 +502,39 @@ function finishFailed(card, reason, dir, startedAt, ctx) {
   // 所以存到一个带名字的分支，当前分支退回这个提交的父节点。
   const kept = ctx.keepCommit || ''
   const savedRef = kept ? ctx.git.keepAside(`tapd-loop-unpushed/${card.id}`, kept) : ''
+  // 没提交就失败的（超时 / verify 红 / pi 自己退出）以前直接 reset --hard，几个小时的活当场蒸发。
+  // 现在先原样存成 tapd-loop-failed/<卡号> 分支，再回滚：工作区还是干净的（不污染下一张卡），
+  // 活也还在（看改动：git diff <基线>..<分支>）。
+  const snapshot = !kept && !ctx.args.noWrite
+    ? ctx.git.keepDirtyAs(
+      `tapd-loop-failed/${card.id}`,
+      `chore:${card.id.slice(-7)} tapd-loop 失败现场（未完成，勿合入）`,
+    )
+    : null
   if (savedRef) {
     try { writeFileSync(join(dir, 'diff.txt'), ctx.git.diff(kept), 'utf8') } catch {}
     ctx.git.resetHard(ctx.git.parentOf(kept) || ctx.baseline)
   } else {
-    try { writeFileSync(join(dir, 'diff.txt'), ctx.git.diff(), 'utf8') } catch {}
+    try { writeFileSync(join(dir, 'diff.txt'), snapshot ? ctx.git.diff(snapshot.sha) : ctx.git.diff(), 'utf8') } catch {}
     ctx.git.rollback(ctx.baseline)
   }
-  ctx.log?.('card_failed', { id: card.id, reason, kept: kept.slice(0, 10), savedRef })
+  ctx.log?.('card_failed', {
+    id: card.id,
+    reason,
+    kept: kept.slice(0, 10),
+    savedRef,
+    salvagedRef: snapshot?.ref || '',
+    salvagedSha: snapshot?.sha?.slice(0, 10) || '',
+  })
   try {
     if (!ctx.args.noWrite) {
       const lines = [
         `[tapd-loop] 失败：${reason}`,
         savedRef
           ? `改动已提交但没能推送，存在本地分支 \`${savedRef}\`（${kept.slice(0, 10)}），当前分支已退回。解决后合入再推，然后把标签换回来。`
-          : `基线已回滚到 ${ctx.baseline.slice(0, 10)}。`,
+          : snapshot
+            ? `改动没丢：已原样存到本地分支 \`${snapshot.ref}\`（${snapshot.sha.slice(0, 10)}），工作区已回滚到 ${ctx.baseline.slice(0, 10)}。看改动：\`git diff ${ctx.baseline.slice(0, 10)}..${snapshot.ref}\`。`
+            : `基线已回滚到 ${ctx.baseline.slice(0, 10)}。`,
         // 失败时连 ready 一起摘了（tapd.fail）：同一张卡不要被下一批自动拉起来踩同一个坑。
         // 所以这条评论必须告诉人怎么把它放回队列。
         `已摘掉 \`${ctx.tapd.labels.readyLabel}\`，这张卡不会再被自动拉起。要重跑：\`loop.mjs --workdir <仓库> --retry ${card.id}\`（把 ready 加回来），或者在 TAPD 上手工恢复 ready-for-agent。`,
@@ -526,7 +544,11 @@ function finishFailed(card, reason, dir, startedAt, ctx) {
   } catch (err) {
     reason += `（回写 TAPD 也失败: ${err.message}）`
   }
-  return row(card, 'failed', savedRef ? `${reason}（改动在 ${savedRef}）` : reason, dir, startedAt)
+  return row(card, 'failed', savedRef
+    ? `${reason}（改动在 ${savedRef}）`
+    : snapshot
+      ? `${reason}（改动在 ${snapshot.ref}）`
+      : reason, dir, startedAt)
 }
 
 function runVerify(command, workdir, dir) {
@@ -659,6 +681,27 @@ export function createGit(cwd) {
     dirtyPaths: () => run(['status', '--porcelain']).split('\n').map((line) => line.trim()).filter(Boolean),
     changedSince: (rev) => Boolean(run(['status', '--porcelain'])) || run(['rev-parse', 'HEAD']) !== rev,
     commitAll: (message) => { run(['add', '-A']); run(['commit', '-m', message]); return run(['rev-parse', 'HEAD']) },
+    /**
+     * 把工作区原样存成一个提交、挂到具名分支上，再把 HEAD 还给存之前的提交。
+     * 失败时用它，别让十几分钟的活被一句 reset --hard 抹掉。
+     * 用 --no-verify 提交：这只是一份存档，不该再跑一遍 pre-commit（Luban 检查、表格检查）。
+     * 返回 { ref, sha, base }，base 是存之前的 HEAD（调用方要 reset 就 reset 到它）。
+     */
+    keepDirtyAs: (name, message) => {
+      if (!run(['status', '--porcelain']).trim()) return null
+      const base = run(['rev-parse', 'HEAD'])
+      if (!tryRun(['add', '-A']).ok) return null
+      if (!tryRun(['commit', '-m', message, '--no-verify']).ok) return null
+      const sha = run(['rev-parse', 'HEAD'])
+      if (sha === base) return null
+      let ref = name
+      for (let i = 2; i < 100; i += 1) {
+        if (!tryRun(['rev-parse', '--verify', '--quiet', `refs/heads/${ref}`]).ok) break
+        ref = `${name}-${i}`
+      }
+      if (!tryRun(['branch', '-f', ref, sha]).ok) return null
+      return { ref, sha, base }
+    },
     rollback: (rev) => { run(['reset', '--hard', rev]); run(['clean', '-fd']) },
     sequence,
     conflicts,
@@ -763,7 +806,43 @@ export function createGit(cwd) {
  * post-checkout（DigitDoor 的 Luban 导表守卫就挂在那两个钩子上），本循环每张卡开工前
  * 跑一次是唯一能兜住这些口子的位置。护栏脚本自己应该在「不用导表」时秒退。
  */
+/**
+ * 上一批被杀（taskkill / 断电 / 关终端）不会走 finishFailed，工作区里就留着半截改动。
+ * 那些东西既挡 rebase（sync 只能跳过，整张卡干在陈旧基线上），又会被本卡的 `git add -A`
+ * 一起提交，最后混进一张不相干的卡。所以开工前先把它存成 tapd-loop-orphan/<卡号> 分支再清干净。
+ * 存不进去就整批停：宁可不跑，也不让本卡的 diff 掺别人的东西。
+ */
+function salvageOrphan(card, { git, cfg, dir, log }) {
+  if (cfg.run.salvageDirty === false) return { ok: true, skipped: 'salvageDirty=false' }
+  const dirty = git.dirtyPaths()
+  if (!dirty.length) return { ok: true }
+  log('card_phase', { id: card.id, phase: 'salvage' })
+  const snapshot = git.keepDirtyAs(
+    `tapd-loop-orphan/${card.id}`,
+    `chore:${card.id.slice(-7)} tapd-loop 存档：开工前工作区里的残留改动`,
+  )
+  if (!snapshot) {
+    log('card_orphan_unsaved', { id: card.id, paths: dirty.slice(0, 10) })
+    return {
+      ok: false,
+      reason: `工作区有 ${dirty.length} 处未提交改动（上一批可能被杀过），又存不进存档分支：${dirty.slice(0, 3).join(' / ')}。先手工提交或丢弃再跑`,
+    }
+  }
+  try { writeFileSync(join(dir, 'orphan.patch'), git.diff(snapshot.sha), 'utf8') } catch {}
+  git.rollback(snapshot.base)
+  log('card_orphan_saved', {
+    id: card.id,
+    ref: snapshot.ref,
+    sha: snapshot.sha.slice(0, 10),
+    paths: dirty.slice(0, 10),
+  })
+  return { ok: true, ref: snapshot.ref }
+}
+
 export function preflight(card, { git, cfg, workdir, dir, log }) {
+  // 先清场，再谈同步：脏工作区会让 `pull --rebase` 直接被 git 拒掉。
+  const orphan = salvageOrphan(card, { git, cfg, dir, log })
+  if (!orphan.ok) return { ok: false, fatal: true, reason: orphan.reason }
   const syncCfg = cfg.run.sync || {}
   if (syncCfg.enabled) {
     log('card_phase', { id: card.id, phase: 'sync' })
