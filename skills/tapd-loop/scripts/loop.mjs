@@ -458,12 +458,19 @@ async function runCard(card, ctx) {
     }
 
     const sha = git.head()
+    // 没推上去（工位流程：push 关着，主树 collect 时 cherry-pick 会换一个新 sha）就不要报这个 hash：
+    // 它只活在本仓库对象库里，验收的人拿着它去远端/代码平台查不到任何东西。等主树合入后，
+    // collect 会补一条带真实提交号的评论。report.md 与 card_done 事件里照旧记着，本地排查和
+    // collect 回找卡片都靠它。确实想看到本地 sha 的仓库：run.writeBack.showLocalCommit = true。
+    const commitLine = published.pushed
+      ? `提交：${sha.slice(0, 10)}（已推送 ${published.remote}/${published.branch}）`
+      : cfg.run.writeBack?.showLocalCommit
+        ? `提交：${sha.slice(0, 10)}（本地未推远端：${published.reason}）`
+        : '提交：本地已提交、未推远端；合入主树并推送后会在这张卡上补发最终提交号。'
     const note = [
       '[tapd-loop] 开发完成，请验收。',
       clip(settled.lastText, 2000),
-      published.pushed
-        ? `提交：${sha.slice(0, 10)}（已推送 ${published.remote}/${published.branch}）`
-        : `提交：${sha.slice(0, 10)}（未推送，留在本地：${published.reason}）`,
+      commitLine,
       ctx.boardUrl ? `证据（看板）：${cardLink(ctx.boardUrl, runDir, card.id)}` : '',
     ].filter(Boolean).join('\n\n')
     let writeBack = ''
