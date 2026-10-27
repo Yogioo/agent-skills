@@ -235,6 +235,26 @@ async function main() {
   process.once('SIGINT', () => onInterrupt('SIGINT'))
   process.once('SIGTERM', () => onInterrupt('SIGTERM'))
   if (process.platform === 'win32') process.once('SIGBREAK', () => onInterrupt('SIGBREAK'))
+
+  // 未捕获异常/未处理的 Promise 拒绝：以前是「静默死掉」——progress 里没有 loop_end，
+  // 卡片停在 afk-claimed，工位留着半截暂存（run-20261026103420 就是这样）。
+  // 现在至少把现场写清楚再退出，看板就不会只剩一句「进程已中断」。
+  let crashed = false
+  const onCrash = (kind, err) => {
+    if (crashed) return
+    crashed = true
+    clearInterval(beat)
+    const text = String((err && (err.stack || err.message)) || err || '').split('\n').slice(0, 8).join('\n')
+    try {
+      log('card_crashed', { id: currentCardId, kind, detail: text.split('\n')[0] })
+      log('loop_end', { reason: 'crash', kind, detail: text })
+    } catch {
+      // 连日志都写不进去就只能靠退出码
+    }
+    process.exit(1)
+  }
+  process.once('uncaughtException', (err) => onCrash('uncaughtException', err))
+  process.once('unhandledRejection', (err) => onCrash('unhandledRejection', err))
   while (true) {
     if (existsSync(stopFile)) break
     if (taskCount >= cfg.run.maxTasks) break
@@ -257,7 +277,17 @@ async function main() {
       continue
     }
 
-    const outcome = await runCard(card, { tapd, git, cfg, runDir, workdir, args, log, boardUrl })
+    // runCard 内部的「卡失败」自己会写 card_failed 并回滚；能抛到这里的，是它自己炸了
+    // （git/TAPD/IO，典型是收尾阶段 commit 失败）。这时也不能让整批静默死：
+    // 记一条 failed，让后面的 loop_end / report 照常写出来。
+    let outcome
+    try {
+      outcome = await runCard(card, { tapd, git, cfg, runDir, workdir, args, log, boardUrl })
+    } catch (err) {
+      const note = `收尾阶段异常（未回滚，工作区可能留着半截改动）：${String((err && err.message) || err).split('\n')[0]}`
+      log('card_crashed', { id: card.id, reason: note })
+      outcome = row(card, 'failed', note, join(runDir, card.id), new Date())
+    }
     currentCardId = ''
     currentCardTitle = ''
     ledger.push(outcome)
