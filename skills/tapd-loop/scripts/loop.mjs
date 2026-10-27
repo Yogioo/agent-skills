@@ -159,6 +159,15 @@ async function main() {
     return
   }
 
+  if (args.retry) {
+    // 失败收尾会把 ready-for-agent 一起摘掉（见 tapd.fail），否则同一张失败的卡会被下一批
+    // 自动拉起来踩同一个坑。这条命令把它放回队列：撤 afk-failed / afk-claimed，加 ready。
+    // 只碰标签，不动状态和处理人；不跑内循环，也不理工作区干不干净。
+    const result = tapd.retry(String(args.retry), { dryRun: Boolean(args.dryRun), force: Boolean(args.force) })
+    console.log(JSON.stringify(result, null, 2))
+    return
+  }
+
   // 无人值守标记：项目里的 hook / 工具看到它就别弹交互。弹出来没人点，git commit 或
   // gen.bat 的 pause 会永久挂住，整批冻死在收尾阶段（实测 run-20261027091042）。
   // 只补缺省值，不覆盖用户自己设的。子进程（git / verify / afterSync / pi）都继承。
@@ -508,6 +517,9 @@ function finishFailed(card, reason, dir, startedAt, ctx) {
         savedRef
           ? `改动已提交但没能推送，存在本地分支 \`${savedRef}\`（${kept.slice(0, 10)}），当前分支已退回。解决后合入再推，然后把标签换回来。`
           : `基线已回滚到 ${ctx.baseline.slice(0, 10)}。`,
+        // 失败时连 ready 一起摘了（tapd.fail）：同一张卡不要被下一批自动拉起来踩同一个坑。
+        // 所以这条评论必须告诉人怎么把它放回队列。
+        `已摘掉 \`${ctx.tapd.labels.readyLabel}\`，这张卡不会再被自动拉起。要重跑：\`loop.mjs --workdir <仓库> --retry ${card.id}\`（把 ready 加回来），或者在 TAPD 上手工恢复 ready-for-agent。`,
       ]
       ctx.tapd.fail(card.id, lines.join('\n\n'))
     }
@@ -949,7 +961,7 @@ function loadConfig(workdir, args = {}) {
   if (args.commentAuthor) merged.task.commentAuthor = args.commentAuthor
   if (args.statuses) merged.task.statuses = String(args.statuses).split(',').map((s) => s.trim()).filter(Boolean)
   merged.run.allowDirty = Boolean(args.allowDirty)
-  if (!merged.task.assignee && !args.fetch && !args.show) throw new Error('缺少 task.assignee（TAPD 处理人）')
+  if (!merged.task.assignee && !args.fetch && !args.show && !args.retry) throw new Error('缺少 task.assignee（TAPD 处理人）')
   return merged
 }
 

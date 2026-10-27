@@ -25,9 +25,10 @@ node <技能根>/scripts/loop.mjs --workdir <仓库> --assignee <处理人> --ma
 node <技能根>/scripts/loop.mjs --workdir <仓库> --watch --max-tasks 10
 node <技能根>/scripts/loop.mjs --workdir <仓库> --fetch <需求id>
 node <技能根>/scripts/loop.mjs --workdir <仓库> --show <需求id>
+node <技能根>/scripts/loop.mjs --workdir <仓库> --retry <需求id> [--dry-run] [--force]
 ```
 
-`--list` 只看队列，`--show` 只读地问一句「这张卡现在什么状态、能不能接」，`--fetch` 只抓一张卡的标题、详情、评论和图片到本地，都不跑内循环。真跑前先用 `--max-tasks 1` 跑一张，读 report 与 `events.jsonl`。
+`--list` 只看队列，`--show` 只读地问一句「这张卡现在什么状态、能不能接」，`--fetch` 只抓一张卡的标题、详情、评论和图片到本地，`--retry` 只改标签（撕 `afk-claimed` / `afk-delivered` / `afk-failed`、加回 `ready-for-agent`，把卡放回队列，见「一张卡的一生」第 8 步），都不跑内循环。真跑前先用 `--max-tasks 1` 跑一张，读 report 与 `events.jsonl`。
 
 常用参数：`--card <id>`、`--max-tasks`、`--watch`、`--verify <命令>`、`--model`、`--thinking`、`--comment-author`、`--allow-dirty`。
 
@@ -109,7 +110,16 @@ TAPD 上给需求标了前后置关系（「A 完成后 B 才能开始」）时�
 5. 起一次 `pi --print --mode json`，技能的**正文由 pi 读进系统提示**（`--append-system-prompt <SKILL.md>`），brief 只描述这张卡与边界，不再叫它去读技能
 6. 判定：进程正常结束 → 有 git 改动（或新 commit）→ `verify` 通过
 7. 通过则提交；**提交之后再同步一次并 `git push`**（`publish`，默认关闭），然后撤 `afk-claimed`、加 `afk-delivered`、评论总结与最终提交号
-8. 判定失败则 `git reset --hard <基线>` + `git clean -fd`，加 `afk-failed` 并评论原因
+8. 判定失败则 `git reset --hard <基线>` + `git clean -fd`，**撕 `afk-claimed` 和 `ready-for-agent`、加 `afk-failed`**，评论写清原因和「怎么重跑」
+
+失败为什么连 `ready-for-agent` 一起摘（2026-10-27 定的）：失败通常是拆卡、改配置、看环境这类要人先过一手的事；留着 ready 只会让下一批把同一张卡再踩一遍，还多花钱多占工位。摘掉之后想重跑：
+
+```powershell
+node <技能根>/scripts/loop.mjs --workdir <仓库> --retry <需求id>            # 撕 afk-claimed/afk-delivered/afk-failed，加回 ready-for-agent
+node <技能根>/scripts/loop.mjs --workdir <仓库> --retry <需求id> --dry-run  # 只看会变成什么标签
+```
+
+`--retry` 只碰标签，不动状态、不动处理人；卡上还带 `afk-claimed` 时默认拒（可能别的批次正跑着），确认没在跑才加 `--force`。
 
 内循环的启动参数（实测过，别改回去）：技能正文靠 `--append-system-prompt <SKILL.md 路径>` 注入，pi 给路径时读的是文件内容。只给 `--skill` 不够：它**只**在系统提示里登记 name/description/path，不注入正文，而 yogioo-mode 的 frontmatter 还带 `disable-model-invocation: true`，连自动选择都关掉了。只给 `--skill` 时系统提示里搜不到 `Non-negotiables`；加上 `--append-system-prompt` 后正文进了 system message，整轮 **零工具调用**。brief 里因此不需要（也不应该）再写「先 read SKILL.md」。
 
@@ -132,8 +142,8 @@ TAPD 上给需求标了前后置关系（「A 完成后 B 才能开始」）时�
 
 失败时的分界线是**提交有没有发生**：
 
-- 提交之前（超时 / 没 settled / 无改动 / verify 红）→ 回滚到基线，工作区的活丢掉，加 `afk-failed`。
-- 提交之后（推送前同步冲突 / 远端拒绝 / 分支保护）→ **不丢活，也不留在当前分支上**。当前分支退回提交的父节点（等于这张卡没发生过），提交挪到 `tapd-loop-unpushed/<卡片id>`，加 `afk-failed`，评论里写出分支名和 sha。
+- 提交之前（超时 / 没 settled / 无改动 / verify 红）→ 回滚到基线，工作区的活丢掉，**标签换成 `afk-failed` 并摘掉 `ready-for-agent`**（重跑用 `--retry`）。
+- 提交之后（推送前同步冲突 / 远端拒绝 / 分支保护）→ **不丢活，也不留在当前分支上**。当前分支退回提交的父节点（等于这张卡没发生过），提交挪到 `tapd-loop-unpushed/<卡片id>`，同样换成 `afk-failed` + 摘 ready，评论里写出分支名和 sha。
 
 为什么不留当前分支：下一张卡的 `publish` 会把它一起推上去，而 TAPD 上写的是「未推送」。一条已经失效的记录不如没有。
 
@@ -270,7 +280,7 @@ report 里出现「回写异常」时，用 `TAPD_LOOP_DEBUG=1` 重跑一次，s
 
 ## 边界
 
-- 只写机器标签，不改 TAPD 状态和处理人。验收流转由人做。
+- 只写机器标签（`afk-*` 和失败时的 `ready-for-agent`），不改 TAPD 状态和处理人。验收流转由人做。
 - `push` 打开后它会往共享分支推东西。先确认 `verify` 真的能拦住坏改动，再开。
 - 状态不是「开发中 / 实现中」就不接单，标签挂着也不接。`--list` 的 `rejected` 会列出被状态挡住的卡与原因。
 - 前置依赖没完成的卡同样不接，`rejected` 的 `reason` 会写清是哪张前置在挡。认领时（`claim`）会再验一次，防止列表之后依赖关系变了。

@@ -498,9 +498,50 @@ export function createTapd(opts = {}) {
     },
 
     fail(id, note) {
-      removeLabels(id, [labels.claimedLabel])
+      // 失败就把 ready 一起摘了：卡留着 ready-for-agent 只会让下一次 --list 又把同一个坑踩一遍，
+      // 而失败通常要人先看一眼（拆卡、改配置、看环境）。想重跑用 --retry <id>，或手工把 ready 加回来。
+      removeLabels(id, [labels.claimedLabel, labels.readyLabel])
       writeLabels(id, [labels.failedLabel])
       addComment(id, note)
+    },
+
+    /**
+     * 把一张卡放回队列：撕所有机器标签（afk-claimed / afk-delivered / afk-failed）再加回 ready-for-agent。
+     * 不动状态、不动处理人——验收流转仍然是人的事。
+     * 还带 afk-claimed 的卡默认不动：那可能是别的批次正在跑，得显式 force；
+     * 带 afk-delivered 的卡（已经交付过、想再跑一轮）可以撕，但想清楚上下文会重新开始。
+     */
+    retry(id, { dryRun = false, force = false } = {}) {
+      const story = getStory(id)
+      const before = splitLabels(story.label)
+      const name = String(story.name || '')
+      if (before.includes(labels.claimedLabel) && !force) {
+        return {
+          ok: false,
+          id,
+          name,
+          labels: before,
+          reason: `还带 ${labels.claimedLabel}（可能正在别的批次里跑）。确认没在跑再加 --force`,
+        }
+      }
+      const next = [...new Set([
+        ...before.filter((label) => ![labels.failedLabel, labels.claimedLabel, labels.deliveredLabel].includes(label)),
+        labels.readyLabel,
+      ])]
+      const unchanged = next.length === before.length && next.every((label) => before.includes(label))
+      if (dryRun || unchanged) return { ok: true, id, name, before, after: next, dryRun, unchanged }
+      call([
+        'story', 'update',
+        `workspaceid=${workspaceId}`,
+        `id=${id}`,
+        `label=${next.join(LABEL_SEP)}`,
+      ])
+      const after = splitLabels(getStory(id).label)
+      const missing = next.filter((label) => !after.includes(label))
+      if (missing.length) {
+        throw new Error(`标签回读不一致 ${id}: 期望 ${next.join(LABEL_SEP)}，实际 ${after.join(LABEL_SEP)}`)
+      }
+      return { ok: true, id, name, before, after }
     },
   }
 }
