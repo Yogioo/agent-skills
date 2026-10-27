@@ -40,6 +40,10 @@ function form() {
       enabled: Boolean(el('cAutoPush')?.checked),
       pollSec: Number(el('cAutoPushSec')?.value || 120),
     },
+    autoMerge: {
+      enabled: Boolean(el('cAutoMerge')?.checked),
+      pollSec: Number(el('cAutoMergeSec')?.value || 120),
+    },
   }
 }
 
@@ -66,6 +70,17 @@ function fill(s) {
       known.map((dir) => `<option value="${esc(dir)}">${esc(dir)}</option>`).join('')
     select.value = known.includes(config.workdir) ? config.workdir : ''
   }
+  // 三个开关各自一段：开着蓝底 + 左侧亮条，关着整块压暗。
+  // 用状态类而不是 CSS `:has()`（老一点的 Chromium 不一定支持）。
+  // 必须放在 editing() 那个早退之前：勾选框自己就是焦点元素，点一下就会让 editing() 为真。
+  for (const [id, on] of [
+    ['cWatch', config.watch?.enabled],
+    ['cAutoPush', config.autoPush?.enabled],
+    ['cAutoMerge', config.autoMerge?.enabled],
+  ]) {
+    const seg = el(id)?.closest?.('.seg')
+    if (seg) seg.classList.toggle('on', Boolean(on))
+  }
   if (editing()) return
   if (el('cWorkdirText')) el('cWorkdirText').value = config.workdir || ''
   if (el('cAssignee')) {
@@ -85,6 +100,18 @@ function fill(s) {
     el('cAutoPushHint').textContent = !auto.enabled ? ''
       : auto.fails > 0 ? `连续失败 ${auto.fails} 次${auto.nextAt > Date.now() ? `，${Math.ceil((auto.nextAt - Date.now()) / 60000)} 分钟后重试` : ''}`
         : auto.lastResult ? `上次：${auto.lastResult}` : '等着主树攒出没推的提交'
+  }
+  if (el('cAutoMerge')) el('cAutoMerge').checked = Boolean(config.autoMerge?.enabled)
+  if (el('cAutoMergeSec')) el('cAutoMergeSec').value = String(config.autoMerge?.pollSec ?? 120)
+  if (el('cAutoMergeHint')) {
+    const auto = s.autoMerge || {}
+    const now = Date.now()
+    // 退避是按工位记的：只把「还没到时间」的那几棵报出来，人能看出是卡在哪一棵上。
+    const cooling = (auto.stations || []).filter((one) => Number(one.nextAt) > now)
+    el('cAutoMergeHint').textContent = !auto.enabled ? ''
+      : cooling.length
+        ? cooling.map((one) => `${one.name}：${Math.ceil((Number(one.nextAt) - now) / 60000)} 分钟后再试`).join(' · ')
+        : auto.lastResult ? `上次：${auto.lastResult}` : '等着工位攒出待合入的提交'
   }
 }
 
@@ -145,6 +172,27 @@ function renderRunning(s) {
  * 分支名 / 上游 / 绝对路径这些不进卡片正文（放 title），出错时给的是「怎么办」而不是「发生了什么」。
  */
 /**
+ * 一条 job 是不是「在主树上干活」。
+ * 合入（merge / merge-resume）和解冲突（resolve）也占主树（develop + 那块 Unity），
+ * 所以判主树忙、判上次失败都不能只认 `main-*`。
+ */
+function isMainWork(job) {
+  const kind = String(job?.kind || '')
+  return kind.startsWith('main-') || kind === 'merge' || kind === 'merge-resume' || kind === 'resolve'
+}
+
+/** 失败行的人话标题：`合入 b · 自动` / `验证并推送` / `解冲突`。 */
+function failTitle(job) {
+  const kind = String(job?.kind || '')
+  const name = String(job?.name || '')
+  if (kind === 'merge' || kind === 'merge-resume') return `合入 ${name}`.trim()
+  if (kind === 'main-push') return '验证并推送'
+  if (kind === 'main-verify') return '只验证'
+  if (kind === 'resolve') return '解冲突'
+  return '主树任务'
+}
+
+/**
  * 主树卡片。以前看板上只有工位卡片，主树的事（合进去了没推、Unity 没开所以 verify 卡在
  * 验证门、卡在 cherry-pick 冲突）只能翻日志才发现。跟工位卡片同一套皮肤和语义：
  * 蓝 = 在忙、红 = 需要处理（包括「有提交没推」）、灰 = 干净。
@@ -158,9 +206,16 @@ function renderMain(s) {
     return
   }
   const jobs = (Array.isArray(s.jobs) ? s.jobs : [])
-    .filter((item) => String(item.kind || '').startsWith('main-'))
+    .filter((item) => isMainWork(item))
   const job = jobs.find((item) => item.status === 'running' || item.status === 'unknown')
   const busy = Boolean(job)
+  // 主树上最后一次跑完的长任务：它要是红的，卡片得把「怎么红的」说出来，
+  // 而不是让你去 200 行日志里找。后面成功的会把它顶掉，所以不会永远挂着一条旧的。
+  const lastFailed = !busy && jobs.filter((item) => item.status === 'failed')
+    .sort((a, b) => Number(b.endedAt || 0) - Number(a.endedAt || 0))[0]
+  const lastOk = jobs.filter((item) => item.status === 'done')
+    .sort((a, b) => Number(b.endedAt || 0) - Number(a.endedAt || 0))[0]
+  const showFail = lastFailed && Number(lastFailed.endedAt || 0) > Number(lastOk?.endedAt || 0) ? lastFailed : null
   const trouble = !main.exists ? '目录不见了'
     : !main.isRepo ? '不是 git 仓库'
       : main.conflict ? 'cherry-pick 冲突中'
@@ -175,33 +230,54 @@ function renderMain(s) {
         : behind > 0 ? `<span class="badge run">落后 ${esc(String(behind))}</span>`
           : '<span class="badge ok">与远端一致</span>'
 
-  const bits = [esc(main.branch || '?') + (main.upstream ? ' ⟵ ' + esc(main.upstream) : '（没配上游）')]
-  if (trouble) bits.push(esc(trouble))
+  // 状态 chips：一行看完主树什么状况，异常那颗自己变红。
+  // 自动推送/自动合入的开关和上次结果在上面的「自动化」栏里，这里不重复；
+  // 领先/落后上游也不重复——上面那个徽标已经是这个信息。
+  const chip = (text, tone = '', tip = '') => `<span class="chip ${tone}"${tip ? ` title="${esc(tip)}"` : ''}>${text}</span>`
+  const chips = []
+  chips.push(chip(esc(main.branch || '?') + (main.upstream ? ' ⟵ ' + esc(main.upstream) : '（没配上游）'), 'dim',
+    main.upstream ? `本地分支 ${main.branch}，上游 ${main.upstream}` : `${main.branch} 没配上游，推送前同步会跳过`))
+  if (trouble) chips.push(chip(esc(trouble), 'bad'))
   else {
-    bits.push(main.dirty ? '工作区有未提交改动' : '工作区干净')
-    bits.push(main.unity === 'on' ? 'Unity 在线'
-      : main.unity === 'booting' ? 'Unity 开着但没有控制端点（多半不是带 -unityPuerExecControl 开的）'
-        : 'Unity 没开')
-    if (unpushed > 0) bits.push('推送前会先跑验证门')
-    const auto = s.autoPush || {}
-    if (auto.enabled) {
-      const wait = Number(auto.nextAt) > Date.now() ? `，${Math.ceil((Number(auto.nextAt) - Date.now()) / 60000)} 分钟后重试` : ''
-      bits.push(!main.unity || main.unity !== 'on'
-        ? '自动推送：等 Unity 端点（verify 要连它）'
-        : auto.fails > 0 ? `自动推送：失败 ${auto.fails} 次${wait}`
-          : auto.lastResult ? `自动推送：${auto.lastResult}` : '自动推送：开（有没推的提交就跑）')
-    }
+    chips.push(main.dirty
+      ? chip('工作区有未提交改动', 'bad', '合入/推送都要求工作区干净：点「清理改动」，或者自己提交掉')
+      : chip('工作区干净', 'ok'))
+    chips.push(main.unity === 'on'
+      ? chip('Unity 在线', 'ok', '验证门能连上这棵树的 puer-exec 端点')
+      : main.unity === 'booting'
+        ? chip('Unity 没控制端点', 'run', 'Editor 进程在，但没写 endpoint.json：多半不是带 -unityPuerExecControl 开的')
+        : chip('Unity 没开', 'bad', '验证门要连本树的 Unity；没开就只能停在推送前'))
   }
 
+  // 失败一律用人话：上一行可能是绿的（git 已经同步），但这条任务是红的，并且带原因 + 日志入口。
+  const failLine = showFail
+    ? `<span class="fail">✕ ${esc(failTitle(showFail))}：${esc(showFail.summary || `失败（exit ${showFail.code}）`)}</span>`
+    : ''
+
+  // 每个按钮都得能自己解释：这个面板上很多动作会真改 git / 真推共享分支，光靠名字看不懂。
+  const TIP = {
+    mpush: `跑 collect --resume：导表 → 验证门（编译 + 与本批改动相关的测试）→ git push origin/${main.target || 'develop'} → 回写 TAPD。主树与远端一致时按它等于空跑一次验证。`,
+    mverify: '只跑验证门（导表 + 编译 + 测试），不动 git、不推送、也不回写 TAPD。想知道现在到底绿不绿时用。',
+    munity: '用 -unityPuerExecControl 启动本树的 Unity Editor。验证门要连它的控制端点；首次导入约 4.5 分钟。',
+    mprobe: 'ping 一次本树 Unity 的控制端点（/health），区分「文件在但连不上」和真在线。',
+    mclean: 'git restore 掉主树里没提交的改动（未跟踪文件不动）。合入/推送都要求工作区干净时用它解围。',
+    mbackfill: '提交已经在主树/远端、但 TAPD 那条评论没写成时用它：按 cherry-pick 尾巴找回卡片补一条，已经回写过的不会重发。',
+    mlog: '打开这条任务日志的尾部：失败原因、验证输出、跑了哪些测试都在里面。',
+  }
+  const btn = (attr, label, tip, primary) => `<button ${attr} title="${esc(tip)}"${primary ? ' class="primary"' : ''}>${label}</button>`
+  // 有东西可推才把「验证并推送」点亮：主树与远端一致时它是空跑（导表 + 全套测试约 2 分钟）。
+  // 补回写的优先级反过来：上一次回写没写成（writeBack.ok === false）时它才是有用的那一下。
+  const backfillUrgent = Boolean(showFail?.writeBack && showFail.writeBack.ok === false)
   const actions = busy
-    ? `<button disabled>${esc(job.kind === 'main-push' ? '验证并推送中…' : '验证中…')}</button>`
-    : `<button class="primary" data-mpush="1">${unpushed > 0 ? `验证并推送 ${esc(main.target || 'develop')}` : '验证并推送'}</button>` +
-      '<button data-mverify="1">只验证</button>' +
+    ? `<button disabled title="主树正在跑长任务（合入/解冲突/验证/推送），等它结束">${esc(job.kind === 'main-push' ? '验证并推送中…' : '验证中…')}</button>`
+    : btn('data-mpush="1"', `验证并推送 ${esc(main.target || 'develop')}`, TIP.mpush, unpushed > 0) +
+      btn('data-mverify="1"', '只验证', TIP.mverify) +
       (main.unity === 'off'
-        ? '<button data-munity="1">打开 Unity</button>'
-        : '<button data-mprobe="1">检查端点</button>') +
-      (main.dirty ? '<button data-mclean="1">清理改动</button>' : '') +
-      '<button data-mbackfill="1">补回写 TAPD</button>'
+        ? btn('data-munity="1"', '打开 Unity', TIP.munity)
+        : btn('data-mprobe="1"', '检查端点', TIP.mprobe)) +
+      (main.dirty ? btn('data-mclean="1"', '清理改动', TIP.mclean) : '') +
+      btn('data-mbackfill="1"', '补回写 TAPD', TIP.mbackfill, backfillUrgent) +
+      (showFail?.log ? btn(`data-mlog="${esc(showFail.log)}"`, '看日志', TIP.mlog) : '')
 
   // 上次回写的结果：只报「对上卡片」的那几条。没对上卡片的提交（不是工单提交、或没有
   // cherry-pick 尾巴）单独算个数——以前会把它们渲染成「卡片 ⚠ ?」，等于在页面上放乱码。
@@ -217,16 +293,29 @@ function renderMain(s) {
     const fresh = flowedRows.filter((one) => !one.skipped)
     const shown = (fresh.length ? fresh : flowedRows).slice(0, 4)
     const body = shown.length
-      ? shown.map((one) => `卡片 ${one.ok ? '' : '⚠ '}${one.cardId}${one.status ? '→' + one.status : ''}${one.skipped ? `（${one.skipped}）` : ''}`).join('、')
+      ? shown.map((one) => {
+        // 19 位 id 对人眼就是随机数：给个短标签 + TAPD 链接，完了自己点进去看。
+        const label = `#${String(one.cardId).slice(-6)}`
+        const link = `<a href="https://www.tapd.cn/prong/stories/view/${esc(one.cardId)}" target="_blank" rel="noreferrer" title="在 TAPD 打开需求 ${esc(one.cardId)}">${esc(label)}</a>`
+        const moved = one.status ? ` → ${esc(one.status)}` : ''
+        // 「已经回写过」这种内部措辞不铺在界面上，抽成一个可悬停的符号。
+        const redo = one.skipped ? `<span class="dim" title="${esc(one.skipped)}"> ↺</span>` : ''
+        const warn = one.ok ? '' : '<span title="这条回写没成功，原因在下面的失败行/日志里"> ⚠</span>'
+        return link + moved + redo + warn
+      }).join('、')
       : '没有对上卡片的提交'
     lastText = `上次回写 ${stamp} · ${body}` + (unmatchedRows ? ` · 另有 ${unmatchedRows} 个提交没对上卡片` : '')
   }
 
-  const tone = busy ? 'run' : trouble || unpushed > 0 ? 'bad' : ''
+  const tone = busy ? 'run' : trouble || unpushed > 0 || showFail ? 'bad' : ''
   box.innerHTML = '<div class="cards">' +
     `<div class="card ${tone}" title="${esc(main.branch ? '主树 ' + main.branch : '主树')}">` +
     `<div class="card-top"><span class="card-name">主树</span>${badge}</div>` +
-    `<div class="card-body">${bits.join('<br>')}${lastText ? '<br>' + esc(lastText) : ''}</div>` +
+    `<div class="card-body">` +
+      `<div class="chips">${chips.join('')}</div>` +
+      (failLine ? `<div>${failLine}</div>` : '') +
+      (lastText ? `<div class="dim">${lastText}</div>` : '') +
+    `</div>` +
     `<div class="card-actions">${actions}</div>` +
     '</div></div>'
 
@@ -244,6 +333,9 @@ function renderMain(s) {
   // 提交早就合进去/推上去了，但 TAPD 那次没写成时用这个补上（按 cherry-pick 尾巴找卡片，记过的不重发）。
   box.querySelector('[data-mbackfill]')?.addEventListener('click', () => {
     stationAction('mainbackfill', { workdir: main.path }).catch(() => {})
+  })
+  box.querySelector('[data-mlog]')?.addEventListener('click', (event) => {
+    openFile(event.currentTarget.getAttribute('data-mlog'))
   })
   box.querySelector('[data-mprobe]')?.addEventListener('click', () => {
     apiJson('api/stations', {
@@ -305,22 +397,33 @@ function renderStations(s) {
           : (Number(station.pending) > 0
             ? `有 ${esc(String(station.pending))} 个提交待合入主树`
             : (station.behind ? `落后最新 ${esc(String(station.behind))} 个提交，开工前会自动更新` : '可以接活'))
+    const STIP = {
+      srun: '在这个工位上开一批：自动从 TAPD 拉一张标了 ready-for-agent 的卡，跑完自动回写。',
+      smerge: `把这个工位分支上 ${station.pending} 个未合入提交 cherry-pick 进主树，然后导表 → 验证门 → 推送 → 回写 TAPD。冲突会停下来等人（表格冲突必须手合）。`,
+      sdel: '删掉这棵 worktree。还有未合入提交、或有批次在跑时会被拦住。',
+      sstop: '只停这个工位：不再给它派新卡，正在跑的那张跑完再停（不杀进程）。',
+      sunity: '用 -unityPuerExecControl 启动这个工位的 Unity Editor（验证门要连它，首次导入约 4.5 分钟）。',
+      sprobe: 'ping 一次这个工位的 Unity 控制端点（/health），区分「文件在但连不上」和真在线。',
+      sclean: 'git restore 掉这个工位里没提交的改动（未跟踪文件不动）。',
+    }
     const actions = running
-      ? `<button data-sstop="${esc(station.name)}">跑完这张就停</button>`
+      ? `<button data-sstop="${esc(station.name)}" title="${esc(STIP.sstop)}">跑完这张就停</button>`
       : trouble
         ? (unityOff
-          ? `<button class="primary" data-sunity="${esc(station.name)}">打开 Unity</button>` +
-            `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删掉</button>`
+          ? `<button class="primary" data-sunity="${esc(station.name)}" title="${esc(STIP.sunity)}">打开 Unity</button>` +
+            `<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}"${station.idle ? '' : ' disabled'}>删掉</button>`
           : station.dirty
-            ? `<button class="primary" data-sclean="${esc(station.name)}">清理改动</button>` +
-              `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删掉</button>`
-            : `<button data-sdel="${esc(station.name)}"${station.idle ? '' : ' disabled'}>删掉这个工位</button>`)
+            ? `<button class="primary" data-sclean="${esc(station.name)}" title="${esc(STIP.sclean)}">清理改动</button>` +
+              `<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}"${station.idle ? '' : ' disabled'}>删掉</button>`
+            : `<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}"${station.idle ? '' : ' disabled'}>删掉这个工位</button>`)
         : booting
-          ? `<button data-sprobe="${esc(station.name)}">检查端点</button>`
+          ? `<button data-sprobe="${esc(station.name)}" title="${esc(STIP.sprobe)}">检查端点</button>`
           : (Number(station.pending) > 0
-            ? `<button class="primary" data-smerge="${esc(station.name)}">合入 ${esc(String(station.pending))}</button>` +
-              `<button data-srun="${esc(station.name)}">接一单</button><button data-sdel="${esc(station.name)}">删掉</button>`
-            : `<button class="primary" data-srun="${esc(station.name)}">接一单</button><button data-sdel="${esc(station.name)}">删掉</button>`)
+            ? `<button class="primary" data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>` +
+              `<button data-srun="${esc(station.name)}" title="${esc(STIP.srun)}">接一单</button>` +
+              `<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`
+            : `<button class="primary" data-srun="${esc(station.name)}" title="${esc(STIP.srun)}">接一单</button>` +
+              `<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`)
     // 框颜色：在跑优先。在跑的时候工作区必然是脏的（agent 正在改文件），trouble 里那条
     // 「有没提交的改动」不是问题，不能因此把框画成红的——那会让人以为工位坏了。
     const tone = running ? 'run' : trouble ? 'bad' : ''
@@ -412,7 +515,7 @@ function renderSummary(s) {
   if (idle) parts.push(`<span class="ok">${idle} 空闲</span>`)
   if (running) parts.push(`<span class="state-run">${running} 干活中</span>`)
   if (trouble) parts.push(`<span class="bad">${trouble} 需要处理</span>`)
-  if (!auto) parts.push('<span class="dim">自动接单关着</span>')
+  // 「自动接单关着」不在这里说：下面那条「自动化」栏的勾选框就是它的状态，同一句不念两遍。
   box.innerHTML = parts.join(' · ')
 }
 
@@ -457,7 +560,7 @@ function renderShare(s) {
   }
   const share = s.board.shareWithKey
   box.innerHTML = '<span>分享给同事</span><input id="cShareUrl" readonly value="' + esc(share) + '" spellcheck="false">' +
-    '<button id="cShareCopy">复制</button>' +
+    '<button id="cShareCopy" title="复制带密钥的分享链接：同网段的人打开就能点按钮真跑（接单/合入/推送）">复制</button>' +
     (s.board.authRequired ? '<span class="dim">局域网可访问 · 链接里带密钥，能点按钮真跑</span>' : '')
   el('cShareCopy').onclick = () => {
     const input = el('cShareUrl')
@@ -584,7 +687,8 @@ function paintCountdown() {
   const stations = Array.isArray(s.stations) ? s.stations : []
   const idle = stations.filter((station) => station.idle && station.usable).length
   if (!w.enabled) {
-    box.textContent = stations.length ? `自动接单关着 · 空闲 ${idle}/${stations.length}` : '自动接单已关'
+    // 关着的时候只说工位情况：那个勾选框本身就写着「没开」，不用再念一遍。
+    box.textContent = stations.length ? `空闲 ${idle}/${stations.length}` : ''
     return
   }
   if (w.draining) {
@@ -595,7 +699,7 @@ function paintCountdown() {
   const tail = (stations.length ? ` · 空闲 ${idle}/${stations.length}` : '') +
     (w.lastCheckAt ? ` · 上次 ${clockOf(w.lastCheckAt)} 可接 ${w.lastReady} 张` : '')
   const err = w.lastError ? ` · ${w.lastError}` : ''
-  box.className = w.lastError ? 'warn' : 'dim'
+  box.className = w.lastError ? 'ab-hint warn' : 'ab-hint dim'
   box.textContent = (left > 0 ? `${Math.ceil(left / 1000)}s 后看一次` : '马上看') + tail + err
 }
 
@@ -874,9 +978,16 @@ export function mountControl() {
     el('cWorkdirText').value = value
     save().catch(() => {})
   })
-  for (const field of ['cWorkdirText', 'cAssignee', 'cMaxTasks', 'cAllowDirty', 'cNoWrite', 'cWatch', 'cPollSec', 'cAutoPush', 'cAutoPushSec']) {
+  for (const field of ['cWorkdirText', 'cAssignee', 'cMaxTasks', 'cAllowDirty', 'cNoWrite', 'cWatch', 'cPollSec', 'cAutoPush', 'cAutoPushSec', 'cAutoMerge', 'cAutoMergeSec']) {
     el(field)?.addEventListener('input', () => scheduleSave())
     el(field)?.addEventListener('change', () => scheduleSave())
+  }
+  // 勾完立刻亮/暗，不等到下一轮 poll（保存有 500ms 防抖，等回来会显得没反应）。
+  for (const id of ['cWatch', 'cAutoPush', 'cAutoMerge']) {
+    el(id)?.addEventListener('change', () => {
+      const box = el(id)
+      box?.closest?.('.seg')?.classList?.toggle('on', Boolean(box.checked))
+    })
   }
   el('cRun')?.addEventListener('click', () => { run('').catch(() => {}) })
   el('cRefPeek')?.addEventListener('click', () => { peek().catch(() => {}) })

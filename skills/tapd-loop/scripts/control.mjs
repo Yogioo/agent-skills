@@ -55,6 +55,11 @@ export const DEFAULTS = {
   watch: { enabled: false, pollSec: 300 },
   /** 主树自动验证并推送：主树有没推的提交、Unity 在线、没冲突时就自己跑 collect --resume。 */
   autoPush: { enabled: false, pollSec: 120 },
+  /**
+   * 主树自动合入工位提交：有工位攒了未合入提交、主树干净、Unity 在线时，自己跑
+   * collect.mjs（pick → 导表 → verify → push → 回写 TAPD）。默认关：它会往共享分支写东西。
+   */
+  autoMerge: { enabled: false, pollSec: 120 },
   /** 工位注册表。空 = 老的单工位行为（只认 workdir 那一个）。 */
   stations: [],
 }
@@ -152,6 +157,10 @@ export function sanitizeControl(input = {}, base = DEFAULTS) {
       enabled: Boolean(base.autoPush?.enabled),
       pollSec: clampInt(base.autoPush?.pollSec, MIN_POLL_SEC, MAX_POLL_SEC, DEFAULTS.autoPush.pollSec),
     },
+    autoMerge: {
+      enabled: Boolean(base.autoMerge?.enabled),
+      pollSec: clampInt(base.autoMerge?.pollSec, MIN_POLL_SEC, MAX_POLL_SEC, DEFAULTS.autoMerge.pollSec),
+    },
     stations: normalizeStations(base.stations),
   }
   if (!input || typeof input !== 'object') return out
@@ -167,6 +176,10 @@ export function sanitizeControl(input = {}, base = DEFAULTS) {
   if (input.autoPush && typeof input.autoPush === 'object') {
     if ('enabled' in input.autoPush) out.autoPush.enabled = Boolean(input.autoPush.enabled)
     if ('pollSec' in input.autoPush) out.autoPush.pollSec = clampInt(input.autoPush.pollSec, MIN_POLL_SEC, MAX_POLL_SEC, out.autoPush.pollSec)
+  }
+  if (input.autoMerge && typeof input.autoMerge === 'object') {
+    if ('enabled' in input.autoMerge) out.autoMerge.enabled = Boolean(input.autoMerge.enabled)
+    if ('pollSec' in input.autoMerge) out.autoMerge.pollSec = clampInt(input.autoMerge.pollSec, MIN_POLL_SEC, MAX_POLL_SEC, out.autoMerge.pollSec)
   }
   if ('stations' in input) out.stations = normalizeStations(input.stations)
   return out
@@ -449,6 +462,43 @@ export function logTail(log, limit = 4000) {
 }
 
 /**
+ * 从日志尾巴里抓一句「到底怎么失败的」。
+ *
+ * 卡片上只写 `exit 1` 等于没说，但 `[失败] …` 那一行往往也只是总结——真正的错
+ * （连不上哪个端点、哪个用例红了）collect 会缩进打在它上面。所以拼两段：
+ *   「缩进的具体原因」·「[失败] 那一句的第一句」
+ * 找不到就步步降级（只剩 `[失败]` / 最后一行非空 / 明说日志没内容）。
+ */
+export function failSummary(log, code = 0) {
+  const tidy = (text) => String(text || '').replace(/\s+/g, ' ').trim()
+  const tail = tailText(log, 8000)
+  if (!tail) return code ? `命令退出 ${code}，日志一字没有` : ''
+  const lines = tail.split('\n')
+  const hits = [...tail.matchAll(/\[失败\][^\n]*(?:\n[ \t]+[^\n]*)*/g)]
+  const block = hits.length ? hits[hits.length - 1] : null
+
+  // 往上找 `[失败]` 前那段缩进块的**第一行**：它才是具体原因，最后一行常是「留给 Agent 的指示」。
+  let detail = ''
+  if (block && block.index != null) {
+    const before = tail.slice(0, block.index).split('\n')
+    let i = before.length - 1
+    while (i >= 0 && !before[i].trim()) i -= 1
+    if (i >= 0 && /^[ \t]+\S/.test(before[i])) {
+      while (i - 1 >= 0 && /^[ \t]+\S/.test(before[i - 1])) i -= 1
+      detail = clip(tidy(before[i]), 130)
+    }
+  }
+
+  const raw = block ? block[0] : (lines.filter((line) => line.trim()).pop() || '')
+  const head = tidy(String(raw).replace(/^\[失败\]\s*/, ''))
+  // 只要第一句：后面是「怎么办」（重跑/别 reset），卡片上放不下。
+  const sentence = clip(tidy(head.split(/[。；]/)[0] || ''), 110)
+  const text = [detail, sentence].filter(Boolean).join(' · ')
+  if (text) return text
+  return code ? `命令退出 ${code}，日志里没写原因` : ''
+}
+
+/**
  * @param {{home:string, runsRoot:string, loopScript:string, spawnCmd?:string[]}} opts
  *   spawnCmd 只给测试用：默认 `[process.execPath, loopScript]`。
  */
@@ -476,6 +526,11 @@ export function createControl(opts) {
     dispatched: [],
     /** 主树自动推送的现场：上次开跑时间、连续失败数、下次最早什么时候再试。 */
     autoPush: { at: 0, nextAt: 0, fails: 0, lastJobId: '', lastResult: '', lastError: '' },
+    /**
+     * 主树自动合入的现场：全局的下次探测时间 + 每个工位自己的退避。
+     * 退避按工位分开记是因为「a 的验证红」不该把 b 也冻住：两棵树互不相干。
+     */
+    autoMerge: { at: 0, nextAt: 0, lastStation: '', lastJobId: '', lastResult: '', lastError: '', stations: {} },
   }
 
   function raw() {
@@ -605,6 +660,23 @@ export function createControl(opts) {
         lastJobId: memory.autoPush.lastJobId || '',
         lastResult: memory.autoPush.lastResult || '',
         lastError: memory.autoPush.lastError || '',
+      },
+      // 主树自动合入的现场：开关、每个工位的退避、上次合的是哪棵树。
+      autoMerge: {
+        enabled: Boolean(config.autoMerge?.enabled),
+        pollSec: Number(config.autoMerge?.pollSec) || DEFAULTS.autoMerge.pollSec,
+        lastAt: Number(memory.autoMerge.at) || 0,
+        nextAt: Number(memory.autoMerge.nextAt) || 0,
+        lastStation: memory.autoMerge.lastStation || '',
+        lastJobId: memory.autoMerge.lastJobId || '',
+        lastResult: memory.autoMerge.lastResult || '',
+        lastError: memory.autoMerge.lastError || '',
+        stations: Object.entries(memory.autoMerge.stations || {}).map(([name, slot]) => ({
+          name,
+          fails: Number(slot?.fails) || 0,
+          nextAt: Number(slot?.nextAt) || 0,
+          lastResult: String(slot?.lastResult || ''),
+        })),
       },
       watch: {
         enabled: config.watch.enabled,
@@ -963,12 +1035,15 @@ export function createControl(opts) {
     const settle = (status, code, error) => {
       if (settled) return
       settled = true
+      // 失败时先把日志里那句话抓出来：卡片/提示都要用人话，不能只留一个 exit N。
+      const failedNow = status !== 'done' || Number(code) !== 0
+      const summary = failedNow ? (failSummary(log, code) || String(error || '')) : ''
       // onSettled 不分成败都会跑：合入可能在 verify 那一步退出非 0，可提交已经 cherry-pick
       // 进本地 develop 了。以前只在 code 0 才回写 TAPD，于是「合进去了、工单没流转、也没推」。
       let writeBack = null
       if (onSettled) {
         try {
-          writeBack = onSettled(status, code)
+          writeBack = onSettled(status, code, summary)
         } catch {
           // 回写炸了不影响 job 已记下的结果
         }
@@ -978,7 +1053,7 @@ export function createControl(opts) {
         ...done,
         jobs: (Array.isArray(done.jobs) ? done.jobs : [])
           .map((item) => (item.id === job.id
-            ? { ...item, status, code, endedAt: Date.now(), ...(error ? { error } : {}), ...(writeBack ? { writeBack } : {}) }
+            ? { ...item, status, code, endedAt: Date.now(), ...(error ? { error } : {}), ...(summary ? { summary } : {}), ...(writeBack ? { writeBack } : {}) }
             : item)),
       })
       if (status === 'done' && onDone) {
@@ -1587,7 +1662,7 @@ function resolveBash() {
       path: main,
       workdir: main,
       script: `exec '${shPath(process.execPath)}' '${shPath(script)}' --resume`,
-      onSettled: (status, code) => {
+      onSettled: (status, code, summary) => {
         const back = writeBackMerged({
           stationName: '(主树)',
           branch: target,
@@ -1603,7 +1678,8 @@ function resolveBash() {
             memory.autoPush.nextAt = 0
           } else {
             memory.autoPush.fails = (memory.autoPush.fails || 0) + 1
-            memory.autoPush.lastResult = `失败（exit ${code}）`
+            // 有那句人话就用它（验证门红了 / 端点连不上 / 推送被拒…），退避提示才有信息量。
+            memory.autoPush.lastResult = summary ? `失败：${clip(summary, 120)}` : `失败（exit ${code}）`
             const waitMin = Math.min(30, 2 ** Math.max(0, memory.autoPush.fails - 1))
             memory.autoPush.nextAt = Date.now() + waitMin * 60_000
           }
@@ -1665,6 +1741,109 @@ function resolveBash() {
   }
 
   /**
+   * 主树上的长任务（合入 / 解冲突 / 验证 / 推送）是不是还在跑。
+   *
+   * `unknown` 不算忙：那是「看板重启过、命令早就结束了但没人收尸」的旧记录。
+   * 拿它当挡箭牌会把自动合入永远卡住，而真正的活干完了本来也不会有人来找它。
+   */
+  function mainBusy() {
+    return listJobs().some((job) => {
+      const kind = String(job.kind || '')
+      const mine = kind.startsWith('main-') || kind === 'merge' || kind === 'merge-resume' || kind === 'resolve'
+      if (!mine) return false
+      return job.alive === true || (job.status === 'running' && !job.pid)
+    })
+  }
+
+  /**
+   * 记一次自动合入的结果。退避按工位各记各的：1 → 2 → 4 → 8 → 16 → 30 分钟（跟自动推送同一套）。
+   *
+   * soft = 「不是这棵树不行，只是现在做不了」（冲突且已经有人去解了）：不涨失败数，只等 2 分钟。
+   * waitMin 用于必须人来的情况（表格冲突 / 解冲突起不来），一次拉满 30 分钟，别把主树反复占上。
+   */
+  function autoMergeRecord(name, { ok = false, soft = false, code = 0, error = '', merged = 0, waitMin = 0 } = {}) {
+    const key = String(name || '')
+    if (!key) return
+    const slot = { fails: 0, nextAt: 0, at: 0, lastResult: '', ...(memory.autoMerge.stations[key] || {}) }
+    slot.at = Date.now()
+    if (ok) {
+      slot.fails = 0
+      slot.nextAt = 0
+      slot.lastResult = merged ? `已合入 ${merged} 个提交` : '已合入'
+      memory.autoMerge.lastError = ''
+    } else {
+      if (!soft) slot.fails = (Number(slot.fails) || 0) + 1
+      // 「失败」两个字只留给真失败：code 0 以外的退出码和起不来的错误都写具体原因。
+      const plain = error ? clip(error, 120) : (code ? `失败（exit ${code}）` : '失败')
+      const wait = waitMin || (soft ? 2 : Math.min(30, 2 ** Math.max(0, (Number(slot.fails) || 1) - 1)))
+      slot.nextAt = slot.at + wait * 60_000
+      slot.lastResult = `${plain}，${wait} 分钟后再试`
+      memory.autoMerge.lastError = String(error || '')
+    }
+    memory.autoMerge.stations[key] = slot
+    memory.autoMerge.at = slot.at
+    memory.autoMerge.lastStation = key
+    memory.autoMerge.lastResult = `${key}：${slot.lastResult}`
+    emit()
+  }
+
+  /**
+   * 主树自动合入工位提交：人不用盯着「这棵树攒了提交 → 点合入 → 等 verify → 点验证并推送」。
+   *
+   * 只做“该做且现在能做成”的那一次，门槛全是硬的：
+   *   - 主树没有别的任务在跑（collect 要独占 develop，verify 要独占主树的 Unity）
+   *   - 主树干净、没停在 cherry-pick 中间态、Unity 端点在线
+   *   - 自动推送开着时，主树自己还有没推的提交就先让那边推完：验证门要是红的，
+   *     在上面再叠一张卡只会把问题糊成一团
+   *   - 挑一个「空闲 + 有未合入提交 + 不在自己的退避里」的工位
+   *
+   * 一次只合一个：两个工位同时 pick 会互相踩，而且 verify 只有一块 Unity。
+   * 打开它就等于「工位提交 → develop 远端 → TAPD 回写」全无人值守，所以默认关。
+   */
+  function autoMergeTick() {
+    const config = read()
+    if (!config.autoMerge?.enabled) {
+      memory.autoMerge.nextAt = 0
+      return { skipped: 'off' }
+    }
+    const main = String(config.workdir || '').trim()
+    if (!main) return { skipped: 'no-workdir' }
+    // 忙的时候不推进探测指针：一次合入结束就能立刻接下一棵树，不用干等一个 pollSec。
+    if (mainBusy()) return { skipped: 'busy' }
+    const now = Date.now()
+    if (now < Number(memory.autoMerge.nextAt || 0)) {
+      return { skipped: 'scheduled', nextInMs: Number(memory.autoMerge.nextAt) - now }
+    }
+    // 从这里往下每一步都要敲 git：探测频率收在一个 pollSec 上，别跟着看板 5 秒跳一次。
+    const pollMs = Math.max(MIN_POLL_SEC, Number(config.autoMerge.pollSec) || DEFAULTS.autoMerge.pollSec) * 1000
+    memory.autoMerge.nextAt = now + pollMs
+
+    const state = mainState(main)
+    if (!state.exists || !state.isRepo) return { skipped: 'no-main' }
+    if (state.conflict) return { skipped: 'conflict' }
+    if (state.dirty) return { skipped: 'dirty' }
+    // verify 要连本树的 Unity：端点不在，合进去也只会停在推送前，白占一次主树。
+    if (state.unity !== 'on') return { skipped: 'no-unity' }
+    if (config.autoPush?.enabled && Number(state.ahead) > 0) return { skipped: 'ahead', ahead: Number(state.ahead) }
+
+    const candidates = stationState(config)
+      .filter((station) => Boolean(station.idle) && station.exists && station.isRepo && Number(station.pending) > 0)
+    const ready = candidates.find((station) => now >= Number(memory.autoMerge.stations[station.name]?.nextAt || 0))
+    if (!ready) return { skipped: candidates.length ? 'station-backoff' : 'clean', pending: candidates.length }
+
+    const started = mergeStation({ name: ready.name, workdir: main, auto: true })
+    if (!started.ok) {
+      autoMergeRecord(ready.name, { error: String(started.error || '合入没起来') })
+      return { skipped: 'start-failed', error: started.error || '' }
+    }
+    memory.autoMerge.lastJobId = started.job?.id || ''
+    memory.autoMerge.lastStation = ready.name
+    memory.autoMerge.lastError = ''
+    emit()
+    return { started: true, station: ready.name, job: started.job?.id || '', pending: ready.pending }
+  }
+
+  /**
    * 主树工作区恢复干净（只动已跟踪文件，不碰未跟踪）。
    * 合入/推送都要求工作区干净；而主树的 Unity 一开，常会把几个 .meta / 生成物重写一遍，
    * 于是「自动推送」被一条脏改动永远挡住。这一步就是给它解围的，代价是丢掉没提交的改动。
@@ -1713,6 +1892,9 @@ function resolveBash() {
     if (!station) return { ok: false, error: `没有叫 ${name} 的工位` }
     const main = String(input.workdir || config.workdir || '').trim()
     if (!main) return { ok: false, error: '先选主树工作目录' }
+    // auto = 自动合入（autoMergeTick 起的）。它要多做两件事：把结果记进退避，
+    // 以及回写 TAPD 时注明这次是自动合进去的。
+    const byAuto = Boolean(input.auto)
     const live = runningAll().find((item) => samePath(item.workdir, station.path))
     if (live) return { ok: false, error: `${name} 上还有批次在跑，等它跑完再合入` }
 
@@ -1730,7 +1912,7 @@ function resolveBash() {
 
     return spawnJob({
       kind: 'merge',
-      name,
+      name: byAuto ? `${name} · 自动` : name,
       path: station.path,
       workdir: main,
       // --resolve：冲突不 abort，保留现场（退出码 2）。
@@ -1738,8 +1920,24 @@ function resolveBash() {
       script: `exec '${shPath(process.execPath)}' '${shPath(script)}' '${branch}' --resolve`,
       // 用 onSettled 而不是 onDone：verify 挂了也会 exit != 0，但提交已经落地。
       // 回写按「主树 HEAD 动了没」判（writeBackMerged 自己会查），不看退出码。
-      onSettled: () => writeBackMerged({ stationName: name, branch, main, before }),
-      onConflict: () => resolveMerge({ name, workdir: main }),
+      onSettled: (status, code, summary) => {
+        const back = writeBackMerged({ stationName: name, branch, main, before, via: byAuto ? '自动合入' : '' })
+        if (byAuto) {
+          if (status === 'done') autoMergeRecord(name, { ok: true, merged: (back?.results || []).length })
+          // 冲突不算「这个工位不行」：现场已经交给解冲突的 agent，只等 2 分钟别抢在它前面。
+          else if (code === 2) autoMergeRecord(name, { soft: true, error: '冲突，交给解冲突 agent' })
+          else autoMergeRecord(name, { code, error: summary })
+        }
+        return back
+      },
+      onConflict: () => {
+        const started = resolveMerge({ name, workdir: main })
+        // 起不来的典型原因：表格冲突（xlsx 只能人工用 overlay 合）或主树根本不在
+        // cherry-pick 中间态。这是要人来的，算一次失败并把退避拉满 30 分钟，
+        // 别每 2 分钟把同一个冲突再撞一遍、把日志刷满天。
+        if (byAuto && !started?.ok) autoMergeRecord(name, { error: String(started?.error || '解冲突没起来'), waitMin: 30 })
+        return started
+      },
     })
   }
 
@@ -2023,6 +2221,7 @@ function resolveBash() {
     backfillMain,
     cleanMain,
     autoPushTick,
+    autoMergeTick,
     probeUnity,
     cleanStation,
     onChange: (listener) => {

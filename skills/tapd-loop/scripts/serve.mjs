@@ -314,10 +314,13 @@ const timer = setInterval(() => {
   })
   // 主树自动验证并推送：开关关着时它只读一次配置就返回，代价可以忽略。
   try { control.autoPushTick() } catch { /* 下一轮再试 */ }
+  // 主树自动合入工位提交（默认关）。它内部自己把探测频率收到 autoMerge.pollSec。
+  try { control.autoMergeTick() } catch { /* 下一轮再试 */ }
 }, TICK_MS)
 timer.unref?.()
 control.tick().catch(() => {})
 try { control.autoPushTick() } catch { /* 下一轮再试 */ }
+try { control.autoMergeTick() } catch { /* 下一轮再试 */ }
 
 function send(res, code, body, type = 'text/plain; charset=utf-8') {
   res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' })
