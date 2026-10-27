@@ -1343,6 +1343,35 @@ function resolveBash() {
     return ''
   }
 
+  /**
+   * 提交标题里带的 7 位工单号 → 完整卡片 id。
+   * 外层循环约定的提交格式就是 `type:1005129 描述`，后 7 位即卡号后 7 位。
+   * 拿它当「card_done 没写下来」时的备胎：进程被杀（没有 card_done）、或事后手工补的提交。
+   */
+  function cardIdByTicket(ticket) {
+    const need = String(ticket || '').trim()
+    if (!/^\d{7}$/.test(need)) return ''
+    let runs = []
+    try {
+      runs = readdirSync(runsRoot).filter((name) => name.startsWith('run-')).sort().reverse().slice(0, 60)
+    } catch {
+      return ''
+    }
+    for (const run of runs) {
+      let text = ''
+      try {
+        text = readFileSync(join(runsRoot, run, 'progress.jsonl'), 'utf8')
+      } catch {
+        continue
+      }
+      const hit = [...text.matchAll(/"event":"card_start"[^\n]*?"id":"(\d+)"/g)]
+        .map((m) => m[1])
+        .find((id) => id.endsWith(need))
+      if (hit) return hit
+    }
+    return ''
+  }
+
   /** 已经回写过的工位提交（origin sha）。重复跑合入/补回写时靠它去重，不重复评论。 */
   function flowedShas() {
     return new Set((Array.isArray(raw().flowed) ? raw().flowed : []).map(String))
@@ -1362,11 +1391,18 @@ function resolveBash() {
     const flowed = []
 
     for (const block of blocks) {
-      const [sha, ...rest] = String(block || '').split('	')
+      const [sha, ...rest] = String(block || '').split('\t')
       if (!sha) continue
-      const body = rest.join('	')
+      const body = rest.join('\t')
       const origin = (/cherry picked from commit ([0-9a-f]{7,40})/.exec(body) || [])[1] || sha
-      const cardId = cardIdByCommit(origin)
+      let cardId = cardIdByCommit(origin)
+      if (!cardId) {
+        // 备胎：提交标题里的 7 位工单号（`art:1005133 …`）——进程被杀时 card_done 没写下来，
+        // 合入记录里就只剩标题这一条线索。
+        const subject = String(body).split('\n')[0]
+        const ticket = (/^[a-z]+:\s*(\d{7})\b/i.exec(subject) || [])[1]
+        if (ticket) cardId = cardIdByTicket(ticket)
+      }
       if (!cardId) {
         results.push({ sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: false, reason: '找不到对应卡片（run 记录里没有这个 commit）' })
         continue
@@ -1434,7 +1470,7 @@ function resolveBash() {
       return { ok: false, error: '主树 HEAD 没变，没有可回写的提交' }
     }
     const logText = gitOut(main, ['log', '--format=%H%x09%B%x00', `${before}..${after}`])
-    const blocks = logText.split(' ').map((block) => block.trim()).filter(Boolean)
+    const blocks = logText.split('\u0000').map((block) => block.trim()).filter(Boolean)
     const results = flowBlocks({ main, blocks, via, branch, after })
 
     try {
@@ -1462,7 +1498,7 @@ function resolveBash() {
     if (!gitOut(main, ['rev-parse', '--git-dir'])) return { ok: false, error: '主树工作目录不是 git 仓库' }
     const limit = Math.min(100, Math.max(1, Number(input.limit) || 20))
     const logText = gitOut(main, ['log', `-n${limit}`, '--format=%H%x09%B%x00'])
-    const blocks = logText.split(' ').map((block) => block.trim()).filter(Boolean)
+    const blocks = logText.split('\u0000').map((block) => block.trim()).filter(Boolean)
     const picked = blocks.filter((block) => /cherry picked from commit [0-9a-f]{7,40}/.test(block))
     if (!picked.length) return { ok: true, note: `最近 ${limit} 个提交里没有合入痕迹（cherry-pick）`, results: [] }
     const head = gitOut(main, ['rev-parse', 'HEAD'])

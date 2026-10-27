@@ -203,12 +203,24 @@ function renderMain(s) {
       (main.dirty ? '<button data-mclean="1">清理改动</button>' : '') +
       '<button data-mbackfill="1">补回写 TAPD</button>'
 
+  // 上次回写的结果：只报「对上卡片」的那几条。没对上卡片的提交（不是工单提交、或没有
+  // cherry-pick 尾巴）单独算个数——以前会把它们渲染成「卡片 ⚠ ?」，等于在页面上放乱码。
   const last = s.lastMerge
-  const lastText = last && last.results
-    ? `上次合入 ${new Date(Number(last.at) || 0).toLocaleTimeString()} · ` + last.results
-      .map((one) => `卡片 ${one.ok ? '' : '⚠ '}${one.cardId || '?'}${one.status ? '→' + one.status : ''}`)
-      .join('、')
-    : ''
+  const lastResults = Array.isArray(last?.results) ? last.results : []
+  const flowedRows = lastResults.filter((one) => one.cardId)
+  const unmatchedRows = lastResults.length - flowedRows.length
+  let lastText = ''
+  if (lastResults.length) {
+    const when = new Date(Number(last?.at) || 0)
+    const stamp = when.toDateString() === new Date().toDateString() ? when.toLocaleTimeString() : when.toLocaleString()
+    // 只报这次真写进去的；全是「已经回写过」时不重复念旧账。最多点 4 张。
+    const fresh = flowedRows.filter((one) => !one.skipped)
+    const shown = (fresh.length ? fresh : flowedRows).slice(0, 4)
+    const body = shown.length
+      ? shown.map((one) => `卡片 ${one.ok ? '' : '⚠ '}${one.cardId}${one.status ? '→' + one.status : ''}${one.skipped ? `（${one.skipped}）` : ''}`).join('、')
+      : '没有对上卡片的提交'
+    lastText = `上次回写 ${stamp} · ${body}` + (unmatchedRows ? ` · 另有 ${unmatchedRows} 个提交没对上卡片` : '')
+  }
 
   const tone = busy ? 'run' : trouble || unpushed > 0 ? 'bad' : ''
   box.innerHTML = '<div class="cards">' +
