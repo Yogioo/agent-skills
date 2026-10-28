@@ -153,7 +153,7 @@ node <技能根>/scripts/loop.mjs --workdir <仓库> --retry <需求id> --dry-ru
 
 推成功的卡片，评论里的 sha 是**推送后**的 HEAD，格式 `提交：<sha10>（已推送 origin/<branch>）`。这一步不能省：rebase 会改写 sha，commit 那一刻的 sha 在推完之后可能已经不存在于远端。
 
-**没推上去就不报 sha。** `push.enabled` 关着时（工位流程）评论只写「提交：本地已提交、未推远端；合入主树并推送后会在这张卡上补发最终提交号。」：那个 sha 只活在本仓库对象库里，主树 `collect.mjs` cherry-pick 之后会换成新的合并提交号，在 TAPD 上写它只会让人拿着查不到的 hash 去对代码。最终提交号由 collect 那一条评论给（`合并后提交 <新sha>（工位原始提交 <旧sha>）`）。
+**没推上去就不报 sha。** `push.enabled` 关着时（工位流程）评论只写「提交：本地已提交、未推远端；合入主树并推送后会在这张卡上补发最终提交号。」：那个 sha 只活在本仓库对象库里，主树 `collect.mjs` cherry-pick 之后会换成新的合并提交号，在 TAPD 上写它只会让人拿着查不到的 hash 去对代码。最终提交号由 collect 那一条评论给，只报合入后的新 sha（`合并后提交 <新sha>`）：工位原始 sha 只活在本仓库对象库里，cherry-pick 后已不代表任何能查到的东西，写进工单只会让人拿着查不到的 hash 去对代码。
 
 本地 sha 仍然记在 `<runDir>/<卡片id>/` 的 report / `card_done` 事件里：collect 靠它把合入的提交找回卡片。想让它出现在评论里，配 `run.writeBack.showLocalCommit: true`。
 

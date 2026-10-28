@@ -1661,7 +1661,9 @@ function resolveBash() {
       const note = (via
         ? `[tapd-loop] 已推送到 ${target}（${via}）`
         : `[tapd-loop] 已合入主树：${branch || target} → ${target}`) +
-        `，合并后提交 ${String(after || sha).slice(0, 10)}（工位原始提交 ${origin.slice(0, 10)}）。` +
+        // 只报合入后的提交号：工位那个原始 sha 只活在本仓库对象库里，cherry-pick 后已经
+        // 不代表任何能查到的东西，写在工单上只会让人拿着查不到的 hash 去对代码。
+        `，合并后提交 ${String(after || sha).slice(0, 10)}。` +
         (doneStatus ? `
 
 状态流转：${doneStatus}，处理人已交回创建人` : '')
