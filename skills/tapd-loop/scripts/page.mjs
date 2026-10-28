@@ -85,6 +85,8 @@ th:nth-child(4),td:nth-child(4){width:15ch;white-space:nowrap}
 #ctl .badge.ok{color:#3fb950;border-color:#3fb95055;background:#3fb95011}
 #ctl .badge.run{color:#58a6ff;border-color:#1f6feb66;background:#1f6feb14}
 #ctl .badge.bad{color:#f85149;border-color:#f8514955;background:#f8514911}
+/* 已暂停：不是错误、不是空闲，人为压暗——一眼能看出来它不领卡。 */
+#ctl .badge.dim{color:#8b949e;border-color:#30363d;background:#161b22}
 #ctl details#cAdvanced{border-top:1px solid #21262d;padding-top:8px;margin-top:4px}
 #ctl details#cAdvanced summary{cursor:pointer;color:#8b949e;font-size:12px;list-style:none}
 #ctl details#cAdvanced summary::-webkit-details-marker{display:none}
@@ -194,7 +196,7 @@ export function pageHtml() {
     <div class="row">
       <button id="cQueue" title="查一次 TAPD：列出就绪的卡，以及被状态/前置依赖挡住的卡">刷新队列</button>
       <button id="cRun" title="用上面的参数（处理人 / 一批最多 / 松散开关）跑一批 loop.mjs">按当前项目开跑一批</button>
-      <button id="cStop" title="写停止标记：当前卡跑完后不再接新卡，不会杀掉正在跑的批次">全部停止（下一张前）</button>
+      <button id="cStop" title="写停止标记：当前卡跑完后不再接新卡，不会杀掉正在跑的批次">本批跑完就停（不杀进程）</button>
     </div>
     <div class="row">
       <span>指定工单</span>

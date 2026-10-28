@@ -297,6 +297,49 @@ test('pending merge count ignores commits the main tree has not pulled yet', (t)
   assert.equal(ctl.status().stations[0].pending, 1, '工位自己的提交不能被过滤掉')
 })
 
+test('paused station keeps out of dispatch and survives unrelated config writes', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'tapd-pause-'))
+  t.after(() => cleanup(home))
+  const git = (cwd, ...args) => execFileSync('git', args, {
+    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  }).trim()
+
+  // 暂停标记存在 stations 表里，登记工位要求目录真的是 git 仓库。
+  const main = join(home, 'main')
+  mkdirSync(main, { recursive: true })
+  git(main, 'init')
+  git(main, 'config', 'user.email', 'a@b.c')
+  git(main, 'config', 'user.name', 't')
+  writeFileSync(join(main, 'a.txt'), 'base', 'utf8')
+  git(main, 'add', '-A')
+  git(main, 'commit', '-m', 'base')
+
+  const runsRoot = join(home, 'runs')
+  mkdirSync(runsRoot, { recursive: true })
+  const slash = (dir) => dir.replace(/\\/g, '/')
+  const ctl = createControl({ home, runsRoot, loopScript: 'unused.mjs' })
+  ctl.write({ workdir: slash(main), stations: [{ name: 'a', path: slash(main) }] })
+  assert.equal(ctl.status().stations[0].paused, false, '新建的工位默认接活')
+
+  assert.equal(ctl.pauseStation({ name: 'a', paused: true }).ok, true)
+  assert.equal(ctl.status().stations[0].paused, true)
+  // 页面每次改配置都会整份 sanitize 再写回：白名单很容易顺手吞掉这个字段。
+  ctl.write({ maxTasks: 3 })
+  assert.equal(ctl.status().stations[0].paused, true, '改别的设置不能把暂停标记冲掉')
+  // 重启看板后还在（人在页面上关的，不是内存里的一次性开关）
+  const again = createControl({ home, runsRoot, loopScript: 'unused.mjs' })
+  assert.equal(again.status().stations[0].paused, true, '落盘，重启后仍然暂停')
+
+  // 调度器跳过它，并且把「为什么没开工」说清楚（否则看着像坏了）
+  const tick = await again.tick({ force: true })
+  assert.equal(tick.skipped, 'no-idle')
+  assert.match(again.status().watch.lastError, /a\(已暂停\)/)
+
+  again.pauseStation({ name: 'a', paused: false })
+  assert.equal(again.status().stations[0].paused, false, '能接回去')
+  assert.equal(again.pauseStation({ name: 'nope', paused: true }).ok, false, '没这个工位就拒')
+})
+
 // ---------------------------------------------------------------- 小工具
 
 async function withBoard(t, args) {

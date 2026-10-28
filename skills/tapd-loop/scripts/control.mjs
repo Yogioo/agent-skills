@@ -118,7 +118,8 @@ function normalizeStations(list) {
     const key = path.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
-    out.push({ name, path, note: String(item?.note || '').slice(0, 200) })
+    // paused 是「调度器别再给它派卡」，不是「工位坏了」：不参与 usable 判定。
+    out.push({ name, path, note: String(item?.note || '').slice(0, 200), paused: Boolean(item?.paused) })
   }
   return out
 }
@@ -928,6 +929,8 @@ export function createControl(opts) {
         name: station.name,
         path,
         note: station.note || '',
+        // 暂停的工位不接新卡，但它自己没毛病：usable / trouble 都不看这个字段。
+        paused: Boolean(station.paused),
         exists,
         isRepo,
         branch,
@@ -973,6 +976,27 @@ export function createControl(opts) {
   function dropStation(name) {
     const current = read()
     write({ stations: current.stations.filter((station) => station.name !== name) })
+  }
+
+  /**
+   * 暂停/恢复一个工位：只管「调度器还派不派新卡给它」。
+   *
+   * 和 `stop()`（写 stop 文件）不是一件事：停止文件是给 loop.mjs 在卡与卡之间读的，
+   * 而看板派卡是一张一批（`--card` 会把 maxTasks 强制成 1），所以停止人永远读不到。
+   * 真想让一个工位别再领新活，就落这个持久标记。
+   * 在跑的那一张不受影响：要打断它只能去工位里杀进程，本工具从不干这个。
+   */
+  function pauseStation(input = {}) {
+    const name = String(input.name || '').trim()
+    if (!name) return { ok: false, error: '没说哪个工位' }
+    const current = read()
+    if (!current.stations.some((station) => station.name === name)) {
+      return { ok: false, error: `没有叫「${name}」的工位` }
+    }
+    const paused = Boolean(input.paused)
+    write({ stations: current.stations.map((station) => (station.name === name ? { ...station, paused } : station)) })
+    const saved = read().stations.find((station) => station.name === name) || null
+    return { ok: true, name, paused, station: saved }
   }
 
   /** 登记一个已经存在的工位（不想重跑建树脚本时用）。 */
@@ -2141,18 +2165,21 @@ function resolveBash() {
     if (!opts.force && Date.now() < memory.nextAt) return { skipped: 'waiting' }
 
     const stations = stationState(config)
-    const idle = stations.filter((station) => station.idle && station.usable)
+    // 暂停的工位不进候选：人在页面上关的，不是它自己不可用。
+    const idle = stations.filter((station) => station.idle && station.usable && !station.paused)
     if (!idle.length) {
       // 全满或全都不可用：别等完整轮询间隔，工位一空就能接上。
       memory.nextAt = Date.now() + Math.min(30, config.watch.pollSec) * 1000
-      if (stations.length && !stations.every((s) => s.usable)) {
+      if (stations.length && !stations.every((s) => s.usable && !s.paused)) {
         const why = (s) => (!s.exists ? '目录不在'
           : !s.isRepo ? '不是仓库'
-            : s.dirty ? '工作区脏'
-              : s.unity === 'off' ? 'Unity 没开'
-                : s.unity === 'booting' ? 'Unity 正在启动'
-                  : '不可用')
-        memory.lastError = `没有可用工位：${stations.filter((s) => !s.usable).map((s) => `${s.name}(${why(s)})`).join('、')}`
+            // 暂停放在脏/Unity 前面：这是人自己关的，不是毛病。
+            : s.paused ? '已暂停'
+              : s.dirty ? '工作区脏'
+                : s.unity === 'off' ? 'Unity 没开'
+                  : s.unity === 'booting' ? 'Unity 正在启动'
+                    : '不可用')
+        memory.lastError = `没有可用工位：${stations.filter((s) => !s.usable || s.paused).map((s) => `${s.name}(${why(s)})`).join('、')}`
       }
       return { skipped: stations.length ? 'no-idle' : 'no-station', stations: stations.length }
     }
@@ -2218,6 +2245,7 @@ function resolveBash() {
     removeStation,
     registerStation,
     forgetStation,
+    pauseStation,
     mergeStation,
     resolveMerge,
     openUnity,

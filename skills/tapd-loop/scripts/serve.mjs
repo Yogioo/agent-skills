@@ -173,6 +173,7 @@ async function handle(req, res, url) {
     const result = await Promise.resolve(action === 'create' ? control.createStation(body)
       : action === 'remove' ? control.removeStation(body)
         : action === 'register' ? control.registerStation(body)
+          : action === 'pause' ? control.pauseStation(body)
           : action === 'forget' ? control.forgetStation(body)
             : action === 'clean' ? control.cleanStation(body)
               : action === 'merge' ? control.mergeStation(body)
@@ -183,7 +184,7 @@ async function handle(req, res, url) {
                         : action === 'mainprobe' ? control.probeUnity({ path: body.path || '', name: body.name || '' })
                           : action === 'mainbackfill' ? control.backfillMain(body)
                             : action === 'mainclean' ? control.cleanMain(body)
-                          : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / forget / clean / merge / resolve / mainpush / mainverify / mainunity / mainprobe / mainbackfill / mainclean）` })
+                          : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / pause / forget / clean / merge / resolve / mainpush / mainverify / mainunity / mainprobe / mainbackfill / mainclean）` })
     return sendJson(res, result.ok ? 200 : 400, { ...result, ...boardStatus() })
   }
   if (path === '/api/dispatch') {

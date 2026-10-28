@@ -390,53 +390,77 @@ function renderStations(s) {
     // booting：Unity 进程在、控制端点还没出来（首次导入）。这不是错误，是等。
     const booting = !trouble && (starting || station.unity === 'booting')
     const elapsed = Math.max(0, Number(s.now || Date.now()) - Number(station.startedAt || s.now || Date.now()))
+    // 暂停是人在页面上关的，不是工位坏了：它只影响「调度器还派不派卡」，不影响手上那张。
+    const paused = Boolean(station.paused)
     const badge = running ? `<span class="badge run">干活中 · ${esc(dur(elapsed))}</span>`
-      : trouble ? '<span class="badge bad">需要处理</span>'
-        : booting ? '<span class="badge run">Unity 启动中</span>'
-          : '<span class="badge ok">空闲</span>'
+      : paused ? '<span class="badge dim">已暂停</span>'
+        : trouble ? '<span class="badge bad">需要处理</span>'
+          : booting ? '<span class="badge run">Unity 启动中</span>'
+            : '<span class="badge ok">空闲</span>'
     // 在跑就先报在跑：批次跑卡时工作区必然是脏的，不能因此画成「需要处理 / 清理改动」——
     // 那等于请人点一个会把 agent 活干掉的按钮。
     // 在跑就先把运行状态报出来：卡片名优先用标题，19 位 id 在人眼里跟随机数一样。
     const cardLabel = running ? (station.cardTitle || station.card || '') : ''
-    const body = running
-      ? (cardLabel
-        ? `<span class="t">${esc(cardLabel)}</span><br>跑完自动回到空闲`
-        : '正在接单，还没分到卡片<br>跑完自动回到空闲')
-      : trouble
-        ? (unityOff ? '验证要连本树的 Unity，现在没开<br>点下面的按钮打开它'
-          : `${esc(trouble)}` + (station.behind ? ` · 落后 ${esc(String(station.behind))}` : '') + '<br>清一下就能接着干')
-        : booting
-          ? '首次导入约 4.5 分钟。超过 10 分钟还这样，点「检查端点」看看是不是没带控制开关'
-          : (Number(station.pending) > 0
-            ? `有 ${esc(String(station.pending))} 个提交待合入主树`
-            : (station.behind ? `落后最新 ${esc(String(station.behind))} 个提交，开工前会自动更新` : '可以接活'))
+    const pending = Number(station.pending) > 0
+    let body
+    if (running) {
+      const tail = paused ? '跑完不会再派新卡' : '跑完自动回到空闲'
+      body = cardLabel
+        ? `<span class="t">${esc(cardLabel)}</span><br>${tail}`
+        : `正在接单，还没分到卡片<br>${tail}`
+    } else if (paused) {
+      body = '暂停中：调度器不会再派卡给它<br>点「继续接活」就能接回去'
+    } else if (trouble) {
+      body = unityOff
+        ? '验证要连本树的 Unity，现在没开<br>点下面的按钮打开它'
+        : `${esc(trouble)}` + (station.behind ? ` · 落后 ${esc(String(station.behind))}` : '') + '<br>清一下就能接着干'
+    } else if (booting) {
+      body = '首次导入约 4.5 分钟。超过 10 分钟还这样，点「检查端点」看看是不是没带控制开关'
+    } else if (pending) {
+      body = `有 ${esc(String(station.pending))} 个提交待合入主树`
+    } else {
+      body = station.behind ? `落后最新 ${esc(String(station.behind))} 个提交，开工前会自动更新` : '可以接活'
+    }
     const STIP = {
       srun: '在这个工位上开一批：自动从 TAPD 拉一张标了 ready-for-agent 的卡，跑完自动回写。',
       smerge: `把这个工位分支上 ${station.pending} 个未合入提交 cherry-pick 进主树，然后导表 → 验证门 → 推送 → 回写 TAPD。冲突会停下来等人（表格冲突必须手合）。`,
       sdel: '删掉这棵 worktree。还有未合入提交、或有批次在跑时会被拦住。',
-      sstop: '只停这个工位：不再给它派新卡，正在跑的那张跑完再停（不杀进程）。',
+      spause: '暂停这个工位：调度器不再给它派新卡。正在跑的那一张不受影响；随时可以点「继续接活」接回去。',
+      sresume: '接回去：调度器又会把就绪卡派给这个工位（自动接单开着时）。',
       sunity: '用 -unityPuerExecControl 启动这个工位的 Unity Editor（验证门要连它，首次导入约 4.5 分钟）。',
       sprobe: 'ping 一次这个工位的 Unity 控制端点（/health），区分「文件在但连不上」和真在线。',
       sclean: 'git restore 掉这个工位里没提交的改动（未跟踪文件不动）。',
     }
-    const actions = running
-      ? `<button data-sstop="${esc(station.name)}" title="${esc(STIP.sstop)}">跑完这张就停</button>`
-      : trouble
-        ? (unityOff
-          ? `<button class="primary" data-sunity="${esc(station.name)}" title="${esc(STIP.sunity)}">打开 Unity</button>` +
-            `<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}"${station.idle ? '' : ' disabled'}>删掉</button>`
-          : station.dirty
-            ? `<button class="primary" data-sclean="${esc(station.name)}" title="${esc(STIP.sclean)}">清理改动</button>` +
-              `<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}"${station.idle ? '' : ' disabled'}>删掉</button>`
-            : `<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}"${station.idle ? '' : ' disabled'}>删掉这个工位</button>`)
-        : booting
-          ? `<button data-sprobe="${esc(station.name)}" title="${esc(STIP.sprobe)}">检查端点</button>`
-          : (Number(station.pending) > 0
-            ? `<button class="primary" data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>` +
-              `<button data-srun="${esc(station.name)}" title="${esc(STIP.srun)}">接一单</button>` +
-              `<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`
-            : `<button class="primary" data-srun="${esc(station.name)}" title="${esc(STIP.srun)}">接一单</button>` +
-              `<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`)
+    // 暂停按钮（开关两态）。
+    //
+    // 旧版这里是个「跑完这张就停」，靠写 stop 文件；但停止文件只在 loop.mjs 的「卡与卡之间」
+    // 被读一次，而看板派卡永远是一张一批（--card 会把 maxTasks 强制成 1），所以那个标记
+    // 从头到尾没人读——按钮看着像停了一个工位，实际什么都没发生（start 还会把它删掉）。
+    // 真正想表达的是「别再给它派卡」，那就落一个持久标记，调度器直接跳过它。
+    const pauseBtn = (toPause) => (toPause
+      ? `<button class="primary" data-spause="${esc(station.name)}" data-paused="1" title="${esc(STIP.sresume)}">继续接活</button>`
+      : `<button data-spause="${esc(station.name)}" data-paused="0" title="${esc(STIP.spause)}">不再接活</button>`)
+    const buttons = []
+    if (running) {
+      buttons.push(pauseBtn(paused))
+    } else if (trouble) {
+      if (unityOff) buttons.push(`<button class="primary" data-sunity="${esc(station.name)}" title="${esc(STIP.sunity)}">打开 Unity</button>`)
+      else if (station.dirty) buttons.push(`<button class="primary" data-sclean="${esc(station.name)}" title="${esc(STIP.sclean)}">清理改动</button>`)
+      buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}"${station.idle ? '' : ' disabled'}>${unityOff || station.dirty ? '删掉' : '删掉这个工位'}</button>`)
+    } else if (booting) {
+      buttons.push(`<button data-sprobe="${esc(station.name)}" title="${esc(STIP.sprobe)}">检查端点</button>`)
+    } else if (paused) {
+      // 暂停的工位：先把「接回去」摆在最前面，剩下能干的（合入、删）照旧。
+      buttons.push(pauseBtn(true))
+      if (pending) buttons.push(`<button data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>`)
+      buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`)
+    } else {
+      if (pending) buttons.push(`<button class="primary" data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>`)
+      buttons.push(`<button class="primary" data-srun="${esc(station.name)}" title="${esc(STIP.srun)}">接一单</button>`)
+      buttons.push(pauseBtn(false))
+      buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`)
+    }
+    const actions = buttons.join('')
     // 框颜色：在跑优先。在跑的时候工作区必然是脏的（agent 正在改文件），trouble 里那条
     // 「有没提交的改动」不是问题，不能因此把框画成红的——那会让人以为工位坏了。
     const tone = running ? 'run' : trouble ? 'bad' : ''
@@ -494,8 +518,10 @@ function renderStations(s) {
   for (const btn of box.querySelectorAll('button[data-srun]')) {
     btn.onclick = () => { runStation(find(btn.getAttribute('data-srun'))).catch(() => {}) }
   }
-  for (const btn of box.querySelectorAll('button[data-sstop]')) {
-    btn.onclick = () => { stopStation(find(btn.getAttribute('data-sstop'))).catch(() => {}) }
+  for (const btn of box.querySelectorAll('button[data-spause]')) {
+    btn.onclick = () => {
+      pauseStation(find(btn.getAttribute('data-spause')), btn.getAttribute('data-paused') === '1').catch(() => {})
+    }
   }
   for (const btn of box.querySelectorAll('button[data-sdel]')) {
     btn.onclick = () => { removeStation(find(btn.getAttribute('data-sdel'))).catch(() => {}) }
@@ -522,11 +548,14 @@ function renderSummary(s) {
     return
   }
   const running = stations.filter((station) => station.busy || station.card).length
-  const trouble = stations.filter((station) => !station.usable && !station.busy && !station.card).length
-  const idle = stations.length - running - trouble
+  // 暂停优先于「需要处理」：暂停是人的决定，一个暂停且脏的工位不该被算成毛病。
+  const pausedCount = stations.filter((station) => station.paused && !station.busy && !station.card).length
+  const trouble = stations.filter((station) => !station.usable && !station.busy && !station.card && !station.paused).length
+  const idle = stations.length - running - trouble - pausedCount
   const parts = [`<b>${stations.length}</b> 个工位`]
   if (idle) parts.push(`<span class="ok">${idle} 空闲</span>`)
   if (running) parts.push(`<span class="state-run">${running} 干活中</span>`)
+  if (pausedCount) parts.push(`<span class="dim">${pausedCount} 已暂停</span>`)
   if (trouble) parts.push(`<span class="bad">${trouble} 需要处理</span>`)
   // 「自动接单关着」不在这里说：下面那条「自动化」栏的勾选框就是它的状态，同一句不念两遍。
   box.innerHTML = parts.join(' · ')
@@ -683,7 +712,16 @@ function render(s) {
   if (el('cRun')) el('cRun').disabled = busyHere
   if (el('cRefRun')) el('cRefRun').disabled = busyHere || !s.config.workdir
   if (el('cQueue')) el('cQueue').disabled = !s.config.workdir
-  if (el('cStop')) el('cStop').disabled = !runs.length
+  // 停止文件只对「主树上那个多卡批次」有意义：loop.mjs 在卡与卡之间才读它，
+  // 工位批次永远一张一批，写了也读不到。所以只在主树自己有批次时才能点。
+  // 想让某个工位别再领卡：用它卡片上的「不再接活」（落的是 station.paused）。
+  if (el('cStop')) {
+    const mainBatch = runs.find((item) => samePath(item.workdir, s.config.workdir))
+    el('cStop').disabled = !mainBatch
+    el('cStop').title = mainBatch
+      ? '写停止标记：主树上这批跑完当前卡就不再接下一张（不杀进程）'
+      : '只对主树上的多卡批次有用；工位批次是一张一批，要停工位请在它的卡片上点「不再接活」'
+  }
   paintCountdown()
   paintMsg()
 }
@@ -864,15 +902,25 @@ async function runStation(station) {
   await poll()
 }
 
-async function stopStation(station) {
+/**
+ * 暂停/恢复一个工位 = 把「别再给它派卡」落成一个持久标记（存进 stations 表）。
+ *
+ * 不是写停止文件：那个文件只在 loop.mjs 的卡与卡之间被读一次，而看板派卡是
+ * 一张一批（--card 强制 maxTasks=1），所以永远不会被读到——旧版那个按钮等于没点。
+ */
+async function pauseStation(station, paused) {
   if (!station) return
-  const res = await apiJson('api/stop', {
+  const res = await apiJson('api/stations', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ workdir: station.path }),
+    body: JSON.stringify({ action: 'pause', name: station.name, paused }),
   })
-  if (!res.ok) say(res.data?.error || `停止失败（HTTP ${res.status}）`, 'bad')
-  else say(`已给 ${station.name} 置停止标记（下一张卡之前停）`, 'warn')
+  if (!res.ok) say(res.data?.error || `暂停失败（HTTP ${res.status}）`, 'bad')
+  else {
+    say(paused
+      ? `${station.name} 已暂停：不会再派新卡给它${station.busy || !station.idle ? '（手上那张会跑完）' : ''}`
+      : `${station.name} 已接回去：空闲时会重新领卡`, paused ? 'warn' : 'ok')
+  }
   await poll()
 }
 
