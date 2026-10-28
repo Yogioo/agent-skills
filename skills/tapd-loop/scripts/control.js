@@ -6,6 +6,7 @@
  */
 
 import { apiJson } from '/auth.js'
+import { minuteBucket, selectionGuard } from '/dom-guard.js'
 import { openFile } from '/fileview.js'
 
 const el = (id) => document.getElementById(id)
@@ -13,12 +14,20 @@ const el = (id) => document.getElementById(id)
 let view = null
 let refView = null
 let serverSkew = 0
-let msg = { text: '', cls: 'dim' }
 let saveTimer = 0
 let started = false
 
 /** 点过「打开 Unity」的工位：启动要几分钟，这期间卡片显示「正在启动」（本地状态，刷新即丢）。 */
 const unityPending = new Map()
+
+/**
+ * 刚点过「接活」开关、还没被服务端确认的工位：name → { paused, at }。
+ *
+ * 服务端一次 /api/stations 要把所有工位的 Unity 端点 + git 状态重新探一遍（实测 0.7~1.6 秒），
+ * 而 3 秒轮询的 GET 往往比这次 POST 先回来。不记这个的话，勾完会先画成新状态、
+ * 下一轮轮询又把旧状态画回去、再下一轮才变回来——看起来就是「点下去很迟钝」。
+ */
+const pendingPause = new Map()
 
 function editing() {
   const box = el('ctl')
@@ -47,16 +56,58 @@ function form() {
   }
 }
 
-function say(text, cls = 'dim') {
-  msg = { text, cls }
-  paintMsg()
-}
+/**
+ * 操作结果一律走右下角消息条（toast）。
+ *
+ * 以前是 hero 和「自动化」标题之间的一行 12px 灰字（#cMsg）：一条讲工位 c 的消息会画在
+ * 「自动化」头上，看着像那一块的说明；不会消失、没图标、离点击的地方（工位卡片）隔了大半屏。
+ * 401 那次就是被这个坑到的：服务端什么都没写，而页面上只多了一行灰字。
+ *
+ * 现在：ok/warn 自动消失，bad 常驻到点掉（错误必须能读到原因）；同一句话重复出现不堆叠。
+ */
+const TOAST_TTL = { ok: 4200, warn: 6500, dim: 4200 }
+const TOAST_ICON = { ok: '✓', warn: '!', bad: '✕', dim: '·' }
 
-function paintMsg() {
-  const box = el('cMsg')
+function say(text, cls = 'dim') {
+  const box = el('toasts')
   if (!box) return
-  box.className = msg.cls
-  box.textContent = msg.text
+  const kind = cls === 'bad' || cls === 'warn' || cls === 'ok' ? cls : 'dim'
+  const body = String(text ?? '').trim()
+  if (!body) return
+
+  // 同一句话连点两下不堆两条：拿文本当 key，命中就重置计时并从底部冒一下。
+  const key = `${kind}:${body}`
+  let item = box.querySelector(`[data-key="${CSS.escape(key)}"]`)
+  if (!item) {
+    item = document.createElement('div')
+    item.className = `toast ${kind}`
+    item.dataset.key = key
+    const icon = document.createElement('span')
+    icon.className = 'ic'
+    icon.textContent = TOAST_ICON[kind] || '·'
+    const tx = document.createElement('span')
+    tx.className = 'tx'
+    tx.textContent = body
+    const close = document.createElement('button')
+    close.className = 'x'
+    close.type = 'button'
+    close.title = '关闭'
+    close.textContent = '×'
+    close.addEventListener('click', () => item.remove())
+    item.append(icon, tx, close)
+    box.appendChild(item)
+    // 最多留 3 条：再多就把旧的挤掉，错误那条优先保留。
+    while (box.children.length > 3) {
+      const victim = [...box.children].find((node) => !node.classList.contains('bad')) || box.firstElementChild
+      victim?.remove()
+    }
+  }
+  clearTimeout(item._ttl)
+  const ttl = TOAST_TTL[kind]
+  if (ttl) item._ttl = setTimeout(() => item.remove(), ttl)
+  item.classList.remove('in')
+  void item.offsetWidth // 重播进入动画：重复的提示也要让人看到它又刷了一次
+  item.classList.add('in')
 }
 
 function fill(s) {
@@ -157,6 +208,29 @@ function samePath(a, b) {
     return /^[A-Za-z]:\//.test(text) ? text.toLowerCase() : text
   }
   return Boolean(a) && Boolean(b) && norm(a) === norm(b)
+}
+
+function overlayPendingPause(s) {
+  for (const station of Array.isArray(s?.stations) ? s.stations : []) {
+    const pending = pendingPause.get(station.name)
+    if (!pending) continue
+    // 服务端已经对上了，或者等了太久（POST 失败/被其它实例改掉）：以服务端为准。
+    if (Boolean(station.paused) === pending.paused || Date.now() - pending.at > 5000) {
+      pendingPause.delete(station.name)
+      continue
+    }
+    station.paused = pending.paused
+  }
+  return s
+}
+
+/** 就地改一个工位的接活状态，只重画工位卡片（不重画整页，避免把正在编辑的输入框冲掉）。 */
+function applyPaused(name, paused) {
+  pendingPause.set(name, { paused, at: Date.now() })
+  const target = Array.isArray(view?.stations) ? view.stations.find((item) => item.name === name) : null
+  if (!target) return
+  target.paused = paused
+  renderStations(view)
 }
 
 function renderRunning(s) {
@@ -423,7 +497,7 @@ function renderStations(s) {
         ? `<span class="t">${esc(cardLabel)}</span><br>${tail}`
         : `正在接单，还没分到卡片<br>${tail}`
     } else if (paused) {
-      body = '暂停中：调度器不会再派卡给它<br>点「继续接活」就能接回去'
+      body = '暂停中：调度器不会再派卡给它<br>把左上角的「接活」勾上就接回去了'
     } else if (trouble) {
       body = unityOff
         ? '验证要连本树的 Unity，现在没开<br>点下面的按钮打开它'
@@ -439,40 +513,50 @@ function renderStations(s) {
       srun: '在这个工位上开一批：自动从 TAPD 拉一张标了 ready-for-agent 的卡，跑完自动回写。',
       smerge: `把这个工位分支上 ${station.pending} 个未合入提交 cherry-pick 进主树，然后导表 → 验证门 → 推送 → 回写 TAPD。冲突会停下来等人（表格冲突必须手合）。`,
       sdel: '删掉这棵 worktree。还有未合入提交、或有批次在跑时会被拦住。',
-      spause: '暂停这个工位：调度器不再给它派新卡。正在跑的那一张不受影响；随时可以点「继续接活」接回去。',
-      sresume: '接回去：调度器又会把就绪卡派给这个工位（自动接单开着时）。',
+      slive: '接活开关：勾上 = 调度器会把就绪卡派给它；取消 = 暂停，不再派新卡（正在跑的那一张照常跑完，工具从不杀进程）。',
       sunity: '用 -unityPuerExecControl 启动这个工位的 Unity Editor（验证门要连它，首次导入约 4.5 分钟）。',
       sprobe: 'ping 一次这个工位的 Unity 控制端点（/health），区分「文件在但连不上」和真在线。',
       sclean: 'git restore 掉这个工位里没提交的改动（未跟踪文件不动）。',
     }
-    // 暂停按钮（开关两态）。
+    // 接活开关（Toggle），放在卡片左上角、工位名左边，不是按钮也不在底部动作行。
     //
     // 旧版这里是个「跑完这张就停」，靠写 stop 文件；但停止文件只在 loop.mjs 的「卡与卡之间」
     // 被读一次，而看板派卡永远是一张一批（--card 会把 maxTasks 强制成 1），所以那个标记
     // 从头到尾没人读——按钮看着像停了一个工位，实际什么都没发生（start 还会把它删掉）。
     // 真正想表达的是「别再给它派卡」，那就落一个持久标记，调度器直接跳过它。
-    const pauseBtn = (toPause) => (toPause
-      ? `<button class="primary" data-spause="${esc(station.name)}" data-paused="1" title="${esc(STIP.sresume)}">继续接活</button>`
-      : `<button data-spause="${esc(station.name)}" data-paused="0" title="${esc(STIP.spause)}">不再接活</button>`)
+    //
+    // 再后来那版是「不再接活 / 继续接活」两个态拼一个按钮，藏在底部动作行：双否定读着绕，
+    // 而且动作行只占下方一小块，一眼看不出这个工位到底还接不接活。现在是一个勾选框，
+    // 就贴在工位名前面：勾上 = 会派卡，取消 = 暂停。
+    const liveToggle = (paused) =>
+      `<label class="toggle${paused ? '' : ' on'}" title="${esc(STIP.slive)}">` +
+      `<input type="checkbox" data-spause="${esc(station.name)}"${paused ? '' : ' checked'}>接活</label>`
+    // 这个开关只在「会自动派卡」时有意义：服务端只有 tick() 的候选过滤看 station.paused
+    // （自动接单定时器 + 顶上那个「现在接一单」）。手动点卡片上的「接一单」不看它。
+    //
+    // 所以：自动接单关着 + 这个工位没被暂停 → 不显示，默认视图干净点；
+    // 已经被暂停的工位必须继续显示，否则关了自动接单之后这个状态就看不见、也改不回来
+    // （下次开自动接单时它会莫名不接活，那才是最坑的）。
+    const autoWatch = Boolean(s?.config?.watch?.enabled)
+    const showToggle = autoWatch || paused
     const buttons = []
-    if (running) {
-      buttons.push(pauseBtn(paused))
-    } else if (trouble) {
-      if (unityOff) buttons.push(`<button class="primary" data-sunity="${esc(station.name)}" title="${esc(STIP.sunity)}">打开 Unity</button>`)
-      else if (station.dirty) buttons.push(`<button class="primary" data-sclean="${esc(station.name)}" title="${esc(STIP.sclean)}">清理改动</button>`)
-      buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}"${station.idle ? '' : ' disabled'}>${unityOff || station.dirty ? '删掉' : '删掉这个工位'}</button>`)
-    } else if (booting) {
-      buttons.push(`<button data-sprobe="${esc(station.name)}" title="${esc(STIP.sprobe)}">检查端点</button>`)
-    } else if (paused) {
-      // 暂停的工位：先把「接回去」摆在最前面，剩下能干的（合入、删）照旧。
-      buttons.push(pauseBtn(true))
-      if (pending) buttons.push(`<button data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>`)
-      buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`)
-    } else {
-      if (pending) buttons.push(`<button class="primary" data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>`)
-      buttons.push(`<button class="primary" data-srun="${esc(station.name)}" title="${esc(STIP.srun)}">接一单</button>`)
-      buttons.push(pauseBtn(false))
-      buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`)
+    // 正在跑的工位不放动作按钮（会打断 agent）；接活开关在标题行，不受影响。
+    if (!running) {
+      if (trouble) {
+        if (unityOff) buttons.push(`<button class="primary" data-sunity="${esc(station.name)}" title="${esc(STIP.sunity)}">打开 Unity</button>`)
+        else if (station.dirty) buttons.push(`<button class="primary" data-sclean="${esc(station.name)}" title="${esc(STIP.sclean)}">清理改动</button>`)
+        buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}"${station.idle ? '' : ' disabled'}>${unityOff || station.dirty ? '删掉' : '删掉这个工位'}</button>`)
+      } else if (booting) {
+        buttons.push(`<button data-sprobe="${esc(station.name)}" title="${esc(STIP.sprobe)}">检查端点</button>`)
+      } else if (paused) {
+        // 暂停的工位：开关在标题行，这里只留还能干的（合入、删）。
+        if (pending) buttons.push(`<button data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>`)
+        buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`)
+      } else {
+        if (pending) buttons.push(`<button class="primary" data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>`)
+        buttons.push(`<button class="primary" data-srun="${esc(station.name)}" title="${esc(STIP.srun)}">接一单</button>`)
+        buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`)
+      }
     }
     const actions = buttons.join('')
     // 框颜色：在跑优先。在跑的时候工作区必然是脏的（agent 正在改文件），trouble 里那条
@@ -481,9 +565,9 @@ function renderStations(s) {
     // 悬停只给卡片号：开发机是黑箱，本机绝对路径对远程看板的人没有意义。
     const hover = station.card ? `卡片 ${station.card}` : ''
     return `<div class="card ${tone}" title="${esc(hover)}">` +
-      `<div class="card-top"><span class="card-name">${esc(station.name)}</span>${badge}</div>` +
+      `<div class="card-top"><span class="card-left">${showToggle ? liveToggle(paused) : ''}<span class="card-name">${esc(station.name)}</span></span>${badge}</div>` +
       `<div class="card-body">${body}</div>` +
-      `<div class="card-actions">${actions}</div>` +
+      (actions ? `<div class="card-actions">${actions}</div>` : '') +
       '</div>'
   }).join('')
 
@@ -532,9 +616,11 @@ function renderStations(s) {
   for (const btn of box.querySelectorAll('button[data-srun]')) {
     btn.onclick = () => { runStation(find(btn.getAttribute('data-srun'))).catch(() => {}) }
   }
-  for (const btn of box.querySelectorAll('button[data-spause]')) {
-    btn.onclick = () => {
-      pauseStation(find(btn.getAttribute('data-spause')), btn.getAttribute('data-paused') === '1').catch(() => {})
+  // 接活开关：勾选状态就是目标状态，取消勾选 = 暂停。服务端写失败时下一次 poll 会把
+  // 勾选框画回服务的真实状态（不在这里自己回滚，免得两处各写一套）。
+  for (const input of box.querySelectorAll('input[data-spause]')) {
+    input.onchange = () => {
+      pauseStation(find(input.getAttribute('data-spause')), !input.checked).catch(() => {})
     }
   }
   for (const btn of box.querySelectorAll('button[data-sdel]')) {
@@ -708,8 +794,48 @@ async function resolveConflict() {
   await poll()
 }
 
+/**
+ * 控制面板重画入口。
+ *
+ * 每 3 秒整块 innerHTML 重写会把用户选中的文本冲掉（DOM 节点一销毁，浏览器就丢选区），
+ * 表现是「选中的字过一会儿自己取消选中」。所以交给 selectionGuard：
+ * 数据没变就不画；数据变了但用户正在面板里选字，就等选区清掉再补画。
+ */
+const paintControlIfSafe = selectionGuard(() => el('ctl'))
+
 function render(s) {
-  view = s
+  paintControlIfSafe(() => paintControl(s), () => controlSignature(s))
+}
+
+/**
+ * 面板的数据指纹：相同就不重画。
+ * 里面的 startedAt 换成「分钟数」，这样「干活中 · 20m」这类相对时间每分钟能刷一次，
+ * 又不会因为每轮轮询里 now 变了 3 秒就重画一次。
+ */
+function controlSignature(s) {
+  const now = Number(s.now || Date.now())
+  const withMinutes = (item) => ({
+    ...item,
+    startedAt: item.startedAt ? Math.floor((now - Number(item.startedAt)) / 60_000) : 0,
+  })
+  return JSON.stringify({
+    t: minuteBucket(now),
+    config: s.config,
+    main: s.main,
+    stations: (s.stations || []).map(withMinutes),
+    runs: (s.runs || []).map(withMinutes),
+    jobs: (s.jobs || []).map(withMinutes),
+    queue: s.queue,
+    board: s.board,
+    autoPush: s.autoPush,
+    autoMerge: s.autoMerge,
+    lastMerge: s.lastMerge,
+    lastBatch: s.lastBatch,
+  })
+}
+
+function paintControl(s) {
+  view = overlayPendingPause(s)
   serverSkew = Number(s.now || Date.now()) - Date.now()
   fill(s)
   renderSummary(s)
@@ -728,16 +854,15 @@ function render(s) {
   if (el('cQueue')) el('cQueue').disabled = !s.config.workdir
   // 停止文件只对「主树上那个多卡批次」有意义：loop.mjs 在卡与卡之间才读它，
   // 工位批次永远一张一批，写了也读不到。所以只在主树自己有批次时才能点。
-  // 想让某个工位别再领卡：用它卡片上的「不再接活」（落的是 station.paused）。
+  // 想让某个工位别再领卡：把它卡片上的「接活」开关取消勾选（落的是 station.paused）。
   if (el('cStop')) {
     const mainBatch = runs.find((item) => samePath(item.workdir, s.config.workdir))
     el('cStop').disabled = !mainBatch
     el('cStop').title = mainBatch
       ? '写停止标记：主树上这批跑完当前卡就不再接下一张（不杀进程）'
-      : '只对主树上的多卡批次有用；工位批次是一张一批，要停工位请在它的卡片上点「不再接活」'
+      : '只对主树上的多卡批次有用；工位批次是一张一批，要停工位请取消它卡片上「接活」开关的勾选'
   }
   paintCountdown()
-  paintMsg()
 }
 
 function paintCountdown() {
@@ -917,25 +1042,31 @@ async function runStation(station) {
 }
 
 /**
- * 暂停/恢复一个工位 = 把「别再给它派卡」落成一个持久标记（存进 stations 表）。
+ * 接活开关 = 把「调度器派不派卡给它」落成一个持久标记（存进 stations 表）。
  *
  * 不是写停止文件：那个文件只在 loop.mjs 的卡与卡之间被读一次，而看板派卡是
  * 一张一批（--card 强制 maxTasks=1），所以永远不会被读到——旧版那个按钮等于没点。
  */
 async function pauseStation(station, paused) {
   if (!station) return
+  const was = Boolean(station.paused)
+  // 乐观更新：先画成新状态再发请求。等 1 秒多才变会让人觉得「点了没反应」（以前确实如此）。
+  applyPaused(station.name, paused)
   const res = await apiJson('api/stations', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ action: 'pause', name: station.name, paused }),
   })
-  if (!res.ok) say(res.data?.error || `暂停失败（HTTP ${res.status}）`, 'bad')
-  else {
-    say(paused
-      ? `${station.name} 已暂停：不会再派新卡给它${station.busy || !station.idle ? '（手上那张会跑完）' : ''}`
-      : `${station.name} 已接回去：空闲时会重新领卡`, paused ? 'warn' : 'ok')
+  if (!res.ok) {
+    applyPaused(station.name, was)
+    say(`接活开关没生效（HTTP ${res.status}）：${res.data?.error || '服务端拒绝'}`, 'bad')
+    return
   }
-  await poll()
+  say(paused
+    ? `${station.name} 已停止接活：不会再派新卡给它${station.busy || !station.idle ? '（手上那张会跑完）' : ''}`
+    : `${station.name} 已接活：空闲时会重新领卡`, paused ? 'warn' : 'ok')
+  // 不在这里 await poll()：那一趟要 1~1.5 秒（它会把所有工位重探一遍），
+  // 而 3 秒定时轮询本来就会把真实状态拉回来。
 }
 
 async function removeStation(station) {

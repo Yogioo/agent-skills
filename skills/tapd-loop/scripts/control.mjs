@@ -276,6 +276,21 @@ function gitOut(cwd, args) {
   }
 }
 
+/**
+ * git 的异步版：轮询/看板状态路径必须用它。
+ *
+ * execFileSync 会把 Node 的事件循环整整卡住（3 个工位 × 5 条 git ≈ 450ms，再加主树 ≈ 600~1000ms）。
+ * 而看板每 3 秒就要算一次状态、走 GET /api/control —— 这段时间里别人点「接活」，POST 只能排队，
+ * 实测被挡 0.6~1 秒，表现就是「点下去很迟钝」。异步 spawn 不占线程，请求之间互不阻塞。
+ */
+async function gitOutAsync(cwd, args) {
+  return await new Promise((done) => {
+    execFile('git', args, { cwd, encoding: 'utf8', windowsHide: true, timeout: 20_000 }, (err, stdout) => {
+      done(err ? '' : String(stdout || '').trim())
+    })
+  })
+}
+
 /** 只关心成败的 git 命令（restore 这类没有输出）。 */
 function gitRun(cwd, args) {
   try {
@@ -670,7 +685,7 @@ export function createControl(opts) {
     }
   }
 
-  function status() {
+  async function status() {
     const config = read()
     // 进程在、但看板重启过：死记录没人收尸，第一次问就把它清掉。
     const live = new Set(runningAll().map((item) => item.pid))
@@ -685,7 +700,7 @@ export function createControl(opts) {
       // running 保持单值（老页面在读）；runs 是全部，多工位时页面看这个。
       running: running[0] || null,
       runs: running,
-      stations: stationState(config),
+      stations: await stationStateAsync(config),
       // 主树自己也是一张卡：分支、领先/落后 origin、脏不脏、Unity 开没开。
       main: mainState(config.workdir),
       lastMerge: raw().lastMerge || null,
@@ -944,54 +959,97 @@ export function createControl(opts) {
    * 工位状态：名字、路径、分支、有没有活批次、可不可用、落后主分支多少、工作区脏不脏。
    * 注册表为空时退化成「只有 workdir 这一个工位」，老行为不变。
    */
-  function stationState(config = read()) {
-    const list = config.stations.length
+  function stationList(config) {
+    return config.stations.length
       ? config.stations
       : (config.workdir ? [{ name: 'main', path: config.workdir, note: '' }] : [])
+  }
+
+  /** 一个工位要探的现场（同步版：给建树/合入这些本来就要等的动作路径用）。 */
+  function probeStationSync(path, mainDir) {
+    const exists = existsSync(path)
+    const isRepo = exists ? Boolean(gitOut(path, ['rev-parse', '--git-dir'])) : false
+    const branch = isRepo ? gitOut(path, ['rev-parse', '--abbrev-ref', 'HEAD']) : ''
+    const dirty = isRepo ? Boolean(gitOut(path, ['status', '--porcelain', '--untracked-files=no'])) : false
+    const upstream = isRepo && branch ? gitOut(path, ['rev-parse', '--abbrev-ref', '@{u}']) : ''
+    const behind = upstream ? Number(gitOut(path, ['rev-list', '--count', 'HEAD..@{u}']) || '0') || 0 : 0
+    const unity = exists && isRepo ? unityState(path) : 'off'
+    // 这个工位有多少提交还没进主树（卡片据此给「合入」按钮）。主树未知或就是本树时按 0。
+    const pending = isRepo && branch && mainDir && resolve(mainDir) !== resolve(path)
+      ? pendingCount(mainDir, branch)
+      : 0
+    return { exists, isRepo, branch, dirty, upstream, behind, unity, pending }
+  }
+
+  /** 同上，异步版：git 全部并行发出去（一轮 ≈ 一个 git 的耗时），而且不卡事件循环。 */
+  async function probeStationAsync(path, mainDir) {
+    const exists = existsSync(path)
+    const isRepo = exists ? Boolean(await gitOutAsync(path, ['rev-parse', '--git-dir'])) : false
+    if (!isRepo) {
+      return { exists, isRepo: false, branch: '', dirty: false, upstream: '', behind: 0, unity: 'off', pending: 0 }
+    }
+    const [branch, statusOut, upstream] = await Promise.all([
+      gitOutAsync(path, ['rev-parse', '--abbrev-ref', 'HEAD']),
+      gitOutAsync(path, ['status', '--porcelain', '--untracked-files=no']),
+      gitOutAsync(path, ['rev-parse', '--abbrev-ref', '@{u}']),
+    ])
+    const needPending = Boolean(branch) && Boolean(mainDir) && resolve(mainDir) !== resolve(path)
+    const [behindOut, pending] = await Promise.all([
+      upstream ? gitOutAsync(path, ['rev-list', '--count', 'HEAD..@{u}']) : '',
+      needPending ? pendingCountAsync(mainDir, branch) : 0,
+    ])
+    return {
+      exists, isRepo, branch, dirty: Boolean(statusOut), upstream,
+      behind: Number(behindOut || '0') || 0,
+      unity: unityState(path),
+      pending: Number(pending) || 0,
+    }
+  }
+
+  /** 把「探到的现场」+「这一批在不在跑」拼成页面要的工位对象。同步/异步共用，免得两处走形。 */
+  function shapeStation(station, probe, batch) {
+    return {
+      name: station.name,
+      path: station.path,
+      note: station.note || '',
+      // 暂停的工位不接新卡，但它自己没毛病：usable / trouble 都不看这个字段。
+      paused: Boolean(station.paused),
+      ...probe,
+      // busy 是「这个工位上有一批在跑」。它跟 card 不等价：刚点「接一单」时批次已经起来了，
+      // 但卡片要等 TAPD 查完才有 id，card 一段时间里是空的。页面据此判断能不能再开一批。
+      busy: Boolean(batch),
+      idle: !batch,
+      // 可用 = 目录在 + 是 git 仓库 + 工作区没改已跟踪文件 + Unity 在线（端点能用）
+      usable: probe.exists && probe.isRepo && !probe.dirty && probe.unity === 'on',
+      card: batch ? String(batch.card || '') : '',
+      cardTitle: batch ? String(batch.cardTitle || '') : '',
+      runId: batch ? String(batch.runId || '') : '',
+      pid: batch ? Number(batch.pid) || 0 : 0,
+      startedAt: batch ? Number(batch.startedAt) || 0 : 0,
+    }
+  }
+
+  function stationState(config = read()) {
+    const list = stationList(config)
+    const mainDir = String(config.workdir || '').trim()
     const active = runningAll()
-    return list.map((station) => {
-      const path = station.path
-      const exists = existsSync(path)
-      const isRepo = exists ? Boolean(gitOut(path, ['rev-parse', '--git-dir'])) : false
-      const branch = isRepo ? gitOut(path, ['rev-parse', '--abbrev-ref', 'HEAD']) : ''
-      const dirty = isRepo ? Boolean(gitOut(path, ['status', '--porcelain', '--untracked-files=no'])) : false
-      const upstream = isRepo && branch ? gitOut(path, ['rev-parse', '--abbrev-ref', '@{u}']) : ''
-      const behind = upstream ? Number(gitOut(path, ['rev-list', '--count', `HEAD..@{u}`]) || '0') || 0 : 0
-      const unity = exists && isRepo ? unityState(path) : 'off'
-      const batch = active.find((item) => samePath(item.workdir, path)) || null
-      // 这个工位有多少提交还没进主树（卡片据此给「合入」按钮）。
-      // 主树未知或就是本树时按 0。
-      const mainDir = String(config.workdir || '').trim()
-      const pending = isRepo && branch && mainDir && resolve(mainDir) !== resolve(path)
-        ? pendingCount(mainDir, branch)
-        : 0
-      return {
-        name: station.name,
-        path,
-        note: station.note || '',
-        // 暂停的工位不接新卡，但它自己没毛病：usable / trouble 都不看这个字段。
-        paused: Boolean(station.paused),
-        exists,
-        isRepo,
-        branch,
-        upstream,
-        behind,
-        dirty,
-        unity,
-        pending,
-        // busy 是「这个工位上有一批在跑」。它跟 card 不等价：刚点「接一单」时批次已经起来了，
-        // 但卡片要等 TAPD 查完才有 id，card 一段时间里是空的。页面据此判断能不能再开一批。
-        busy: Boolean(batch),
-        idle: !batch,
-        // 可用 = 目录在 + 是 git 仓库 + 工作区没改已跟踪文件 + Unity 在线（端点能用）
-        usable: exists && isRepo && !dirty && unity === 'on',
-        card: batch ? String(batch.card || '') : '',
-        cardTitle: batch ? String(batch.cardTitle || '') : '',
-        runId: batch ? String(batch.runId || '') : '',
-        pid: batch ? Number(batch.pid) || 0 : 0,
-        startedAt: batch ? Number(batch.startedAt) || 0 : 0,
-      }
-    })
+    return list.map((station) => shapeStation(
+      station,
+      probeStationSync(station.path, mainDir),
+      active.find((item) => samePath(item.workdir, station.path)) || null,
+    ))
+  }
+
+  /** 看板状态专用：不阻塞事件循环，几个工位并行探。 */
+  async function stationStateAsync(config = read()) {
+    const list = stationList(config)
+    const mainDir = String(config.workdir || '').trim()
+    const active = runningAll()
+    return await Promise.all(list.map(async (station) => shapeStation(
+      station,
+      await probeStationAsync(station.path, mainDir),
+      active.find((item) => samePath(item.workdir, station.path)) || null,
+    )))
   }
 
   /**
@@ -1449,6 +1507,23 @@ function resolveBash() {
     let pending = null
     for (const base of bases) {
       const out = gitOut(main, ['cherry', base, branch])
+      const plus = new Set((out ? out.split('\n') : [])
+        .filter((line) => line.startsWith('+'))
+        .map((line) => line.slice(1).trim()))
+      pending = pending ? new Set([...pending].filter((sha) => plus.has(sha))) : plus
+      if (!pending.size) return 0
+    }
+    return pending ? pending.size : 0
+  }
+
+  /** 异步版 pendingCount（同一套「主树上游 + 本地 HEAD 两个基准取交集」逻辑）。 */
+  async function pendingCountAsync(main, branch) {
+    if (!main || !branch) return 0
+    const upstream = await gitOutAsync(main, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+    const bases = [...new Set([upstream, 'HEAD'].filter(Boolean))]
+    let pending = null
+    for (const base of bases) {
+      const out = await gitOutAsync(main, ['cherry', base, branch])
       const plus = new Set((out ? out.split('\n') : [])
         .filter((line) => line.startsWith('+'))
         .map((line) => line.slice(1).trim()))

@@ -8,7 +8,9 @@
  * 分支上提交代码，不能跟只读看板一个待遇。密钥在 `~/.tapd-loop/board-key`，只从
  * 打出来的那个带 `?k=` 的链接进来一次，之后存在浏览器里。
  *
- * 绑回 loopback（`--host 127.0.0.1`）就不需要密钥，本机自己用。
+ * 绑回 loopback（`--host 127.0.0.1`）就完全不需要密钥。绑 0.0.0.0 时，从本机（loopback）
+ * 发起的请求也一律放行：密钥是挡别的机器的，不是挡自己的——否则在自己机器上点按钮
+ * 只回一句 401，看着像功能坏了。
  */
 
 import { execFile } from 'node:child_process'
@@ -31,6 +33,8 @@ const PORT = Number(argValue('--port') || 7317)
 const AUTH_REQUIRED = !isLoopbackHost(HOST) && !args.includes('--no-auth')
 const KEY = ensureKey(HOME)
 const LOOP = argValue('--loop-script') || join(HERE, 'loop.mjs')
+/** 只改控制文件、不必回完整看板状态的动作（回包里省掉一次全工位探测）。 */
+const LIGHT_ACTIONS = new Set(['pause', 'forget'])
 const control = createControl({ home: HOME, runsRoot: ROOT, loopScript: LOOP })
 
 /**
@@ -96,7 +100,7 @@ async function handle(req, res, url) {
   const asset = path.startsWith('/assets/') ? sharedAsset(path.slice('/assets/'.length)) : null
   if (asset) return sendAsset(res, asset)
   // 页面模块的名字和对外的路由名不一样（app.js 就是 page-app.js），所以这里查表。
-  const own = { '/app.js': 'page-app.js', '/control.js': 'control.js', '/auth.js': 'auth.js', '/fileview.js': 'fileview.js' }[path]
+  const own = { '/app.js': 'page-app.js', '/control.js': 'control.js', '/auth.js': 'auth.js', '/fileview.js': 'fileview.js', '/dom-guard.js': 'dom-guard.js' }[path]
   if (own) return sendAsset(res, readAsset(join(HERE, own)))
 
   if (!path.startsWith('/api/')) return send(res, 404, 'not found')
@@ -122,11 +126,11 @@ async function handle(req, res, url) {
     return sendJson(res, data ? 200 : 404, data || { ok: false, error: 'arm not found' })
   }
   if (path === '/api/control') {
-    if (req.method === 'GET') return sendJson(res, 200, { ok: true, ...boardStatus() })
+    if (req.method === 'GET') return sendJson(res, 200, { ok: true, ...(await boardStatus()) })
     if (req.method === 'POST') {
       const body = await readJsonBody(req)
       control.write(body)
-      return sendJson(res, 200, { ok: true, ...boardStatus() })
+      return sendJson(res, 200, { ok: true, ...(await boardStatus()) })
     }
     return sendJson(res, 405, { ok: false, error: 'GET/POST only' })
   }
@@ -141,7 +145,7 @@ async function handle(req, res, url) {
     // 贴链接先看清楚：认的是哪张卡、状态对不对、有没有机器标签。只读，不占卡。
     const ref = url.searchParams.get('ref') || ''
     const peeked = await control.peek({ workdir: url.searchParams.get('workdir') || '', ref })
-    return sendJson(res, peeked.ok ? 200 : 400, { ...peeked, ...boardStatus() })
+    return sendJson(res, peeked.ok ? 200 : 400, { ...peeked, ...(await boardStatus()) })
   }
   if (path === '/api/run') {
     if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
@@ -149,23 +153,23 @@ async function handle(req, res, url) {
     // 带 ref 就先把链接翻译成 id，并确认这张卡现在真的能接；不然只会在批次里跳过一张。
     if (body.ref != null && String(body.ref).trim()) {
       const peeked = await control.peek({ workdir: body.workdir || '', ref: body.ref })
-      if (!peeked.ok) return sendJson(res, 400, { ok: false, error: peeked.error, ...boardStatus() })
+      if (!peeked.ok) return sendJson(res, 400, { ok: false, error: peeked.error, ...(await boardStatus()) })
       const blocked = peeked.card?.blockedReason
-      if (blocked) return sendJson(res, 409, { ok: false, error: blocked, card: peeked.card, ...boardStatus() })
+      if (blocked) return sendJson(res, 409, { ok: false, error: blocked, card: peeked.card, ...(await boardStatus()) })
       body.card = peeked.id
     }
     const result = control.start(body)
-    return sendJson(res, result.ok ? 200 : 409, { ...result, ...boardStatus() })
+    return sendJson(res, result.ok ? 200 : 409, { ...result, ...(await boardStatus()) })
   }
   if (path === '/api/stop') {
     if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
     const body = await readJsonBody(req)
     const result = control.stop(body)
     // 只有「带 error 的拒绝」才算 400；补回写这种「部分提交找不到卡片」是结果，不是失败。
-    return sendJson(res, result.error ? 400 : 200, { ...result, ...boardStatus() })
+    return sendJson(res, result.error ? 400 : 200, { ...result, ...(await boardStatus()) })
   }
   if (path === '/api/stations') {
-    if (req.method === 'GET') return sendJson(res, 200, { ok: true, ...boardStatus() })
+    if (req.method === 'GET') return sendJson(res, 200, { ok: true, ...(await boardStatus()) })
     if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'GET/POST only' })
     const body = await readJsonBody(req)
     const action = String(body.action || '').trim()
@@ -185,10 +189,14 @@ async function handle(req, res, url) {
                           : action === 'mainbackfill' ? control.backfillMain(body)
                             : action === 'mainclean' ? control.cleanMain(body)
                           : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / pause / forget / clean / merge / resolve / mainpush / mainverify / mainunity / mainprobe / mainbackfill / mainclean）` })
-    return sendJson(res, result.ok ? 200 : 400, { ...result, ...boardStatus() })
+    // pause / forget 只改控制文件：回包不必把每个工位的 Unity 端点 + git 状态重探一遍
+    // （实测 0.7~1.6 秒，勾一下「接活」要等这么久就叫迟钝）。页面只看 ok，真实状态走 3 秒轮询。
+    if (LIGHT_ACTIONS.has(action) && result.ok) {
+      return sendJson(res, 200, { ...result, stations: control.read().stations })
+    }
+    return sendJson(res, result.ok ? 200 : 400, { ...result, ...(await boardStatus()) })
   }
-  if (path === '/api/dispatch') {
-    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+  if (path === '/api/dispatch') {    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
     const body = await readJsonBody(req)
     if (body.enabled != null) {
       const current = control.read()
@@ -196,7 +204,7 @@ async function handle(req, res, url) {
     }
     // force：手动派一次不进节流（定时器自己调的时候不传）。
     const tick = await control.tick({ force: true })
-    return sendJson(res, 200, { ok: true, tick, ...boardStatus() })
+    return sendJson(res, 200, { ok: true, tick, ...(await boardStatus()) })
   }
   if (path === '/api/unity') {
     if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
@@ -204,15 +212,15 @@ async function handle(req, res, url) {
     const result = String(body.action || '') === 'probe'
       ? await control.probeUnity(body)
       : control.openUnity(body)
-    return sendJson(res, result.ok ? 200 : 400, { ...result, ...boardStatus() })
+    return sendJson(res, result.ok ? 200 : 400, { ...result, ...(await boardStatus()) })
   }
   if (path.startsWith('/img/')) return sendImage(res, url)
   return send(res, 404, 'not found')
 }
 
-function boardStatus() {
+async function boardStatus() {
   return {
-    ...control.status(),
+    ...(await control.status()),
     board: {
       host: HOST,
       port: PORT,
@@ -242,8 +250,21 @@ function publicQueue(queue) {
   }
 }
 
+/**
+ * 请求是不是从这台机器自己发出来的。
+ *
+ * 能在这台机器上开浏览器/跑 curl 的人本来就读得到 `~/.tapd-loop/board-key`（同一台机器、
+ * 同一个用户），再让他填一次密钥只是把自己挡在外面。局域网里别人打开仍然要密钥。
+ */
+function isLoopbackRequest(req) {
+  const raw = String(req.socket?.remoteAddress || '')
+  const addr = raw.startsWith('::ffff:') ? raw.slice('::ffff:'.length) : raw
+  return addr === '::1' || addr === 'localhost' || /^127\./.test(addr)
+}
+
 function authorized(req, url) {
   if (!AUTH_REQUIRED) return true
+  if (isLoopbackRequest(req)) return true
   const header = req.headers['x-tapd-loop-key']
   const supplied = Array.isArray(header) ? header[0] : header || url.searchParams.get('k') || ''
   return sameKey(String(supplied || ''), KEY)

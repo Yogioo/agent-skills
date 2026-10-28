@@ -5,6 +5,7 @@ import {
   timelineHtml, wireModal, wirePanes, wireTimeline,
 } from '/assets/client.mjs'
 import { apiFetch, withKey } from '/auth.js'
+import { minuteBucket, selectionGuard } from '/dom-guard.js'
 import { mountControl } from '/control.js'
 
 const rowsEl = document.getElementById('rows')
@@ -13,6 +14,8 @@ const meta = document.getElementById('meta')
 let stack = []
 let cardSig = null
 let armSig = null
+
+const paintModalIfSafe = selectionGuard(() => document.getElementById('modal'))
 
 const state = { runs: [], selected: null }
 
@@ -92,7 +95,24 @@ function pick() {
   return first.cards.length ? { run: first, card: first.cards[0] } : { run: first, card: null }
 }
 
+const paintRowsIfSafe = selectionGuard(() => rowsEl)
+
+/** 运行列表的数据指纹：相同就不重画（每 2 秒重建 tbody 会把选中的文本冲掉）。 */
+function rowsSignature() {
+  return JSON.stringify({
+    t: minuteBucket(),
+    days: view.days,
+    onlyAlive: view.onlyAlive,
+    selected: state.selected,
+    runs: state.runs,
+  })
+}
+
 function render() {
+  paintRowsIfSafe(paintRows, rowsSignature)
+}
+
+function paintRows() {
   const runs = state.runs.filter(visible)
   rowsEl.innerHTML = ''
   if (deep) state.selected = deep
@@ -194,8 +214,8 @@ function showModal() {
 function refreshModal() {
   const top = stack[stack.length - 1]
   if (!top) return
-  if (top.type === 'card') renderCard(top)
-  else renderArm(top)
+  // 弹窗里用户可能正选着日志/命令复制，重写 innerHTML 会把选区冲掉：选着就等下一次。
+  paintModalIfSafe(() => (top.type === 'card' ? renderCard(top) : renderArm(top)))
 }
 
 function renderArm(top) {

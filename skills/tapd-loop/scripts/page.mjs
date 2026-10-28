@@ -35,8 +35,24 @@ th:nth-child(4),td:nth-child(4){width:15ch;white-space:nowrap}
 #ctl .hero-state b{color:#e6edf3;font-size:15px}
 #ctl .hero-act{display:flex;gap:8px;flex-wrap:wrap}
 #ctl .hero-act button{font-size:13px;padding:7px 18px}
-#ctl #cMsg{font-size:12px;margin:0 0 10px;line-height:1.5}
-#ctl #cMsg:empty{display:none}
+/* 操作结果消息条（toast）：固定右下角。以前是控制面板里一行 12px 灰字，卡在 hero 和
+   「自动化」中间，看着像那一块的说明，也不会消失。 */
+#toasts{position:fixed;right:18px;bottom:18px;z-index:70;display:flex;flex-direction:column;gap:8px;
+  max-width:min(460px,calc(100vw - 36px));pointer-events:none}
+.toast{pointer-events:auto;display:flex;align-items:flex-start;gap:8px;padding:9px 10px 9px 11px;
+  border:1px solid #30363d;border-left-width:3px;border-radius:8px;background:#161b22;color:#c9d1d9;
+  box-shadow:0 10px 28px #000000a6;font-size:12.5px;line-height:1.5;overflow-wrap:anywhere}
+.toast .ic{flex:0 0 auto;width:1.1em;font-weight:700;text-align:center;opacity:.95}
+.toast .tx{flex:1 1 auto;min-width:0}
+.toast .x{flex:0 0 auto;background:transparent;border:0;padding:0 2px;margin:-2px 0 0;cursor:pointer;
+  color:#6e7681;font-size:15px;line-height:1.1}
+.toast .x:hover{color:#e6edf3;border:0}
+.toast.ok{border-left-color:#3fb950;background:#0d2318;color:#7ee787}
+.toast.warn{border-left-color:#d29922;background:#241d0e;color:#e3b341}
+.toast.bad{border-left-color:#f85149;background:#261012;color:#ff9d96}
+.toast.dim{border-left-color:#30363d;color:#a9b4c0}
+.toast.in{animation:toastIn .16s ease-out}
+@keyframes toastIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 #ctl .cards{display:grid;gap:10px;margin:0 0 12px;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr))}
 #ctl .cards:empty{display:none}
 #ctl .card{background:#11161f;border:1px solid #21262d;border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:9px;max-width:560px;min-width:0}
@@ -80,6 +96,11 @@ th:nth-child(4),td:nth-child(4){width:15ch;white-space:nowrap}
 #ctl .card-body .t{color:#c9d1d9}
 #ctl .card-actions{display:flex;gap:6px;margin-top:auto;flex-wrap:wrap}
 #ctl .card-actions button{flex:1 1 auto;white-space:nowrap}
+/* 接活开关：放在卡片左上角、工位名左边。勾上 = 会派卡（文字转绿），取消 = 暂停（灰掉）。 */
+#ctl .card-left{display:flex;align-items:center;gap:8px;min-width:0}
+#ctl .card-top .toggle{flex:0 0 auto;white-space:nowrap;font-size:12px;gap:4px;color:#8b949e;user-select:none}
+#ctl .card-top .toggle:hover{color:#e6edf3}
+#ctl .card-top .toggle.on{color:#3fb950}
 #ctl .fail{color:#f85149}
 #ctl .badge{font-size:11px;padding:2px 9px;border-radius:10px;border:1px solid #21262d;white-space:nowrap;flex:0 0 auto}
 #ctl .badge.ok{color:#3fb950;border-color:#3fb95055;background:#3fb95011}
@@ -149,7 +170,6 @@ export function pageHtml() {
       <button id="cPickOne" title="现在就派一轮：从 TAPD 拉就绪卡，派给空闲工位（不打开定时器）">现在接一单</button>
     </div>
   </div>
-  <div id="cMsg"></div>
   <div class="autobar" id="cAutoBar">
     <div class="ab-title">自动化</div>
     <div class="seg" id="segWatch">
@@ -217,6 +237,7 @@ export function pageHtml() {
     <div class="row" id="cShare"></div>
   </details>
 </section>
+<div id="toasts" role="status" aria-live="polite"></div>
 <div id="filters">
   <button data-days="0" class="on">全部</button>
   <button data-days="1">近 1 天</button>
