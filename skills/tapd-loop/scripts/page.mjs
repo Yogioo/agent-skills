@@ -7,14 +7,22 @@ const SHELL_CSS = `<style>
 table{table-layout:fixed}
 th:nth-child(1),td:nth-child(1){width:50%}
 th:nth-child(2),td:nth-child(2){width:35%}
-th:nth-child(3),td:nth-child(3){width:8%;white-space:nowrap;color:#8b949e}
-th:nth-child(4),td:nth-child(4){width:7%;white-space:nowrap}
+/* 后两列内容定长（用时、状态），用 ch 而不是百分比：窄屏按百分比算出来的宽度比文字还窄，
+   文字就会撑破表格把整页拉出横向滚动条。 */
+th:nth-child(3),td:nth-child(3){width:10ch;white-space:nowrap;color:#8b949e}
+th:nth-child(4),td:nth-child(4){width:15ch;white-space:nowrap}
 
-#ctl{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px 14px;margin:0 0 14px}
-#ctl .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 8px;font-size:12px;color:#8b949e}
+#ctl{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:14px 16px;margin:0 0 14px}
+#ctl .row{display:flex;align-items:center;gap:10px 8px;flex-wrap:wrap;margin:0 0 10px;font-size:12.5px;line-height:1.7;color:#8b949e}
 #ctl .row:last-child{margin-bottom:0}
-#ctl input,#ctl select{background:#11161f;color:#e6edf3;border:1px solid #21262d;border-radius:6px;padding:3px 7px;font:inherit;min-width:0}
-#ctl input[type=checkbox]{accent-color:#388bfd}
+#ctl input,#ctl select{background:#11161f;color:#e6edf3;border:1px solid #21262d;border-radius:6px;padding:4px 8px;font:inherit;min-width:0}
+/* 勾选框自己画：原生那个在深色底上就是个黑方块，看不出有没有勾（accent-color 只管已勾状态）。 */
+#ctl input[type=checkbox]{appearance:none;width:15px;height:15px;flex:0 0 auto;padding:0;margin:0;
+  border:1px solid #30363d;border-radius:4px;background:#0d1117;cursor:pointer;transition:background .12s,border-color .12s}
+#ctl input[type=checkbox]:hover{border-color:#58a6ff}
+#ctl input[type=checkbox]:checked{border-color:#1f6feb;
+  background:#1f6feb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.4l3 3 6-6.6'/%3E%3C/svg%3E") center/12px 12px no-repeat}
+#ctl input[type=checkbox]:focus-visible{outline:2px solid #388bfd;outline-offset:2px}
 #ctl input#cWorkdirText,#ctl input#cShareUrl{flex:1 1 320px}
 #ctl button{background:#11161f;color:#c9d1d9;border:1px solid #21262d;border-radius:6px;padding:4px 12px;font:inherit;cursor:pointer}
 #ctl button:hover:not(:disabled){border-color:#30363d;color:#e6edf3}
@@ -29,7 +37,7 @@ th:nth-child(4),td:nth-child(4){width:7%;white-space:nowrap}
 #ctl .hero-act button{font-size:13px;padding:7px 18px}
 #ctl #cMsg{font-size:12px;margin:0 0 10px;line-height:1.5}
 #ctl #cMsg:empty{display:none}
-#ctl .cards{display:grid;gap:10px;margin:0 0 12px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+#ctl .cards{display:grid;gap:10px;margin:0 0 12px;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr))}
 #ctl .cards:empty{display:none}
 #ctl .card{background:#11161f;border:1px solid #21262d;border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:9px;max-width:560px;min-width:0}
 #ctl .chips{display:flex;gap:6px;flex-wrap:wrap}
@@ -40,19 +48,30 @@ th:nth-child(4),td:nth-child(4){width:7%;white-space:nowrap}
 #ctl .chip.dim{color:#8b949e}
 #ctl .card-body a{color:#58a6ff;text-decoration:none}
 #ctl .card-body a:hover{text-decoration:underline}
-#ctl .autobar{border:0;background:none;padding:0;gap:10px;align-items:stretch}
-#ctl .autobar .ab-title{color:#8b949e;font-weight:600;align-self:center;letter-spacing:1px;font-size:11px;text-transform:uppercase}
-/* 三个开关各占一张小卡：开着蓝底+左侧亮条，关着整块压暗——一眼能看出哪个在干活。 */
-#ctl .autobar .seg{display:flex;align-items:center;gap:7px;flex:1 1 320px;min-width:280px;
-  border:1px solid #30363d;border-radius:8px;background:#161b22;padding:8px 10px;
+/* 三个开关各占一张小卡：开着蓝底+左侧亮条，关着整块压暗——一眼能看出哪个在干活。
+   用显式 3 / 2 / 1 列而不是 flex 单行：窗口窄了就整张卡换行，
+   不让「每 N 秒」和状态句挤在同一行里互相顶（auto-fit 还会多算一条空轨道，宽屏上三张卡只占 3/4 宽）。 */
+#ctl .autobar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;align-items:stretch}
+@media (max-width:1120px){#ctl .autobar{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:720px){#ctl .autobar{grid-template-columns:minmax(0,1fr)}}
+#ctl .autobar .ab-title{grid-column:1/-1;color:#8b949e;font-weight:600;letter-spacing:1px;font-size:11px;text-transform:uppercase}
+/* 每张卡两行：上面「勾选 + 名字 + 间隔」，下面留给状态句。状态句不再被挤成一条省略号。 */
+#ctl .autobar .seg{display:flex;flex-direction:column;justify-content:center;gap:7px;min-width:0;
+  border:1px solid #30363d;border-radius:8px;background:#161b22;padding:10px 12px;
   transition:border-color .15s,background .15s,box-shadow .15s}
 #ctl .autobar .seg.on{border-color:#1f6feb;background:#132a4d;box-shadow:inset 3px 0 0 #388bfd}
-#ctl .autobar .seg:not(.on){opacity:.6}
-#ctl .autobar .seg label{color:#e6edf3;font-weight:600;white-space:nowrap}
-#ctl .autobar .seg:not(.on) label{color:#c9d1d9}
-#ctl .autobar input[type=checkbox]{width:15px;height:15px}
-#ctl .autobar .ab-hint{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8b949e}
+#ctl .autobar .seg:not(.on){opacity:.72}
+#ctl .autobar .seg-top{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+#ctl .autobar .seg-top label{color:#e6edf3;font-weight:600;white-space:nowrap;gap:7px}
+#ctl .autobar .seg:not(.on) .seg-top label{color:#c9d1d9}
+#ctl .autobar .seg-every{display:flex;align-items:center;gap:5px;white-space:nowrap;color:#8b949e}
+#ctl .autobar input[type=number]{width:5.6em;text-align:center;padding:2px 4px}
+/* 状态句最多两行：路径/失败原因这类长句换行读，实在超了截断，全文放 title 里。 */
+#ctl .autobar .ab-hint{font-size:11.5px;line-height:1.5;min-width:0;overflow-wrap:anywhere;color:#8b949e;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#ctl .autobar .ab-hint:empty{display:none}
 #ctl .autobar .seg.on .ab-hint{color:#a5d6ff}
+#ctl .autobar .seg.on .ab-hint.warn,#ctl .autobar .ab-hint.warn{color:#d29922}
 #ctl .card.run{border-color:#1f6feb88}
 #ctl .card.bad{border-color:#f8514988}
 #ctl .card-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -75,7 +94,7 @@ th:nth-child(4),td:nth-child(4){width:7%;white-space:nowrap}
 #cQueueBox:empty{display:none}
 #cQueueBox{margin:10px 0 0;border-top:1px solid #21262d;padding-top:8px}
 #cQueueBox .qhead{font-size:12px;color:#8b949e;margin:0 0 6px}
-#cQueueBox .qrow{display:grid;grid-template-columns:150px minmax(0,1fr) 150px 96px;gap:10px;align-items:center;padding:4px 0;border-top:1px solid #161b22;font-size:12px}
+#cQueueBox .qrow{display:grid;grid-template-columns:150px minmax(0,1fr) 150px 96px;gap:10px;align-items:center;padding:6px 0;border-top:1px solid #161b22;font-size:12.5px;line-height:1.6}
 #cQueueBox .qrow:first-of-type{border-top:0}
 #cQueueBox .qid{color:#6e7681}
 #cQueueBox .qtitle{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -105,7 +124,7 @@ th:nth-child(4),td:nth-child(4){width:7%;white-space:nowrap}
 #cStations{margin:10px 0 0;border-top:1px solid #21262d;padding-top:8px}
 #cStations .shead{display:flex;align-items:center;gap:10px;font-size:12px;color:#8b949e;margin:0 0 6px;flex-wrap:wrap}
 #cStations .slist{display:flex;flex-direction:column}
-#cStations .srow{display:grid;grid-template-columns:64px minmax(0,1fr) 100px 150px 196px;gap:10px;align-items:center;padding:4px 0;border-top:1px solid #161b22;font-size:12px}
+#cStations .srow{display:grid;grid-template-columns:64px minmax(0,1fr) 100px 150px 196px;gap:10px;align-items:center;padding:6px 0;border-top:1px solid #161b22;font-size:12.5px;line-height:1.6}
 #cStations .srow:first-child{border-top:0}
 #cStations .sname{color:#e6edf3}
 #cStations .spath{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#6e7681}
@@ -129,22 +148,28 @@ export function pageHtml() {
     </div>
   </div>
   <div id="cMsg"></div>
-  <div class="row autobar" id="cAutoBar">
-    <span class="ab-title">自动化</span>
+  <div class="autobar" id="cAutoBar">
+    <div class="ab-title">自动化</div>
     <div class="seg" id="segWatch">
-      <label title="定时去 TAPD 看有没有就绪卡，有就派给空闲工位（空着就不开工）"><input type="checkbox" id="cWatch">自动接单</label>
-      <span>每</span><input id="cPollSec" type="number" min="30" max="86400" step="30" style="width:4.5em"><span>秒</span>
-      <span id="cNext" class="ab-hint dim"></span>
+      <div class="seg-top">
+        <label title="定时去 TAPD 看有没有就绪卡，有就派给空闲工位（空着就不开工）"><input type="checkbox" id="cWatch">自动接单</label>
+        <span class="seg-every">每<input id="cPollSec" type="number" min="30" max="86400" step="30" title="多少秒去看一次 TAPD">秒</span>
+      </div>
+      <div id="cNext" class="ab-hint dim"></div>
     </div>
     <div class="seg" id="segAutoPush">
-      <label title="主树有没推的提交时，自己跑 collect --resume：导表 → 验证门 → 推送 → 回写 TAPD"><input type="checkbox" id="cAutoPush">自动验证并推送</label>
-      <span>每</span><input id="cAutoPushSec" type="number" min="30" max="86400" step="30" style="width:4.5em"><span>秒</span>
-      <span id="cAutoPushHint" class="ab-hint dim"></span>
+      <div class="seg-top">
+        <label title="主树有没推的提交时，自己跑 collect --resume：导表 → 验证门 → 推送 → 回写 TAPD"><input type="checkbox" id="cAutoPush">自动验证并推送</label>
+        <span class="seg-every">每<input id="cAutoPushSec" type="number" min="30" max="86400" step="30" title="多少秒看一次主树">秒</span>
+      </div>
+      <div id="cAutoPushHint" class="ab-hint dim"></div>
     </div>
     <div class="seg" id="segAutoMerge">
-      <label title="有工位攒了未合入提交时，自己 cherry-pick 进主树 → 导表 → 验证门 → 推送 → 回写 TAPD（一次只合一个工位，默认关）"><input type="checkbox" id="cAutoMerge">自动合入工位提交</label>
-      <span>每</span><input id="cAutoMergeSec" type="number" min="30" max="86400" step="30" style="width:4.5em"><span>秒</span>
-      <span id="cAutoMergeHint" class="ab-hint dim"></span>
+      <div class="seg-top">
+        <label title="有工位攒了未合入提交时，自己 cherry-pick 进主树 → 导表 → 验证门 → 推送 → 回写 TAPD（一次只合一个工位，默认关）"><input type="checkbox" id="cAutoMerge">自动合入工位提交</label>
+        <span class="seg-every">每<input id="cAutoMergeSec" type="number" min="30" max="86400" step="30" title="多少秒挑一个工位合一次">秒</span>
+      </div>
+      <div id="cAutoMergeHint" class="ab-hint dim"></div>
     </div>
   </div>
   <div id="cConflict"></div>

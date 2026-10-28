@@ -97,9 +97,9 @@ function fill(s) {
   if (el('cAutoPushSec')) el('cAutoPushSec').value = String(config.autoPush?.pollSec ?? 120)
   if (el('cAutoPushHint')) {
     const auto = s.autoPush || {}
-    el('cAutoPushHint').textContent = !auto.enabled ? ''
+    hint('cAutoPushHint', !auto.enabled ? ''
       : auto.fails > 0 ? `连续失败 ${auto.fails} 次${auto.nextAt > Date.now() ? `，${Math.ceil((auto.nextAt - Date.now()) / 60000)} 分钟后重试` : ''}`
-        : auto.lastResult ? `上次：${auto.lastResult}` : '等着主树攒出没推的提交'
+        : auto.lastResult ? `上次：${auto.lastResult}` : '等着主树攒出没推的提交')
   }
   if (el('cAutoMerge')) el('cAutoMerge').checked = Boolean(config.autoMerge?.enabled)
   if (el('cAutoMergeSec')) el('cAutoMergeSec').value = String(config.autoMerge?.pollSec ?? 120)
@@ -108,10 +108,10 @@ function fill(s) {
     const now = Date.now()
     // 退避是按工位记的：只把「还没到时间」的那几棵报出来，人能看出是卡在哪一棵上。
     const cooling = (auto.stations || []).filter((one) => Number(one.nextAt) > now)
-    el('cAutoMergeHint').textContent = !auto.enabled ? ''
+    hint('cAutoMergeHint', !auto.enabled ? ''
       : cooling.length
         ? cooling.map((one) => `${one.name}：${Math.ceil((Number(one.nextAt) - now) / 60000)} 分钟后再试`).join(' · ')
-        : auto.lastResult ? `上次：${auto.lastResult}` : '等着工位攒出待合入的提交'
+        : auto.lastResult ? `上次：${auto.lastResult}` : '等着工位攒出待合入的提交')
   }
 }
 
@@ -131,6 +131,19 @@ function clockOf(t) {
 
 function esc(text) {
   return String(text ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
+}
+
+/**
+ * 写自动化小卡的状态句。CSS 只展示两行（路径/失败原因能很长），
+ * 所以把全文同步到 title：鼠标停一下就能看完整句，不用去翻日志。
+ */
+function hint(id, text) {
+  const box = el(id)
+  if (!box) return
+  const full = String(text ?? '')
+  box.textContent = full
+  if (full) box.title = full
+  else box.removeAttribute('title')
 }
 
 /**
@@ -680,7 +693,7 @@ function paintCountdown() {
   if (!box) return
   const s = view
   if (!s) {
-    box.textContent = ''
+    hint('cNext', '')
     return
   }
   const w = s.watch
@@ -688,11 +701,11 @@ function paintCountdown() {
   const idle = stations.filter((station) => station.idle && station.usable).length
   if (!w.enabled) {
     // 关着的时候只说工位情况：那个勾选框本身就写着「没开」，不用再念一遍。
-    box.textContent = stations.length ? `空闲 ${idle}/${stations.length}` : ''
+    hint('cNext', stations.length ? `空闲 ${idle}/${stations.length}` : '')
     return
   }
   if (w.draining) {
-    box.textContent = '正在查 TAPD…'
+    hint('cNext', '正在查 TAPD…')
     return
   }
   const left = Number(w.nextAt || 0) - (Date.now() + serverSkew)
@@ -700,7 +713,7 @@ function paintCountdown() {
     (w.lastCheckAt ? ` · 上次 ${clockOf(w.lastCheckAt)} 可接 ${w.lastReady} 张` : '')
   const err = w.lastError ? ` · ${w.lastError}` : ''
   box.className = w.lastError ? 'ab-hint warn' : 'ab-hint dim'
-  box.textContent = (left > 0 ? `${Math.ceil(left / 1000)}s 后看一次` : '马上看') + tail + err
+  hint('cNext', (left > 0 ? `${Math.ceil(left / 1000)}s 后看一次` : '马上看') + tail + err)
 }
 
 async function poll() {
