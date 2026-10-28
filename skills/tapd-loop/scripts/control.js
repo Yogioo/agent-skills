@@ -220,7 +220,9 @@ function renderMain(s) {
   }
   const jobs = (Array.isArray(s.jobs) ? s.jobs : [])
     .filter((item) => isMainWork(item))
-  const job = jobs.find((item) => item.status === 'running' || item.status === 'unknown')
+  // 只看真在跑的。进程没了的（interrupted）不算在跑：否则看板重启时正在跑的 collect
+  // 会让这张卡永远写着「验证中」、按钮全置灰，看起来像卡死。它们走下面的 interruptedLine。
+  const job = jobs.find((item) => item.status === 'running')
   const busy = Boolean(job)
   // 主树上最后一次跑完的长任务：它要是红的，卡片得把「怎么红的」说出来，
   // 而不是让你去 200 行日志里找。后面成功的会把它顶掉，所以不会永远挂着一条旧的。
@@ -266,6 +268,16 @@ function renderMain(s) {
   const failLine = showFail
     ? `<span class="fail">✕ ${esc(failTitle(showFail))}：${esc(showFail.summary || `失败（exit ${showFail.code}）`)}</span>`
     : ''
+  // 没收到退出的任务：多半是看板重启时 collect 还在跑（子进程 detach 了，收尸的那个
+  // child.once('exit') 跟着看板没了）。它可能成功也可能失败，所以只说“去日志看”，
+  // 不冒充结果。比让它永远画着「验证中」诚实得多。
+  // 只要「比最近一次真正收过尾的任务还新」的那一条：后面又有活干完就不提醒旧的了。
+  const lastEnded = Math.max(Number(lastFailed?.endedAt || 0), Number(lastOk?.endedAt || 0))
+  const interrupted = !busy ? jobs.filter((item) => item.status === 'interrupted' && Number(item.startedAt || 0) > lastEnded)
+    .sort((a, b) => Number(b.startedAt || 0) - Number(a.startedAt || 0))[0] : null
+  const interruptedLine = interrupted
+    ? `<span class="warn">⚠ 上次${esc(failTitle(interrupted))}没收到退出（看板重启过？）：结果以日志为准</span>`
+    : ''
 
   // 每个按钮都得能自己解释：这个面板上很多动作会真改 git / 真推共享分支，光靠名字看不懂。
   const TIP = {
@@ -290,7 +302,8 @@ function renderMain(s) {
         : btn('data-mprobe="1"', '检查端点', TIP.mprobe)) +
       (main.dirty ? btn('data-mclean="1"', '清理改动', TIP.mclean) : '') +
       btn('data-mbackfill="1"', '补回写 TAPD', TIP.mbackfill, backfillUrgent) +
-      (showFail?.log ? btn(`data-mlog="${esc(showFail.log)}"`, '看日志', TIP.mlog) : '')
+      (showFail?.log ? btn(`data-mlog="${esc(showFail.log)}"`, '看日志', TIP.mlog) : '') +
+      (!showFail?.log && interrupted?.log ? btn(`data-mlog="${esc(interrupted.log)}"`, '看上次日志', TIP.mlog) : '')
 
   // 上次回写的结果：只报「对上卡片」的那几条。没对上卡片的提交（不是工单提交、或没有
   // cherry-pick 尾巴）单独算个数——以前会把它们渲染成「卡片 ⚠ ?」，等于在页面上放乱码。
@@ -327,6 +340,7 @@ function renderMain(s) {
     `<div class="card-body">` +
       `<div class="chips">${chips.join('')}</div>` +
       (failLine ? `<div>${failLine}</div>` : '') +
+      (interruptedLine ? `<div>${interruptedLine}</div>` : '') +
       (lastText ? `<div class="dim">${lastText}</div>` : '') +
     `</div>` +
     `<div class="card-actions">${actions}</div>` +
@@ -373,7 +387,7 @@ function renderStations(s) {
   // 只画还在跑的：done / failed 的 job 不该再占卡片（以前 resolve 用看板 pid
   // 占位，alive 恒真，、合入完了还挂着一张「正在删除」）。
   const jobs = (Array.isArray(s.jobs) ? s.jobs : [])
-    .filter((job) => job.status === 'running' || job.status === 'unknown')
+    .filter((job) => job.status === 'running')
 
   const cards = stations.map((station) => {
     // 判「在干活」不能看 card：刚点「接一单」时批次已经起来了，卡片要等 TAPD 查完才有 id。

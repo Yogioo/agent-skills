@@ -45,6 +45,12 @@ const STATION_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,23}$/
 
 /** 长任务（建树 / 删树）的日志落在 <home>/board-batches/ 下，和批次日志放一起。 */
 const STATION_JOB_TIMEOUT_MS = 60 * 60_000
+/**
+ * 看板重启后，「进程看不到了」不等于「活干完了」：collect 是 detached 起的，
+ * 看板死了它还在动主树。宽限期内照样把它当「主树忙」。
+ * 15 分钟：一次合入/推送最慢也就三五分钟，留出余量给解冲突。
+ */
+const ORPHAN_JOB_GRACE_MS = 15 * 60_000
 
 export const DEFAULTS = {
   workdir: '',
@@ -954,7 +960,14 @@ export function createControl(opts) {
     })
   }
 
-  /** 建树 / 删树 / 合入 / 解冲突这些长任务。只有 running 的才看 pid 判活。 */
+  /**
+   * 建树 / 删树 / 合入 / 解冲突这些长任务。只有 running 的才看 pid 判活。
+   *
+   * 进程没了但记录还写着 running 的，对外叫 `interrupted`（不是 `unknown`）：
+   * 典型是「看板重启/被杀时 collect 还在跑」，child.once('exit') 没来得及写收尾，
+   * 于是这条记录永远停在 running。它必须能跟「真在跑」区分开，否则页面会永远
+   * 画着「验证中」、把按钮全部置灰，看着像死了。
+   */
   function listJobs() {
     const saved = raw()
     const jobs = Array.isArray(saved.jobs) ? saved.jobs : []
@@ -963,7 +976,7 @@ export function createControl(opts) {
       // 完成了也不从页面消失（pin 到 done 之后还会被前端当「还在跑」画出来）。
       const running = job.status === 'running'
       const alive = running && job.pid ? pidAlive(Number(job.pid)) : false
-      const status = running && !alive ? 'unknown' : job.status
+      const status = running && !alive ? 'interrupted' : job.status
       return { ...job, alive, status }
     })
   }
@@ -1733,9 +1746,7 @@ function resolveBash() {
     }
     const main = String(config.workdir || '').trim()
     if (!main) return { skipped: 'no-workdir' }
-    if (listJobs().some((job) => String(job.kind || '').startsWith('main-') && (job.status === 'running' || job.status === 'unknown'))) {
-      return { skipped: 'busy' }
-    }
+    if (mainBusy()) return { skipped: 'busy' }
     const state = mainState(main)
     if (!state.exists || !state.isRepo) return { skipped: 'no-main' }
     if (state.conflict) return { skipped: 'conflict' }
@@ -1772,15 +1783,21 @@ function resolveBash() {
   /**
    * 主树上的长任务（合入 / 解冲突 / 验证 / 推送）是不是还在跑。
    *
-   * `unknown` 不算忙：那是「看板重启过、命令早就结束了但没人收尸」的旧记录。
-   * 拿它当挡箭牌会把自动合入永远卡住，而真正的活干完了本来也不会有人来找它。
+   * 进程没了的（`interrupted`）不算忙：那是「看板重启过、命令早就结束了但没人收尸」的旧记录。
+   * 拿它当挡箭牌会把自动合入/自动推送永远卡住，而真正的活干完了本来也不会有人来找它。
    */
   function mainBusy() {
+    const now = Date.now()
     return listJobs().some((job) => {
       const kind = String(job.kind || '')
       const mine = kind.startsWith('main-') || kind === 'merge' || kind === 'merge-resume' || kind === 'resolve'
       if (!mine) return false
-      return job.alive === true || (job.status === 'running' && !job.pid)
+      if (job.alive === true || (job.status === 'running' && !job.pid)) return true
+      // 记录还写着 running、但 pid 已经看不到了：多半是「看板重启时它还在跑」。
+      // 那个子进程是 detached 的，可能真的还在 pick/verify/push develop——宽限期内照样算忙，
+      // 否则自动推送和自动合入会同时再起一个 collect 撞上去（实测撞过一次：两个 collect
+      // 同时 pick + verify + push 同一个 develop）。过了宽限期就当它早结束了，不无限挡路。
+      return job.status === 'interrupted' && now - Number(job.startedAt || 0) < ORPHAN_JOB_GRACE_MS
     })
   }
 
@@ -1885,9 +1902,7 @@ function resolveBash() {
     if (runningAll().some((item) => samePath(item.workdir, main))) {
       return { ok: false, error: '主树上还有一批在跑，等它跑完再说' }
     }
-    if (listJobs().some((job) => String(job.kind || '').startsWith('main-') && (job.status === 'running' || job.status === 'unknown'))) {
-      return { ok: false, error: '主树还有任务在跑（推送/验证），等它结束' }
-    }
+    if (mainBusy()) return { ok: false, error: '主树还有任务在跑（合入/解冲突/验证/推送），等它结束' }
     const dirty = gitOut(main, ['status', '--porcelain', '--untracked-files=no']).split('\n').map((line) => line.trim()).filter(Boolean)
     if (!dirty.length) return { ok: true, note: '主树本来就是干净的', paths: [] }
     const ok = gitRun(main, ['restore', '--', '.'])

@@ -340,6 +340,36 @@ test('paused station keeps out of dispatch and survives unrelated config writes'
   assert.equal(again.pauseStation({ name: 'nope', paused: true }).ok, false, '没这个工位就拒')
 })
 
+test('a job whose process vanished shows as interrupted, and the main tree stays busy for a grace period', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'tapd-orphan-'))
+  t.after(() => cleanup(home))
+  const runsRoot = join(home, 'runs')
+  mkdirSync(runsRoot, { recursive: true })
+  const ctl = createControl({ home, runsRoot, loopScript: 'unused.mjs' })
+  // 主树指一个不存在的目录：过了宽限期 tick 只会返回 no-main，不会真的去起 collect。
+  ctl.write({ workdir: join(home, 'nowhere'), autoPush: { enabled: true, pollSec: 60 } })
+
+  // 拿一个确实死掉的 pid：spawn 一个马上退出的子进程。
+  const child = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore', windowsHide: true })
+  await new Promise((done) => child.once('exit', done))
+
+  const file = join(home, 'board-control.json')
+  const setJob = (startedAt) => {
+    const current = JSON.parse(readFileSync(file, 'utf8'))
+    writeFileSync(file, JSON.stringify({
+      ...current,
+      jobs: [{ id: 'job-orphan', kind: 'main-push', name: '(主树)', workdir: join(home, 'nowhere'), pid: child.pid || 0, startedAt, status: 'running', log: '' }],
+    }), 'utf8')
+  }
+
+  setJob(Date.now())
+  assert.equal(ctl.status().jobs[0].status, 'interrupted', '进程没了就不是 running（页面靠这个不再画「验证中」）')
+  assert.deepEqual(await ctl.autoPushTick(), { skipped: 'busy' }, '刚断线的任务还是算主树忙：detached 的 collect 可能还在动 develop')
+
+  setJob(Date.now() - 20 * 60_000)
+  assert.equal((await ctl.autoPushTick()).skipped, 'no-main', '过了宽限期就不该无限挡路')
+})
+
 // ---------------------------------------------------------------- 小工具
 
 async function withBoard(t, args) {
