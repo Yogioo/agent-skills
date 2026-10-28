@@ -14,7 +14,7 @@
  */
 
 import { execFile } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir, networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -22,6 +22,8 @@ import { fileURLToPath } from 'node:url'
 import { readAsset, sharedAsset } from '../../../lib/web-ui/assets.mjs'
 import { createControl, ensureKey, isLoopbackHost, sameKey } from './control.mjs'
 import { listRuns, readArm, readCard, readFileInfo } from './read-run.mjs'
+import { computeStats } from './stats.mjs'
+import { indexPath, readTrace } from './trace-index.mjs'
 import { pageHtml } from './page.mjs'
 
 const args = process.argv.slice(2)
@@ -125,6 +127,10 @@ async function handle(req, res, url) {
     const data = readArm(ROOT, url.searchParams.get('run') || '', url.searchParams.get('id') || '', url.searchParams.get('arm') || '')
     return sendJson(res, data ? 200 : 404, data || { ok: false, error: 'arm not found' })
   }
+  if (path === '/api/stats') {
+    const days = Math.max(1, Math.min(120, Number(url.searchParams.get('days')) || 14))
+    return sendJson(res, 200, { ok: true, ...statsFor(days) })
+  }
   if (path === '/api/control') {
     if (req.method === 'GET') return sendJson(res, 200, { ok: true, ...(await boardStatus()) })
     if (req.method === 'POST') {
@@ -216,6 +222,25 @@ async function handle(req, res, url) {
   }
   if (path.startsWith('/img/')) return sendImage(res, url)
   return send(res, 404, 'not found')
+}
+
+/**
+ * 统计面板的数据。索引是 append-only，文件没变就不重算：
+ * 面板 30 秒拉一次，历史长了以后重复解 JSON 不值。
+ */
+let statsCache = { at: 0, mtime: 0, days: 0, value: null }
+
+function statsFor(days) {
+  let mtime = 0
+  try { mtime = statSync(indexPath(HOME)).mtimeMs } catch { mtime = 0 }
+  const fresh = statsCache.value && statsCache.mtime === mtime && statsCache.days === days && Date.now() - statsCache.at < 30_000
+  if (fresh) return statsCache.value
+  // 读失败（索引还没建）就当空索引：面板显示「还没有数据」比 500 好。
+  let rows = []
+  try { rows = readTrace(HOME) } catch { rows = [] }
+  const value = computeStats(rows, { days })
+  statsCache = { at: Date.now(), mtime, days, value }
+  return value
 }
 
 async function boardStatus() {

@@ -194,6 +194,7 @@ node <技能根>/scripts/start-board.mjs --port 7400 --host 192.168.1.5
 | 主树自动验证并推送 | 开关 + 间隔秒（30 秒起，默认 120）。主树领先 origin、没冲突、工作区干净、Unity 端点在线、没有别的主树任务在跑时，自己跑 `collect --resume`（导表 → verify → push → 回写 TAPD）；失败按 1/2/4/8/16/30 分钟退避，成功清零 |
 | 主树自动合入工位提交 | 开关 + 间隔秒（30 秒起，默认 120）。主树干净、没冲突、Unity 在线、没有主树任务在跑、自动推送开着时主树没有未推提交，就挑一个「空闲 + 有未合入提交」的工位跑 `collect.mjs <分支> --resolve`（pick → 导表 → verify → push → 回写）；一次只合一个，退避按工位各记各的。**默认关**：它往共享分支写东西 |
 | 指定工单：贴链接 + 查看这张 / 接这张开跑 | 先 `--show <id>` 看清楚，再 `--card <id>` 真跑（永远只跑一张） |
+| 页面上方「统计」按钮 | 弹窗（`Esc`/点空白处关掉）；**全局（所有仓库）**，打开时才拉数据、30 秒刷一次；数据源 `~/.tapd-loop/index.jsonl`，接口 `GET /api/stats?days=N` |
 | 工位卡片上的「接活」开关（勾选框） | 勾上 = 调度器会派卡；取消 = 落一个持久的 `station.paused`，调度器直接跳过这个工位（**不影响**手上那张）；不是写停止文件 |
 
 **一次只允许一批**：判活看 `progress.jsonl` 里的 pid，所以命令行起的批次也算，网页和 CLI 不会在同一个仓库上撞车。工作区不干净、目录不是 git 仓库、已经有一批在跑，都会在开跑前直接拒掉（不在 spawn 之后才失败）。
@@ -273,6 +274,12 @@ loop 每 15 秒写一条 `heartbeat`，收到 SIGINT / SIGTERM / SIGBREAK 时先
 - `<runDir>/report.md` 每张卡的结果
 - `<runDir>/<卡片id>/` 该卡的 `card.md`、`images/`、`brief.md`、`card.json`、`events.jsonl`、`pi.log`、`verify.log`、`after-sync.log`
 
+`--fetch` 的单卡产物落在 `~/.tapd-loop/cards/<需求id>/`。
+
+图片下载失败只降级成 `[图片下载失败: 路径]`，不阻断开工。单张卡最多取 30 张图。
+
+默认 `runDir` 为 `~/.tapd-loop/runs/run-<时间戳>`。
+
 ## 全链路追溯
 
 卡片链路本来散在四处，而且互相没有关联键：`runs/<runId>/<cardId>/`（产物）、`runs/<runId>/progress.jsonl`（批次时间线，一批一份）、`board-control.json` 的 `jobs[]`（合入/推送，只有工位名）、`board-batches/*.log`（合入明细）。想查「这张卡从头到尾」只能遍历每个 run 目录去 grep，而单卡 `events.jsonl` 就有 31MB。
@@ -294,11 +301,20 @@ node <技能根>/scripts/trace.mjs --stats                      # 索引现状�
 
 `--json` 给机器读；`--home` / `--runs` 指向别的缓存目录。
 
-`--fetch` 的单卡产物落在 `~/.tapd-loop/cards/<需求id>/`。
+### 统计面板
 
-图片下载失败只降级成 `[图片下载失败: 路径]`，不阻断开工。单张卡最多取 30 张图。
+页面上方「统计」按钮打开的是弹窗，跟 `trace.mjs` 读同一份索引，口径也就跟着 `scripts/stats.mjs` 顶部那段注释：
 
-默认 `runDir` 为 `~/.tapd-loop/runs/run-<时间戳>`。
+- **一张卡 = 一个 TAPD 工单**；同一个工单跑多个 run 就是**重试**，`重试次数 = 尝试次数 - 1`。面板会列出「跑了多次的工单」以及每次的结局序列（`failed → done`、`done → done` 这种一眼能看出是失败重试还是任务变动重跑）。
+- 一次尝试的结局取自 `card_done` / `card_failed` / `card_skipped` / `card_blocked`；`card_done`（`done` 或 `preview`）算成功。
+- **一次通过率** = 第一次尝试就成功的工单 / 工单总数。
+- 耗时只在成功的尝试上算（p50/p90）。
+- **不做 token / 成本统计**：那要解析每卡 31MB 的 `events.jsonl`，代价远超收益。
+- **不做「按仓库过滤」**：索引是全局的，面板就是全局视图（看板本身才绑当前 workdir）。
+- 「合入」只统计有 `merged` 埋点之后的事件（历史批次的合入补不回来）。
+- 索引实际覆盖范围会写在面板底部（`索引覆盖 2026-10-20 → 2026-10-28`）：`runs/` 里的历史卡比索引多，两个数字本来就不该相等。
+
+「统计」和「高级设置」都是**弹窗面板**（同一个 `#modal`，和卡片下钻共用）：面板节点平时藏在 `#panelHome`，打开时搬进 `#mbody`，关闭时搬回去。所以别把它们的控件改成克隆/重渲染——`control.js` 用 `getElementById` 绑的是原件，而共享表单样式挂在 `.ctl-ui` 这个 class 上（`#ctl` 自己也带），搬来搬去长相不变。
 
 ## 回写
 

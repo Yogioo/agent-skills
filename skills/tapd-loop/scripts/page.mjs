@@ -13,23 +13,23 @@ th:nth-child(3),td:nth-child(3){width:10ch;white-space:nowrap;color:#8b949e}
 th:nth-child(4),td:nth-child(4){width:15ch;white-space:nowrap}
 
 #ctl{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:14px 16px;margin:0 0 14px}
-#ctl .row{display:flex;align-items:center;gap:10px 8px;flex-wrap:wrap;margin:0 0 10px;font-size:12.5px;line-height:1.7;color:#8b949e}
-#ctl .row:last-child{margin-bottom:0}
-#ctl input,#ctl select{background:#11161f;color:#e6edf3;border:1px solid #21262d;border-radius:6px;padding:4px 8px;font:inherit;min-width:0}
+.ctl-ui .row{display:flex;align-items:center;gap:10px 8px;flex-wrap:wrap;margin:0 0 10px;font-size:12.5px;line-height:1.7;color:#8b949e}
+.ctl-ui .row:last-child{margin-bottom:0}
+.ctl-ui input,.ctl-ui select{background:#11161f;color:#e6edf3;border:1px solid #21262d;border-radius:6px;padding:4px 8px;font:inherit;min-width:0}
 /* 勾选框自己画：原生那个在深色底上就是个黑方块，看不出有没有勾（accent-color 只管已勾状态）。 */
-#ctl input[type=checkbox]{appearance:none;width:15px;height:15px;flex:0 0 auto;padding:0;margin:0;
+.ctl-ui input[type=checkbox]{appearance:none;width:15px;height:15px;flex:0 0 auto;padding:0;margin:0;
   border:1px solid #30363d;border-radius:4px;background:#0d1117;cursor:pointer;transition:background .12s,border-color .12s}
-#ctl input[type=checkbox]:hover{border-color:#58a6ff}
-#ctl input[type=checkbox]:checked{border-color:#1f6feb;
+.ctl-ui input[type=checkbox]:hover{border-color:#58a6ff}
+.ctl-ui input[type=checkbox]:checked{border-color:#1f6feb;
   background:#1f6feb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.4l3 3 6-6.6'/%3E%3C/svg%3E") center/12px 12px no-repeat}
-#ctl input[type=checkbox]:focus-visible{outline:2px solid #388bfd;outline-offset:2px}
-#ctl input#cWorkdirText,#ctl input#cShareUrl{flex:1 1 320px}
-#ctl button{background:#11161f;color:#c9d1d9;border:1px solid #21262d;border-radius:6px;padding:4px 12px;font:inherit;cursor:pointer}
-#ctl button:hover:not(:disabled){border-color:#30363d;color:#e6edf3}
-#ctl button.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}
-#ctl button.primary:hover:not(:disabled){background:#388bfd}
-#ctl button:disabled{opacity:.45;cursor:not-allowed}
-#ctl label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.ctl-ui input[type=checkbox]:focus-visible{outline:2px solid #388bfd;outline-offset:2px}
+.ctl-ui input#cWorkdirText,.ctl-ui input#cShareUrl{flex:1 1 320px}
+.ctl-ui button{background:#11161f;color:#c9d1d9;border:1px solid #21262d;border-radius:6px;padding:4px 12px;font:inherit;cursor:pointer}
+.ctl-ui button:hover:not(:disabled){border-color:#30363d;color:#e6edf3}
+.ctl-ui button.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}
+.ctl-ui button.primary:hover:not(:disabled){background:#388bfd}
+.ctl-ui button:disabled{opacity:.45;cursor:not-allowed}
+.ctl-ui label{display:flex;align-items:center;gap:5px;cursor:pointer}
 #ctl .hero{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 10px}
 #ctl .hero-state{font-size:13px;color:#8b949e;flex:1 1 320px;line-height:1.6}
 #ctl .hero-state b{color:#e6edf3;font-size:15px}
@@ -108,12 +108,6 @@ th:nth-child(4),td:nth-child(4){width:15ch;white-space:nowrap}
 #ctl .badge.bad{color:#f85149;border-color:#f8514955;background:#f8514911}
 /* 已暂停：不是错误、不是空闲，人为压暗——一眼能看出来它不领卡。 */
 #ctl .badge.dim{color:#8b949e;border-color:#30363d;background:#161b22}
-#ctl details#cAdvanced{border-top:1px solid #21262d;padding-top:8px;margin-top:4px}
-#ctl details#cAdvanced summary{cursor:pointer;color:#8b949e;font-size:12px;list-style:none}
-#ctl details#cAdvanced summary::-webkit-details-marker{display:none}
-#ctl details#cAdvanced summary::before{content:'▸ '}
-#ctl details#cAdvanced[open] summary::before{content:'▾ '}
-#ctl details#cAdvanced[open] summary{margin-bottom:10px}
 #cQueueBox:empty{display:none}
 #cQueueBox{margin:10px 0 0;border-top:1px solid #21262d;padding-top:8px}
 #cQueueBox .qhead{font-size:12px;color:#8b949e;margin:0 0 6px}
@@ -153,16 +147,45 @@ th:nth-child(4),td:nth-child(4){width:15ch;white-space:nowrap}
 #cStations .spath{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#6e7681}
 #cStations .sact{display:flex;gap:6px}
 #cStations .sjob{font-size:12px;margin-top:4px;color:#8b949e}
-#ctl input#cStationPath{flex:1 1 260px}
-#ctl input#cStationName{width:8em}
+.ctl-ui input#cStationPath{flex:1 1 260px}
+.ctl-ui input#cStationName{width:8em}
+
+/* 「统计」「高级设置」是弹窗面板：面板节点平时藏在 #panelHome 里，打开时搬进 #mbody。
+   共享表单样式因此从 #ctl 改挂到 .ctl-ui（#ctl 自己也带这个 class），搬来搬去长相不变。 */
+.panel{overflow:auto;flex:1 1 auto;min-height:0;padding:2px 2px 0}
+#panelHome[hidden],[hidden]{display:none !important}
+#viewbar{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}
+#viewbar button{background:#11161f;color:#c9d1d9;border:1px solid #21262d;border-radius:6px;padding:4px 14px;font:inherit;font-size:12.5px;cursor:pointer}
+#viewbar button:hover{border-color:#30363d;color:#e6edf3}
+#viewbar button.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+#statsPanel .stats-body{margin-top:10px}
+#statsPanel .chips{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+#statsPanel .chip{border:1px solid #21262d;border-radius:6px;padding:4px 10px;font-size:12px;color:#c9d1d9;background:#11161f;white-space:nowrap}
+#statsPanel .chip b{color:#e6edf3;font-size:14px;margin-right:4px;font-variant-numeric:tabular-nums}
+#statsPanel .chip.ok{border-color:#3fb95055;background:#0d2318;color:#7ee787}
+#statsPanel .chip.warn{border-color:#d2992255;background:#241d0e;color:#e3b341}
+#statsPanel .chip.bad{border-color:#f8514955;background:#261012;color:#ff9d96}
+#statsPanel h4{margin:14px 0 6px;font-size:11.5px;color:#8b949e;font-weight:600;letter-spacing:.5px}
+#statsPanel table{table-layout:auto;width:100%;border-collapse:collapse;font-size:12px}
+#statsPanel th{width:auto;text-align:left;color:#6e7681;font-weight:500;padding:3px 6px;border-bottom:1px solid #21262d;white-space:nowrap}
+#statsPanel td{width:auto;padding:3px 6px;border-bottom:1px solid #161b22;color:#c9d1d9;vertical-align:top}
+#statsPanel td.num,#statsPanel th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;padding-right:12px}
+#statsPanel td.mono{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:#8b949e}
+#statsPanel .track{background:#161b22;border-radius:4px;width:100%;min-width:50px;height:8px;overflow:hidden}
+#statsPanel .bar{height:8px;border-radius:4px;background:#1f6feb}
+#statsPanel .bar.warn{background:#d29922}
+#statsPanel button{background:#11161f;color:#c9d1d9;border:1px solid #21262d;border-radius:6px;padding:2px 10px;font:inherit;font-size:12px;cursor:pointer}
+#statsPanel button:hover{border-color:#30363d;color:#e6edf3}
+#statsPanel .dim{color:#6e7681}
 </style>`
 
 export function pageHtml() {
   return pageHead('tapd-loop', SHELL_CSS) + `
 <body>
 <h1>tapd-loop</h1><div id="meta">连接中…</div>
+<div id="viewbar"><button id="openStats" title="全局吞吐 / 重试 / 失败原因（数据来自 ~/.tapd-loop/index.jsonl）">统计</button><button id="openAdvanced" title="项目 / 处理人 / 工位 / 指定工单">高级设置</button></div>
 <div id="warn"></div>
-<section id="ctl">
+<section id="ctl" class="ctl-ui">
   <div class="hero">
     <div class="hero-state" id="cSummary">连接中…</div>
     <div class="hero-act">
@@ -198,8 +221,7 @@ export function pageHtml() {
   <div id="cMain"></div>
   <div id="cStations"></div>
   <div id="cQueueBox"></div>
-  <details id="cAdvanced">
-    <summary>高级设置</summary>
+  <div id="advancedPanel" class="ctl-ui panel" hidden>
     <div class="row">
       <span>项目（主树）</span>
       <select id="cWorkdir"></select>
@@ -235,8 +257,12 @@ export function pageHtml() {
     </div>
     <div id="cRunning"></div>
     <div class="row" id="cShare"></div>
-  </details>
+  </div>
 </section>
+<div id="panelHome" hidden></div>
+<div id="statsPanel" class="panel" hidden>
+  <div id="statsBody" class="stats-body"><div class="dim">加载中…</div></div>
+</div>
 <div id="toasts" role="status" aria-live="polite"></div>
 <div id="filters">
   <button data-days="0" class="on">全部</button>

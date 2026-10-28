@@ -30,8 +30,11 @@ const unityPending = new Map()
 const pendingPause = new Map()
 
 function editing() {
-  const box = el('ctl')
-  return Boolean(box && document.activeElement && box.contains(document.activeElement))
+  // 高级设置会被搬进弹窗（#mbody）里编辑，所以不能只看 #ctl 里有没有焦点：
+  // 漏了这一条，用户正在弹窗里输入时 3 秒轮询会用服务端值把输入框冲掉。
+  const boxes = [el('ctl'), el('advancedPanel')].filter(Boolean)
+  const active = document.activeElement
+  return Boolean(active && boxes.some((box) => box.contains(active)))
 }
 
 function form() {
@@ -1168,10 +1171,50 @@ async function dispatchNow() {
     body: JSON.stringify({}),
   })
   const tick = res.data?.tick || {}
+  const started = Array.isArray(tick.started) ? tick.started : []
+  const failed = started.filter((item) => item.ok === false)
+  const assignee = String(tick.assignee || '').trim()
+
   if (!res.ok) say(res.data?.error || `派单失败（HTTP ${res.status}）`, 'bad')
-  else if (tick.skipped) say(`没派：${tick.skipped === 'no-idle' ? '没有空闲工位' : tick.skipped === 'no-station' ? '还没登记工位' : tick.skipped}` + (res.data?.watch?.lastError ? ` · ${res.data.watch.lastError}` : ''), 'warn')
-  else say(`就绪 ${tick.ready ?? 0} 张 · 空闲 ${tick.idle ?? 0} · 派出 ${(tick.started || []).length} 张`, 'ok')
+  else if (tick.skipped) {
+    say(`没派：${tick.skipped === 'no-idle' ? '没有空闲工位' : tick.skipped === 'no-station' ? '还没登记工位' : tick.skipped}`
+      + (res.data?.watch?.lastError ? ` · ${res.data.watch.lastError}` : ''), 'warn')
+  } else if (failed.length) {
+    // 以前这里只数 started.length，失败也报「派出 1 张」——看着派了，实际什么都没跑。
+    say(`派单失败：${failed.map((item) => `${item.station} ← ${item.error || '起不来'}`).join('；')}`, 'bad')
+  } else if (!started.length) {
+    const hint = (tick.ready ?? 0) === 0 && assignee ? `（当前处理人「${assignee}」下没有就绪卡，处理人写错了？）` : ''
+    say(`没派：就绪 ${tick.ready ?? 0} 张 · 空闲 ${tick.idle ?? 0} 个${hint}`, 'warn')
+  } else {
+    say(`已派 ${started.length} 张：${started.map((item) => `${item.station} ← ${item.card}`).join('，')}`, 'ok')
+    // 批次可能几秒就以 empty-queue / blocked 退出（处理人写错、卡片状态被改、工作区脏）。
+    // 派完立刻看一次：工位上没有批次在跑，就把原因和日志摆出来，别让人对着"已派"发呆。
+    watchDispatchSettled(started)
+  }
   await poll()
+}
+
+/** 派单后 5 秒复查：该工位没跑起来就说是为什么（日志路径由服务端带回来）。 */
+function watchDispatchSettled(started) {
+  const stations = started.map((item) => item.station).filter(Boolean)
+  setTimeout(async () => {
+    try {
+      const res = await apiJson('api/control')
+      if (!res.ok) return
+      const runs = Array.isArray(res.data?.runs) ? res.data.runs : []
+      const running = new Set(runs.map((run) => String(run.workdir || '').toLowerCase()))
+      const viewStations = Array.isArray(res.data?.stations) ? res.data.stations : []
+      for (const item of started) {
+        const station = viewStations.find((s) => s.name === item.station)
+        if (!station) continue
+        if (running.has(String(station.path || '').toLowerCase())) continue
+        const tail = item.log ? `日志：${item.log}` : ''
+        say(`${item.station} 没跑起来（批次已退出，多半是 empty-queue / blocked）。${tail}`, 'bad')
+      }
+    } catch {
+      // 复查失败就算了：主提示已经报过「已派」
+    }
+  }, 5000)
 }
 
 export function mountControl() {

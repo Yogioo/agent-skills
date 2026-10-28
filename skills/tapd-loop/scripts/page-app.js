@@ -153,6 +153,181 @@ function tlList(events) {
   return timelineHtml(events, { base: events.length ? events[0].t : 0, images: true })
 }
 
+const statsBodyEl = () => document.getElementById('statsBody')
+const statsIfSafe = selectionGuard(() => document.getElementById('statsPanel'))
+
+let statsDays = 14
+let statsTimer = 0
+
+/**
+ * 统计面板：默认折叠，展开才拉数据（30 秒一次，手动点刷新也能拉）。
+ * 数据源是 ~/.tapd-loop/index.jsonl（全局、跨仓库），口径见 scripts/stats.mjs 顶部注释：
+ * 一张卡 = 一个工单，多次 card_start = 重试。
+ */
+/**
+ * 「统计」「高级设置」都是弹窗面板：节点平时藏在 #panelHome 里，打开时**搬进** #mbody。
+ * 搬而不是克隆——高级设置里的控件事件都绑在原件上（control.js 用 getElementById 取），
+ * 克隆一份会变成一堆点了没反应的死控件。搬到 mbody 后 #ctl 的样式靠 .ctl-ui 这个 class 保留。
+ */
+const PANELS = {
+  stats: {
+    title: '统计',
+    hint: '全局（所有仓库）· 一张卡 = 一个工单，多次跑 = 重试',
+    el: () => document.getElementById('statsPanel'),
+    open: () => startStats(),
+    close: () => stopStats(),
+  },
+  advanced: {
+    title: '高级设置',
+    hint: '项目 / 处理人 / 工位 / 指定工单',
+    el: () => document.getElementById('advancedPanel'),
+  },
+}
+
+const startStats = () => {
+  const refresh = () => { loadStats().catch(() => {}) }
+  clearInterval(statsTimer)
+  refresh()
+  statsTimer = setInterval(refresh, 30_000)
+}
+
+const stopStats = () => {
+  clearInterval(statsTimer)
+  statsTimer = 0
+}
+
+function highlightView(kind) {
+  document.getElementById('openStats')?.classList.toggle('on', kind === 'stats')
+  document.getElementById('openAdvanced')?.classList.toggle('on', kind === 'advanced')
+}
+
+/** 打开一个面板弹窗（和卡片弹窗共用同一个 #modal，栈里放 {type:'panel'}）。 */
+function openPanel(kind) {
+  const panel = PANELS[kind]
+  if (!panel) return
+  const top = stack[stack.length - 1]
+  if (top && top.type === 'panel' && top.kind !== kind) releasePanel(top.kind)
+  stack = [{ type: 'panel', kind }]
+  cardSig = null
+  armSig = null
+  showModal()
+}
+
+/** 把面板节点还回 #panelHome（隐藏），并把它的定时器停掉。 */
+function releasePanel(kind) {
+  const panel = PANELS[kind]
+  if (!panel) return
+  panel.close?.()
+  const node = panel.el()
+  if (!node) return
+  node.hidden = true
+  const home = document.getElementById('panelHome')
+  if (home && node.parentElement !== home) home.appendChild(node)
+}
+
+function renderPanel(top) {
+  const panel = PANELS[top.kind]
+  const node = panel?.el()
+  if (!panel || !node) return
+  const mhead = document.getElementById('mhead')
+  if (mhead) mhead.innerHTML = `<h3>${esc(panel.title)}</h3><div class="sub">${esc(panel.hint || '')}</div>`
+  const mbody = document.getElementById('mbody')
+  if (!mbody) return
+  if (node.parentElement !== mbody) {
+    mbody.innerHTML = ''
+    node.hidden = false
+    mbody.appendChild(node)
+  }
+  highlightView(top.kind)
+  panel.open?.()
+}
+
+function wirePanels() {
+  document.getElementById('openStats')?.addEventListener('click', () => openPanel('stats'))
+  document.getElementById('openAdvanced')?.addEventListener('click', () => openPanel('advanced'))
+  statsBodyEl()?.addEventListener('click', (event) => {
+    if (event.target?.id === 'statsRefresh') loadStats().catch(() => {})
+  })
+}
+
+async function loadStats() {
+  const res = await apiFetch(`api/stats?days=${statsDays}`)
+  if (!res.ok) {
+    statsBodyEl() && (statsBodyEl().innerHTML = '<div class="dim">统计接口打不开（HTTP ' + res.status + '）</div>')
+    return
+  }
+  const data = await res.json()
+  // 数据没变就不重画（和运行列表同一道闸：重画会冲掉选中的文本）
+  statsIfSafe(() => paintStats(data), () => JSON.stringify(data))
+}
+
+const chip = (value, label, tone = '') => `<span class="chip ${tone}"><b>${esc(String(value))}</b>${esc(label)}</span>`
+
+function paintStats(d) {
+  const body = statsBodyEl()
+  if (!body) return
+  const t = d.totals || {}
+  const days = d.days || []
+  const cov = d.range?.coverage || {}
+  const stamp = (ms) => (ms ? new Date(ms).toISOString().slice(0, 10) : '?')
+  const coverage = cov.first ? `${stamp(cov.first)} → ${stamp(cov.last)}（${cov.rows || 0} 条事件）` : '还没有数据'
+  const maxAttempts = Math.max(1, ...days.map((x) => x.attempts || 0))
+
+  const chips = [
+    chip(t.cards ?? 0, '工单'),
+    chip(t.attempts ?? 0, '次尝试'),
+    chip(t.retries ?? 0, `次重试（${t.retriedCards ?? 0} 张卡）`, (t.retriedCards ?? 0) > 0 ? 'warn' : ''),
+    chip(`${t.firstTryRate ?? 0}%`, '一次通过', (t.firstTryRate ?? 0) >= 80 ? 'ok' : (t.firstTryRate ?? 0) >= 50 ? 'warn' : 'bad'),
+    chip(`${t.done ?? 0}/${(t.done ?? 0) + (t.unresolved ?? 0)}`, '完成'),
+    chip(t.mergedEvents ?? 0, '次合入'),
+    `<span class="chip">耗时 p50 <b>${t.p50Minutes ?? 0}</b>min · p90 <b>${t.p90Minutes ?? 0}</b>min</span>`,
+    `<button id="statsRefresh" title="重新拉一次（数据来自 ~/.tapd-loop/index.jsonl）">刷新</button>`,
+  ].join('')
+
+  const dayRows = days.map((x) => `<tr>
+      <td class="mono">${esc(String(x.date).slice(5))}</td>
+      <td class="num">${x.runs}</td>
+      <td class="num">${x.attempts}</td>
+      <td class="num">${x.cards}</td>
+      <td class="num" style="color:#7ee787">${x.done || ''}</td>
+      <td class="num" style="color:#ff9d96">${x.failed || ''}</td>
+      <td class="num">${x.merged || ''}</td>
+      <td class="num">${x.p50 ? x.p50 + 'm' : ''}</td>
+      <td style="width:26%"><div class="track"><div class="bar" style="width:${Math.round(((x.attempts || 0) / maxAttempts) * 100)}%"></div></div></td>
+    </tr>`).join('')
+
+  const retryRows = (d.retriedCards || []).map((c) => `<tr>
+      <td class="mono" title="${esc(String(c.card))}">${esc(String(c.card).slice(-7))}</td>
+      <td>${esc(String(c.title || '').slice(0, 30))}</td>
+      <td class="num">${c.attempts} <span class="dim">(${c.retries} 重试)</span></td>
+      <td class="mono">${esc((c.statuses || []).join(' → '))}</td>
+      <td class="num">${c.spanMinutes}m</td>
+      <td class="mono">${esc(c.sha || '')}</td>
+    </tr>`).join('')
+
+  const failRows = (d.failures || []).map((f) => `<tr>
+      <td class="mono">${esc(f.kind)}</td>
+      <td>${esc(f.note)}</td>
+      <td class="num">${f.count}</td>
+      <td class="num">${f.cards || ''}</td>
+    </tr>`).join('')
+
+  const stationRows = (d.stations || []).map((s) => `<tr>
+      <td class="mono">${esc(s.name)}</td>
+      <td class="num">${s.attempts}</td>
+      <td class="num">${s.done}</td>
+      <td class="num">${s.minutes ? s.minutes + 'm' : ''}</td>
+    </tr>`).join('')
+
+  const table = (head, rows) => `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`
+  body.innerHTML = `<div class="chips">${chips}</div>` +
+    (dayRows ? `<h4>每日吞吐</h4>${table('<th>日期</th><th class="num">批</th><th class="num">尝试</th><th class="num">卡</th><th class="num">完成</th><th class="num">失败</th><th class="num">合入</th><th class="num">p50</th><th></th>', dayRows)}` : '<div class="dim">这段时间还没有数据。</div>') +
+    (retryRows ? `<h4>重试的工单（同一张卡跑了多次 = 重试）</h4>${table('<th>工单</th><th>标题</th><th class="num">次数</th><th>每次结果</th><th class="num">跨时</th><th>提交</th>', retryRows)}` : '') +
+    (failRows ? `<h4>失败原因 Top</h4>${table('<th>事件</th><th>原因</th><th class="num">次数</th><th class="num">卡</th>', failRows)}` : '') +
+    (stationRows ? `<h4>工位</h4>${table('<th>工位</th><th class="num">尝试</th><th class="num">完成</th><th class="num">成功耗时</th>', stationRows)}` : '') +
+    `<div class="dim" style="margin-top:10px;font-size:11px">数据源 ~/.tapd-loop/index.jsonl（全局，跨仓库）· 索引覆盖 ${coverage} · 一张卡 = 一个工单，多次跑 = 重试 · 「合入」只统计有 merged 埋点之后的事件（历史批次补不回来）</div>`
+}
+
 function wireDiff(root) {
   for (const btn of root.querySelectorAll('.diffbar button')) {
     btn.onclick = () => {
@@ -166,6 +341,9 @@ function wireDiff(root) {
 }
 
 function openCard(runId, cardId) {
+  for (const item of stack) {
+    if (item.type === 'panel') releasePanel(item.kind)
+  }
   state.selected = { runId, cardId }
   stack = [{ type: 'card', runId, cardId }]
   cardSig = null
@@ -185,6 +363,8 @@ function openArm(name) {
 }
 
 function back() {
+  const top = stack[stack.length - 1]
+  if (top && top.type === 'panel') return closeModal()
   stack.pop()
   cardSig = null
   if (stack.length) showModal()
@@ -192,9 +372,13 @@ function back() {
 }
 
 function closeModal() {
+  for (const item of stack) {
+    if (item.type === 'panel') releasePanel(item.kind)
+  }
   stack = []
   cardSig = null
   armSig = null
+  highlightView('')
   document.getElementById('modal').classList.remove('on')
   // 从分享链接进来的（URL 还带着 ?run=&id=）：关掉时清掉参数，否则刷新又弹回来。
   try {
@@ -207,13 +391,14 @@ function showModal() {
   document.getElementById('mback').style.display = stack.length > 1 ? 'inline-block' : 'none'
   document.getElementById('modal').classList.add('on')
   if (!top) return
-  if (top.type === 'card') renderCard(top)
+  if (top.type === 'panel') renderPanel(top)
+  else if (top.type === 'card') renderCard(top)
   else renderArm(top)
 }
 
 function refreshModal() {
   const top = stack[stack.length - 1]
-  if (!top) return
+  if (!top || top.type === 'panel') return
   // 弹窗里用户可能正选着日志/命令复制，重写 innerHTML 会把选区冲掉：选着就等下一次。
   paintModalIfSafe(() => (top.type === 'card' ? renderCard(top) : renderArm(top)))
 }
@@ -375,6 +560,7 @@ function syncFilters() {
 }
 
 function wire() {
+  wirePanels()
   for (const btn of document.querySelectorAll('#filters button')) {
     btn.onclick = () => {
       view.days = Number(btn.getAttribute('data-days'))

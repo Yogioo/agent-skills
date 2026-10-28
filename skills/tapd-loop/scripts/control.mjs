@@ -2384,7 +2384,7 @@ function resolveBash() {
       for (const item of memory.dispatched) taken.add(item.card)
 
       const free = (listed.ready || []).filter((card) => !taken.has(String(card.id || '')))
-      if (!free.length) return { checked: true, ready: (listed.ready || []).length, idle: idle.length, started: [] }
+      if (!free.length) return { checked: true, ready: (listed.ready || []).length, idle: idle.length, started: [], assignee: config.assignee || '' }
 
       const take = Math.min(idle.length, free.length)
       const started = []
@@ -2394,13 +2394,15 @@ function resolveBash() {
         const result = start({ ...config, workdir: station.path, card: String(card.id) })
         if (result.ok) {
           memory.dispatched.push({ card: String(card.id), station: station.name, pid: result.batch?.pid || 0, at: Date.now() })
-          started.push({ station: station.name, card: String(card.id), ok: true })
+          // 带上日志路径：批次可能几秒就以 empty-queue 退出（处理人写错、状态不对），
+          // 页面要靠这条路径当场把人指到日志上，而不是让人自己去翻 runs/。
+          started.push({ station: station.name, card: String(card.id), ok: true, pid: result.batch?.pid || 0, log: result.batch?.log || '' })
         } else {
           memory.lastError = `${station.name}: ${result.error}`
           started.push({ station: station.name, card: String(card.id), ok: false, error: result.error })
         }
       }
-      return { checked: true, ready: (listed.ready || []).length, idle: idle.length, started }
+      return { checked: true, ready: (listed.ready || []).length, idle: idle.length, started, assignee: config.assignee || '' }
     } finally {
       memory.probing = false
       if (!memory.nextAt || memory.nextAt < Date.now()) memory.nextAt = Date.now() + config.watch.pollSec * 1000
