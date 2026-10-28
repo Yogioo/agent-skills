@@ -506,6 +506,40 @@ export function failSummary(log, code = 0) {
 }
 
 /**
+ * 给 bash 的 Windows 路径必须转正斜杠。
+ * 反斜杠在 bash 里是转义字符：`bash "C:\a\b.sh"` 实际收到的是 `C:ab.sh`，
+ * 报 “No such file or directory” 然后 exit 1，而 stdout/stderr 可能一行都不剩。
+ */
+function shPath(p) {
+  return String(p || '').replace(/\\/g, '/')
+}
+
+/** `'C:/a b/c.log'` —— bash 单引号字符串（路径里的单引号自己转义）。 */
+function shQuote(text) {
+  return `'${String(text || '').replace(/'/g, `'\\''`)}'`
+}
+
+/** 长任务的退出码标记：和日志同名，加 `.exit`。看板死了也能靠它收尾。 */
+export function exitMarkerPath(log) {
+  return `${log}.exit`
+}
+
+/**
+ * 长任务的 bash 命令行。
+ *
+ * 除了把输出写进日志，还要把**退出码写进 `<log>.exit`**：收尾的 `child.once('exit')` 活在
+ * 看板进程里，看板一重启/被杀就再也收不到——以前留下的 job 会永远停在 running，页面
+ * 一直画着「验证中」。有了这个标记，看板下次起来能自己把结果认回来（见 listJobs）。
+ *
+ * 必须套一层子 shell：每个 `script` 一带头就是 `exec`（exec 会把自己换成 node），
+ * 直接跟在后面写标记根本轮不到执行。
+ */
+export function jobCommand(log, script) {
+  const out = shQuote(shPath(log))
+  return `exec > ${out} 2>&1; ( ${script} ); code=$?; echo $code > ${shQuote(exitMarkerPath(shPath(log)))}; exit $code`
+}
+
+/**
  * @param {{home:string, runsRoot:string, loopScript:string, spawnCmd?:string[]}} opts
  *   spawnCmd 只给测试用：默认 `[process.execPath, loopScript]`。
  */
@@ -963,22 +997,52 @@ export function createControl(opts) {
   /**
    * 建树 / 删树 / 合入 / 解冲突这些长任务。只有 running 的才看 pid 判活。
    *
-   * 进程没了但记录还写着 running 的，对外叫 `interrupted`（不是 `unknown`）：
-   * 典型是「看板重启/被杀时 collect 还在跑」，child.once('exit') 没来得及写收尾，
-   * 于是这条记录永远停在 running。它必须能跟「真在跑」区分开，否则页面会永远
-   * 画着「验证中」、把按钮全部置灰，看着像死了。
+   * 进程没了但记录还写着 running 的：先看日志旁边的 `.exit` 标记（子进程自己写的退出码），
+   * 有就按它收尾——这就是「看板重启时 collect 还在跑」能自愈的原因。没有标记才叫
+   * `interrupted`（真的是被杀/断电），页面会提示去看日志。
    */
   function listJobs() {
     const saved = raw()
     const jobs = Array.isArray(saved.jobs) ? saved.jobs : []
-    return jobs.map((job) => {
+    let changed = false
+    const mapped = jobs.map((job) => {
       // 只有 running 才用 pid 判活。否则 resolve 这种用看板 pid 占位的 job 会永远 alive，
       // 完成了也不从页面消失（pin 到 done 之后还会被前端当「还在跑」画出来）。
       const running = job.status === 'running'
       const alive = running && job.pid ? pidAlive(Number(job.pid)) : false
-      const status = running && !alive ? 'interrupted' : job.status
-      return { ...job, alive, status }
+      if (!running || alive) return { ...job, alive, status: job.status }
+
+      const recovered = recoveredJob(job)
+      if (recovered) {
+        changed = true
+        return { ...job, ...recovered, alive: false }
+      }
+      return { ...job, alive: false, status: 'interrupted' }
     })
+    if (changed) {
+      const current = raw()
+      writeJson(controlFile, { ...current, jobs: mapped })
+    }
+    return mapped
+  }
+
+  /**
+   * 从 `.exit` 标记把一条「父进程没了」的 job 认回来。
+   *
+   * 只能恢复状态和退出码，恢复不了 `onSettled`（那是个闭包）：合入的 TAPD 回写本来
+   * 就是 collect 自己做的，看板这条只是兼一层，所以不补；真没写成的用「补回写 TAPD」按钮。
+   */
+  function recoveredJob(job) {
+    const marker = exitMarkerPath(String(job.log || ''))
+    if (!job.log || !existsSync(marker)) return null
+    let code = NaN
+    try { code = Number(String(readFileSync(marker, 'utf8')).trim()) } catch { return null }
+    if (!Number.isFinite(code)) return null
+    let endedAt = Date.now()
+    try { endedAt = statSync(marker).mtimeMs || endedAt } catch { /* 拿不到就用现在 */ }
+    const status = code === 0 ? 'done' : 'failed'
+    const summary = code === 0 ? '' : (failSummary(String(job.log), code) || `失败（exit ${code}）`)
+    return { status, code, endedAt, ...(summary ? { summary } : {}), recovered: true }
   }
 
   function addStation({ name, path, note = '' }) {
@@ -1040,7 +1104,10 @@ export function createControl(opts) {
   function spawnJob({ kind, name, path, workdir, script, onDone, onConflict, onSettled }) {
     mkdirSync(batchDir, { recursive: true })
     const log = join(batchDir, `station-${kind}-${name}-${stamp()}.log`)
-    const cmdline = `exec > '${shPath(log)}' 2>&1; ${script}`
+    // 命令行带退出码标记：看板重启后靠它把这次的结果认回来（见 exitMarkerPath）。
+    const cmdline = jobCommand(log, script)
+    // 上一轮留下但永远没标记的旧码（同名日志不会重，但重新收尾时别读到脏值）。
+    try { rmSync(exitMarkerPath(log), { force: true }) } catch { /* 读不到就算了 */ }
     const bash = resolveBash()
     let child
     try {
@@ -1138,15 +1205,6 @@ export function createControl(opts) {
     emit()
     return { ok: true, job }
   }
-
-/**
- * 给 bash 的 Windows 路径必须转正斜杠。
- * 反斜杠在 bash 里是转义字符：`bash "C:\a\b.sh"` 实际收到的是 `C:ab.sh`，
- * 报 “No such file or directory” 然后 exit 1，而 stdout/stderr 可能一行都不剩。
- */
-function shPath(p) {
-  return String(p || '').replace(/\\/g, '/')
-}
 
 /**
  * Windows 上自己找 bash。PATH 里 `C:\Windows\System32\bash.exe`（WSL）和

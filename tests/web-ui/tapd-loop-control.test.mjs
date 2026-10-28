@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import {
-  DEFAULTS, batchArgs, createControl, parseCardRef, sameKey, sanitizeControl, stopFilePath,
+  DEFAULTS, batchArgs, createControl, exitMarkerPath, jobCommand, parseCardRef, sameKey, sanitizeControl, stopFilePath,
 } from '../../skills/tapd-loop/scripts/control.mjs'
 
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
@@ -368,6 +368,72 @@ test('a job whose process vanished shows as interrupted, and the main tree stays
 
   setJob(Date.now() - 20 * 60_000)
   assert.equal((await ctl.autoPushTick()).skipped, 'no-main', '过了宽限期就不该无限挡路')
+})
+
+test('job command records its own exit code, so a restarted board can still settle the job', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'tapd-exit-'))
+  t.after(() => cleanup(dir))
+  const bash = [
+    'C:/Program Files/Git/bin/bash.exe',
+    'C:/Program Files (x86)/Git/bin/bash.exe',
+    'C:/Program Files/Git/usr/bin/bash.exe',
+  ].find((file) => existsSync(file)) || 'bash'
+  const run = (name, script) => {
+    const log = join(dir, `${name}.log`)
+    // 非 0 退出是预期（我们要的就是那个码），execFileSync 会抛，吞掉就好。
+    try { execFileSync(bash, ['-c', jobCommand(log, script)], { stdio: 'ignore', windowsHide: true }) } catch { /* 退出码在标记里 */ }
+    return {
+      out: readFileSync(log, 'utf8'),
+      code: readFileSync(exitMarkerPath(log), 'utf8').trim(),
+    }
+  }
+
+  // 正常路径：日志进文件，退出码进标记
+  const ok = run('ok', 'echo hello; exit 0')
+  assert.equal(ok.code, '0')
+  assert.match(ok.out, /hello/)
+
+  // 失败的退出码也要原样留住
+  assert.equal(run('bad', 'echo boom >&2; exit 3').code, '3')
+
+  // 关键：每个任务脚本都自带 `exec`（exec 会把自己换成 node）。
+  // 没套子 shell 的话，后面写标记那句永远轮不到执行。
+  const execd = run('exec', `exec '${process.execPath.replace(/\\/g, '/')}' '-e' 'process.stdout.write("by exec")'`)
+  assert.equal(execd.code, '0')
+  assert.match(execd.out, /by exec/)
+})
+
+test('a restarted board settles a finished job from its exit marker instead of leaving it running', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'tapd-recover-'))
+  t.after(() => cleanup(home))
+  const runsRoot = join(home, 'runs')
+  mkdirSync(runsRoot, { recursive: true })
+  const ctl = createControl({ home, runsRoot, loopScript: 'unused.mjs' })
+  ctl.write({ workdir: join(home, 'nowhere'), autoPush: { enabled: true, pollSec: 60 } })
+
+  const child = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore', windowsHide: true })
+  await new Promise((done) => child.once('exit', done))
+
+  // 造一个「看板重启时还在跑」的现场：记录 running + 死 pid + 日志旁边有子进程写的退出码
+  const log = join(home, 'station-merge-a.log')
+  writeFileSync(log, '[失败] unity-puer-exec exec 失败（exit 17）\n', 'utf8')
+  writeFileSync(exitMarkerPath(log), '1\n', 'utf8')
+  const file = join(home, 'board-control.json')
+  const current = JSON.parse(readFileSync(file, 'utf8'))
+  writeFileSync(file, JSON.stringify({
+    ...current,
+    jobs: [{ id: 'job-recover', kind: 'main-push', name: '(主树)', workdir: join(home, 'nowhere'), pid: child.pid || 0, startedAt: Date.now(), status: 'running', log }],
+  }), 'utf8')
+
+  const job = ctl.status().jobs[0]
+  assert.equal(job.status, 'failed', '有退出码就不叫 interrupted：这是真结果')
+  assert.equal(job.code, 1)
+  assert.equal(job.recovered, true)
+  assert.match(job.summary || '', /unity-puer-exec/, '失败原因跟正常收尾一样从日志里捉')
+  assert.deepEqual(await ctl.autoPushTick(), { skipped: 'no-main' }, '认回来之后就不该再挡着主树了')
+
+  // 落盘了：第二次读不会又变回 running
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).jobs[0].status, 'failed')
 })
 
 // ---------------------------------------------------------------- 小工具
