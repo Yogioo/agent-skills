@@ -273,6 +273,27 @@ loop 每 15 秒写一条 `heartbeat`，收到 SIGINT / SIGTERM / SIGBREAK 时先
 - `<runDir>/report.md` 每张卡的结果
 - `<runDir>/<卡片id>/` 该卡的 `card.md`、`images/`、`brief.md`、`card.json`、`events.jsonl`、`pi.log`、`verify.log`、`after-sync.log`
 
+## 全链路追溯
+
+卡片链路本来散在四处，而且互相没有关联键：`runs/<runId>/<cardId>/`（产物）、`runs/<runId>/progress.jsonl`（批次时间线，一批一份）、`board-control.json` 的 `jobs[]`（合入/推送，只有工位名）、`board-batches/*.log`（合入明细）。想查「这张卡从头到尾」只能遍历每个 run 目录去 grep，而单卡 `events.jsonl` 就有 31MB。
+
+所以每个关键节点往 `~/.tapd-loop/index.jsonl` 追加一行（`t / kind / runId / card / sha / note / station`）：
+
+- `loop.mjs` 的 `log()` 写一份（`card_start`、`card_phase`、`card_sync`、`card_after_sync`、`card_done`……，心跳跳过）
+- `control.mjs` 写合入/推送那部分（`merged`、`job_start`、`job_done`/`job_failed`）
+
+索引是**旁路**：写失败绝不影响干活；删掉也能用 `--rebuild` 从 `runs/` + `board-control.json` 重建（`merged` 历史补不回来，只有新发生的才进索引）。
+
+```bash
+node <技能根>/scripts/trace.mjs --card 1152360842001005156   # 这张卡的所有尝试、阶段、提交、合入，末尾给本机产物目录
+node <技能根>/scripts/trace.mjs --day 2026-10-28             # 这一天：几批/几张卡/合入了什么（--events 展开每条）
+node <技能根>/scripts/trace.mjs --sha 0cccb0cca5             # 某提交号属于哪张卡
+node <技能根>/scripts/trace.mjs --rebuild                    # 历史回填（幂等，按键去重）
+node <技能根>/scripts/trace.mjs --stats                      # 索引现状：多少行、覆盖哪些天、每天几批几张卡
+```
+
+`--json` 给机器读；`--home` / `--runs` 指向别的缓存目录。
+
 `--fetch` 的单卡产物落在 `~/.tapd-loop/cards/<需求id>/`。
 
 图片下载失败只降级成 `[图片下载失败: 路径]`，不阻断开工。单张卡最多取 30 张图。

@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 import { createTapd } from './tapd.mjs'
 import { buildBrief, buildCardMd, commitMessage, writeBrief } from './brief.mjs'
 import { abortAllTurns, readSettled, runTurn } from './turn.mjs'
+import { appendTrace, isNoise, progressToTrace } from './trace-index.mjs'
 
 const HOME = join(homedir(), '.tapd-loop')
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -195,13 +196,19 @@ async function main() {
       // 看板起不来不影响干活，看 board.log
     }
   }
+  const runId = basename(runDir)
   const progressFile = join(runDir, 'progress.jsonl')
   const log = (event, data = {}) => {
+    const t = Date.now()
     try {
-      appendFileSync(progressFile, JSON.stringify({ t: Date.now(), event, ...data }) + '\n')
+      appendFileSync(progressFile, JSON.stringify({ t, event, ...data }) + '\n')
     } catch {
       // 进度写不进去不能阻止干活
     }
+    // 旁路：同时往全局索引追加一行（trace.mjs 只读这个文件）。
+    // progress.jsonl 是「一批一份」，想跨批次查某张卡得先知道 runId、再遍历 grep。
+    if (isNoise({ event })) return
+    appendTrace(HOME, progressToTrace({ t, event, ...data }, { runId, workdir }))
   }
   const stopFile = cfg.run.stopFile || join(workdir, STOP_NAME)
   const ledger = []

@@ -1,5 +1,6 @@
 import { createTapd } from './tapd.mjs'
 import { runTurn } from './turn.mjs'
+import { appendTrace } from './trace-index.mjs'
 
 /**
  * 看板的控制面：按一下就跑、按一下停、定时查看 TAPD 并自动接单。
@@ -1190,6 +1191,15 @@ export function createControl(opts) {
       .filter((item) => item && (item.status === 'running' ? pidAlive(Number(item.pid)) : true))
       .slice(-9)
     writeJson(controlFile, { ...current, jobs: [...jobs, job] })
+    // 追溯旁路：job 开始/结束都进全局索引，否则「某天做了哪几次合入/推送」只能翻 board-batches 目录。
+    appendTrace(home, {
+      t: job.startedAt,
+      kind: 'job_start',
+      station: String(name || ''),
+      note: String(kind || ''),
+      job: job.id,
+      log: job.log,
+    })
 
     // spawn 失败（找不到可执行文件、权限）不会进 exit，必须在这里收尸，
     // 否则 job 永远停在 running，页面一直显示「正在准备」。
@@ -1217,6 +1227,15 @@ export function createControl(opts) {
           .map((item) => (item.id === job.id
             ? { ...item, status, code, endedAt: Date.now(), ...(error ? { error } : {}), ...(summary ? { summary } : {}), ...(writeBack ? { writeBack } : {}) }
             : item)),
+      })
+      appendTrace(home, {
+        t: Date.now(),
+        kind: status === 'done' ? 'job_done' : 'job_failed',
+        station: String(name || ''),
+        note: String(summary || kind || '').slice(0, 120),
+        job: job.id,
+        exit: Number(code),
+        log: job.log,
       })
       if (status === 'done' && onDone) {
         try {
@@ -1670,6 +1689,14 @@ function resolveBash() {
       const one = { cardId, sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: true }
       try {
         tapd.addComment(cardId, note)
+        // 追溯旁路：「卡片 → 主树提交」的关联就记在这里（TAPD 评论只报新 sha，不写工位 sha）。
+        appendTrace(home, {
+          t: Date.now(),
+          kind: 'merged',
+          card: cardId,
+          sha: String(after || sha).slice(0, 10),
+          note: `${branch || target} → ${target}${via ? '（推送）' : ''}`,
+        })
       } catch (err) {
         one.ok = false
         one.commentError = err.message
@@ -2172,6 +2199,14 @@ function resolveBash() {
       .filter((item) => (item.status === 'running' ? pidAlive(Number(item.pid)) : true))
       .slice(-9)
     writeJson(controlFile, { ...current, jobs: [...jobs, job] })
+    appendTrace(home, {
+      t: job.startedAt,
+      kind: 'job_start',
+      station: String(name || ''),
+      note: String(kind || ''),
+      job: job.id,
+      log: job.log,
+    })
     emit()
 
     const branch = station ? gitOut(station.path, ['rev-parse', '--abbrev-ref', 'HEAD']) : ''
