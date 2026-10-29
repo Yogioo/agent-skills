@@ -2492,7 +2492,12 @@ function resolveBash() {
         path: main,
         workdir: main,
         script: `exec '${shPath(process.execPath)}' '${shPath(collect)}' --resume`,
-        onDone: () => writeBackMerged({ stationName: name || '(主树)', branch, main, before }),
+        // 续跑成功也算合入完成，工位一样要归位（否则卡片会继续显示待合入）。
+        onDone: () => {
+          writeBackMerged({ stationName: name || '(主树)', branch, main, before })
+          const station = raw().stations.find((item) => item.name === name)
+          if (station) recycleStation(station, main, branch)
+        },
       })
       settle('done', { resumed: resumed.ok, resumedJob: resumed.job?.id || '' })
     } catch (err) {
