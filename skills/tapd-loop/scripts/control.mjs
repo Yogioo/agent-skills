@@ -20,12 +20,13 @@ import { appendTrace } from './trace-index.mjs'
  *     「看不见的常驻进程在偷偷跑卡」。
  */
 
-import { execFile, execFileSync, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
-  appendFileSync,
-  closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
+  appendFileSync, copyFileSync,
+  closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 
 export const CONTROL_FILE = 'board-control.json'
@@ -313,6 +314,98 @@ function gitRun(cwd, args) {
   } catch {
     return false
   }
+}
+
+/** 拼一条 shell 命令行：shell:true + 参数数组会触发 DEP0190，而这里的参数都只有英文名。 */
+function shellLine(parts) {
+  return parts.map((part) => {
+    const text = String(part)
+    return /[\s"']/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+  }).join(' ')
+}
+
+/** agent-tools 在哪。Windows 上是 .cmd，直接 spawn('agent-tools') 会 ENOENT。 */
+function resolveAgentTools() {
+  const candidates = [process.env.TAPD_LOOP_AGENT_TOOLS || '', 'agent-tools.cmd', 'agent-tools']
+  for (const file of candidates) {
+    if (!file) continue
+    // shell 一定要开：.cmd/.bat 在 Node 20+ 不能直接 spawn。探活只关心「能不能跑起来」。
+    const probe = spawnSync(shellLine([file, 'xlsx-cell-diff', '--help']), {
+      encoding: 'utf8', timeout: 30_000, windowsHide: true, shell: true,
+    })
+    if (!probe.error && probe.status !== null) return file
+  }
+  return ''
+}
+
+/**
+ * 表格冲突自动叠：按「显示值」三方合并，只有同一格两边都改才算真冲突。
+ *
+ * git 对 xlsx 这种二进制只会判「整份冲突」，可配置表绝大多数冲突是两边改的格不重叠 ——
+ * 那是有确定答案的（两边的改动都留下），没道理逼人开 Excel 手工合、更不该手工改二进制。
+ * 三方版本从索引里取：:1: 共同祖先 / :2: 主树（local，模板侧）/ :3: 被合入的提交（remote）。
+ *
+ * 返回 { merged: [文件], left: [{ file, reason }] }。left 非空 = 真冲突（同一格两边都改）
+ * 或结构变了（sheet/行/列增删），这两种必须人来定。
+ */
+export function mergeXlsxConflicts(main, files) {
+  const merged = []
+  const left = []
+  const tool = resolveAgentTools()
+  if (!tool) {
+    return { merged, left: files.map((file) => ({ file, reason: '找不到 agent-tools（xlsx-cell-diff 在里面）' })) }
+  }
+  let dir = ''
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'tapd-loop-xlsx-'))
+  } catch (err) {
+    return { merged, left: files.map((file) => ({ file, reason: `建临时目录失败：${err.message}` })) }
+  }
+  files.forEach((file, index) => {
+    const base = `base-${index}.xlsx`
+    const local = `local-${index}.xlsx`
+    const remote = `remote-${index}.xlsx`
+    const out = `out-${index}.xlsx`
+    try {
+      // 二进制不能走 gitOut（它按 utf8 解码），直接取 Buffer。
+      for (const [stage, dest] of [[1, base], [2, local], [3, remote]]) {
+        const blob = execFileSync('git', ['show', `:${stage}:${file}`], {
+          cwd: main, maxBuffer: 64 * 1024 * 1024, windowsHide: true,
+        })
+        writeFileSync(join(dir, dest), blob)
+      }
+    } catch (err) {
+      left.push({ file, reason: `取三方版本失败：${String(err.message).split('\n')[0]}` })
+      return
+    }
+    // 参数只用临时目录里的英文文件名、cwd 落在临时目录：路径里的中文/#/空格不会进命令行。
+    const res = spawnSync(shellLine([tool, 'xlsx-cell-diff', 'merge', '--base', base, '--local', local, '--remote', remote, '--out', out]), {
+      cwd: dir, encoding: 'utf8', timeout: 180_000, windowsHide: true, shell: true,
+    })
+    if (res.status === 0) {
+      try {
+        copyFileSync(join(dir, out), join(main, file))
+        merged.push(file)
+      } catch (err) {
+        left.push({ file, reason: `叠加结果写回失败：${err.message}` })
+      }
+      return
+    }
+    // 4 = 还有显示值冲突（同一格两边都改）；5 = 结构变了（增删 sheet/行/列）；3 = 读不出文件
+    const reason = res.status === 4
+      ? '同一格两边都改了'
+      : res.status === 5
+        ? 'sheet/行/列有增删'
+        : `xlsx-cell-diff 退出 ${res.status ?? res.signal}`
+    const tail = `${res.stdout || ''}${res.stderr || ''}`.trim().split('\n').filter(Boolean).slice(-2).join(' ')
+    left.push({ file, reason: tail ? `${reason}：${tail}` : reason })
+  })
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // 临时目录清不掉不影响结果
+  }
+  return { merged, left }
 }
 
 /**
@@ -2177,7 +2270,7 @@ function resolveBash() {
       },
       onConflict: () => {
         const started = resolveMerge({ name, workdir: main })
-        // 起不来的典型原因：表格冲突（xlsx 只能人工用 overlay 合）或主树根本不在
+        // 起不来的典型原因：表格真冲突（同一格两边都改 / 行增删）、或主树根本不在
         // cherry-pick 中间态。这是要人来的，算一次失败并把退避拉满 30 分钟，
         // 别每 2 分钟把同一个冲突再撞一遍、把日志刷满天。
         if (byAuto && !started?.ok) autoMergeRecord(name, { error: String(started?.error || '解冲突没起来'), waitMin: 30 })
@@ -2186,23 +2279,25 @@ function resolveBash() {
     })
   }
 
-  /** 主树是不是停在 cherry-pick 中间态；返回冲突文件和其中不可自动解的表格。 */
+  /** 主树是不是停在 cherry-pick 中间态；返回冲突文件和其中的表格。 */
   function conflictState(main) {
     const own = resolve(main, gitOut(main, ['rev-parse', '--git-dir']) || '.git')
     if (!existsSync(join(own, 'CHERRY_PICK_HEAD'))) return null
-    const files = gitOut(main, ['diff', '--name-only', '--diff-filter=U'])
-      .split('\n')
-      .map((line) => line.trim())
+    // -z：git 会给带中文/#/空白的路径加双引号，按行切再 `\.xlsx$` 就永远不中（表格门禁静默失效）。
+    const files = gitOut(main, ['diff', '--name-only', '--diff-filter=U', '-z'])
+      .split('\0')
+      .map((file) => file.trim())
       .filter(Boolean)
     return { files, xlsx: files.filter((file) => /\.(xlsx|xlsm)$/i.test(file)) }
   }
 
   /**
-   * 起一个 agent 按 digitdoor-git-pull-rebase 技能解冲突，解完自动续跑 collect --resume。
+   * 解冲突：表格先按显示值三方叠（xlsx-cell-diff），剩下的文本冲突交给 agent，
+   * 解完自动续跑 collect --resume。
    *
-   * 两个硬约束：
+   * 两条约束：
    *   - 只允许改「冲突文件」—— brief 里写明，且解完后重新检查 UU 清单
-   *   - 表格冲突（xlsx/xlsm）直接拒，必须人工用 xlsx-cell-diff overlay 合（自动会丢行）
+   *   - 表格只在「同一格两边都改」或「sheet/行/列增删」时才拦下来给人，其余自动合
    */
   function resolveMerge(input = {}) {
     const config = read()
@@ -2212,9 +2307,6 @@ function resolveBash() {
     const station = config.stations.find((item) => item.name === name)
     const conflict = conflictState(main)
     if (!conflict) return { ok: false, error: '主树不在 cherry-pick 中间态，没有要解的冲突' }
-    if (conflict.xlsx.length) {
-      return { ok: false, error: `这批是表格冲突，必须人工用 xlsx-cell-diff 合：${conflict.xlsx.join('、')}` }
-    }
 
     const dir = join(batchDir, `resolve-${stamp()}`)
     mkdirSync(dir, { recursive: true })
@@ -2241,7 +2333,7 @@ function resolveBash() {
       t: job.startedAt,
       kind: 'job_start',
       station: String(name || ''),
-      note: String(kind || ''),
+      note: String(job.kind || 'resolve'),
       job: job.id,
       log: job.log,
     })
@@ -2266,39 +2358,61 @@ function resolveBash() {
     }
 
     try {
-      const brief = join(dir, 'brief.md')
-      writeFileSync(brief, [
-        `主树 develop 在 cherry-pick 工位 ${name || ''} 的提交时冲突了。`,
-        '',
-        '冲突文件（只有这些可以改，别动其他文件）：',
-        ...conflict.files.map((file) => `- ${file}`),
-        '',
-        '按技能流程做：',
-        '1. 逐个读冲突文件，理解双方意图（<<<<<<< = 主树已有，>>>>>>> = 工位带来的）',
-        '2. 双方改动互不冲突就保留双方；真冲突就合出一个语义正确的实现，不要丢掉任何一方的行为',
-        '3. 解完 `git add` 这些文件，然后 `git cherry-pick --continue`（不要 push）',
-        '4. 最后输出一行 `RESOLVED: <一句话总结改了什么>`',
-      ].join('\n'), 'utf8')
+      // 表格先自动叠：xlsx 是二进制，git 必然判「整份冲突」，但配置表绝大多数是两边改的格
+      // 不重叠，那有确定答案（两边改动都留下）。只有同一格两边都改、或 sheet/行/列增删，
+      // 才算真冲突，拦下来给人。
+      const tables = conflict.xlsx || []
+      if (tables.length) {
+        const report = mergeXlsxConflicts(main, tables)
+        appendFileSync(job.log, [
+          '[表格自动合并]',
+          ...report.merged.map((file) => `  ✓ ${file}`),
+          ...report.left.map((item) => `  ✗ ${item.file}：${item.reason}`),
+          '',
+        ].join('\n'), 'utf8')
+        for (const file of report.merged) gitRun(main, ['add', '--', file])
+        if (report.left.length) {
+          throw new Error(`表格冲突里有真冲突，得人来定：${report.left.map((item) => `${item.file}（${item.reason}）`).join('；')}`)
+        }
+      }
 
-      const skillDir = join(main, '.agents', 'skills', 'digitdoor-git-pull-rebase')
-      const result = await runTurn({
-        workdir: main,
-        promptFile: brief,
-        outDir: dir,
-        skillPath: existsSync(skillDir) ? skillDir : '',
-        sessionId: `resolve-${name || 'main'}-${Date.now()}`,
-        timeoutMs: 30 * 60_000,
-      })
-      if (result.timedOut) throw new Error('agent 解冲突超时（30 分钟）：看 agent.log')
+      // 表格叠完可能就没冲突了，那就别白起一轮 agent。
+      const pending = conflictState(main)
+      if (pending?.files.length) {
+        const brief = join(dir, 'brief.md')
+        writeFileSync(brief, [
+          `主树 develop 在 cherry-pick 工位 ${name || ''} 的提交时冲突了。`,
+          '',
+          '冲突文件（只有这些可以改，别动其他文件）：',
+          ...pending.files.map((file) => `- ${file}`),
+          '',
+          '按技能流程做：',
+          '1. 逐个读冲突文件，理解双方意图（<<<<<<< = 主树已有，>>>>>>> = 工位带来的）',
+          '2. 双方改动互不冲突就保留双方；真冲突就合出一个语义正确的实现，不要丢掉任何一方的行为',
+          '3. 解完 `git add` 这些文件，然后 `git cherry-pick --continue`（不要 push）',
+          '4. 最后输出一行 `RESOLVED: <一句话总结改了什么>`',
+        ].join('\n'), 'utf8')
 
-      const left = conflictState(main)
-      if (left) throw new Error(`还有未解冲突：${left.files.join('、')}`)
+        const skillDir = join(main, '.agents', 'skills', 'digitdoor-git-pull-rebase')
+        const result = await runTurn({
+          workdir: main,
+          promptFile: brief,
+          outDir: dir,
+          skillPath: existsSync(skillDir) ? skillDir : '',
+          sessionId: `resolve-${name || 'main'}-${Date.now()}`,
+          timeoutMs: 30 * 60_000,
+        })
+        if (result.timedOut) throw new Error('agent 解冲突超时（30 分钟）：看 agent.log')
 
-      // agent 不一定记得 --continue，这里补一次。
+        const leftText = conflictState(main)
+        if (leftText) throw new Error(`还有未解冲突：${leftText.files.join('、')}`)
+      }
+
+      // agent 不一定记得 --continue，这里补一次（纯表格自动合时也一样）。
       const own = resolve(main, gitOut(main, ['rev-parse', '--git-dir']) || '.git')
       if (existsSync(join(own, 'CHERRY_PICK_HEAD'))) {
         if (!gitRun(main, ['cherry-pick', '--continue', '--no-edit'])) {
-          throw new Error('agent 解完了，但 git cherry-pick --continue 失败')
+          throw new Error('冲突解完了，但 git cherry-pick --continue 失败')
         }
       }
 
