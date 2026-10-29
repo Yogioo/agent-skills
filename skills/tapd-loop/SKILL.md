@@ -195,6 +195,8 @@ node <技能根>/scripts/start-board.mjs --port 7400 --host 192.168.1.5
 | 主树自动合入工位提交 | 开关 + 间隔秒（30 秒起，默认 120）。主树干净、没冲突、Unity 在线、没有主树任务在跑、自动推送开着时主树没有未推提交，就挑一个「空闲 + 有未合入提交」的工位跑 `collect.mjs <分支> --resolve`（pick → 导表 → verify → push → 回写）；一次只合一个，退避按工位各记各的。**默认关**：它往共享分支写东西 |
 | 指定工单：贴链接 + 查看这张 / 接这张开跑 | 先 `--show <id>` 看清楚，再 `--card <id>` 真跑（永远只跑一张） |
 | 页面上方「统计」按钮 | 弹窗（`Esc`/点空白处关掉）；**全局（所有仓库）**，打开时才拉数据、30 秒刷一次；数据源 `~/.tapd-loop/index.jsonl`，接口 `GET /api/stats?days=N` |
+| 右上角「重启看板」 | 重启**看板进程本身**（`POST /api/board {action:'restart'}`）。服务端先回包、再拉起 `start-board.mjs --wait-pid <自己>`（等旧进程死、端口腾空）然后退出；页面自己轮询 `/healthz`，回来就整页刷新。**端口和分享链接不变**，正在跑的批次/合入是 detach 的、不受影响 |
+| 右上角「停看板」 | 停掉**看板进程本身**（`POST /api/board {action:'stop'}`）：删 `board.json` 后 `process.exit(0)`，等同 `start-board.mjs --stop`。网页立刻断，刷新也回不来，要用 `start-board.mjs` 再起（地址不变）。跟「本批跑完就停」不是一回事 |
 | 工位卡片上的「接活」开关（勾选框） | 勾上 = 调度器会派卡；取消 = 落一个持久的 `station.paused`，调度器直接跳过这个工位（**不影响**手上那张）；不是写停止文件 |
 
 **一次只允许一批**：判活看 `progress.jsonl` 里的 pid，所以命令行起的批次也算，网页和 CLI 不会在同一个仓库上撞车。工作区不干净、目录不是 git 仓库、已经有一批在跑，都会在开跑前直接拒掉（不在 spawn 之后才失败）。
@@ -205,6 +207,14 @@ node <技能根>/scripts/start-board.mjs --port 7400 --host 192.168.1.5
 - **验证并推送**（主树卡片上的按钮 / 自动推送）= `collect.mjs --resume`：提交已经在主树本地了、只是没推（典型：合入时 verify 挂了）才用它，它跳过 pick。
 
 自动合入的门槛都是硬性的：主树干净 + 没冲突 + Unity 在线 + 没有主树任务在跑，一次只合一个工位（verify 只有一块 Unity，两棵树同时 pick 会互相踩）。冲突时 `--resolve` 保留现场并自动起 agent 解；**xlsx 表格冲突直接拒**（自动合会丢行），退避拉满 30 分钟等人来。
+
+**合入源 = 工位当前 HEAD 的那条分支**，所以存档分支在入口就被挡（2026-10-28 的教训：有人为了接着干活把工位切到 `tapd-loop-failed/<卡>`，30 秒后自动合入就去合那条写着「未完成，勿合入」的快照，最后只报一句 `cherry-pick is now empty`）：
+
+- `tapd-loop-failed/*`、`tapd-loop-orphan/*` —— 自动和手动都拒（`control.mjs` 的 `ARCHIVE_BRANCH`），页面上这类工位不显示「合入 N」，改写成「停在存档分支 …… 先切回工作分支」。`Tools/Worktree/collect.mjs` 也拦（`assertMergeableRef`，在 `sync` 之前就拒，不动主树）；真要取其中某条提交就传 sha（`collect.mjs <sha>` 不受限）。
+- `tapd-loop-unpushed/*` —— 只拦自动（`KEPT_BRANCH`）：人工点「合入」正是它的恢复路径（合入 → 补推 → 回写）。
+- 自动合入的候选里直接剔除这三类，不去“试一下再失败”，避免退避被拉到 30 分钟、页面上只写「x 分钟后再试」。
+
+**空提交不再 abort 整批**：`git cherry-pick` 碰到“The previous cherry-pick is now empty”时，`collect.mjs` 改成 `--skip` 跳过并继续（这条内容主树里已经有了），最后一行列出跳过的 sha；整批都是空提交时直接收工，不跑导表/验证/推送。
 
 **collect 的退出码就是 job 的状态**：`0` 完成、`1` 真失败（代码/推送被拒）、`2` 冲突已保留现场（触发自动解冲突）、`3` 环境未就绪（这棵树的 Unity 端点不在线）。`3` 在页面上是 `⏸ 等环境/等人`，不是红——它不是代码问题，拿它去查代码只会白花时间。collect 自己在 pick/导表之前先探一次端点（缺 endpoint.json / pid 已死 / 端口连不上都算），不在线就不开工，不再「pick 完了才在 verify 那步炸」。
 
@@ -262,7 +272,7 @@ loop 每 15 秒写一条 `heartbeat`，收到 SIGINT / SIGTERM / SIGBREAK 时先
 - 连续失败到 `maxFailures`
 - 前置失败（`blocked`）：同步冲突 / afterSync 红 / afterSync 留下改动，立刻停整批，不打 TAPD 标签
 - 队列为空（没有 `--watch` 时退出，有则轮询 `pollSec`）
-- 停止文件出现就退出：`<git-dir>/tapd-loop-stop`（主树是 `.git/tapd-loop-stop`，每棵树各自一份，停一棵不影响其他）。网页上的「停止」写的就是这个文件，「接单开跑」会把它清掉。
+- 停止文件出现就退出：`<git-dir>/tapd-loop-stop`（主树是 `.git/tapd-loop-stop`，每棵树各自一份，停一棵不影响其他）。网页上的「停止」写的就是这个文件，「接单开跑」会把它清掉。注意跟页面右上角的「停看板」区分：那个停的是看板进程本身。
 
 **工位上没有「停这一张」这个操作，也不该有**：看板派卡永远是一张一批（`--card` 直接把 `maxTasks` 强制成 1），loop 只在卡与卡之间读停止文件，所以那个标记对工位批次永远读不到——写了也白写（旧版页面上那个「跑完这张就停」就是这样，点了等于没点）。
 

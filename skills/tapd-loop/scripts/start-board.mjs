@@ -29,6 +29,12 @@ async function main() {
   const host = resolveHost()
   const key = ensureKey(HOME)
 
+  // 看板的「重启看板」按钮就是这么用的：它先回包、再拉起这条命令、自己退出。
+  // 这里必须先等旧进程死、端口腾出来，否则下面的探活会拗到那一具还没死的旧进程，
+  // 回一句 reused:true 然后什么都不起（页面看着重启了，实际还是旧进程）。
+  const waitPid = Number(flag('--wait-pid') || 0)
+  if (waitPid > 0) await waitForPid(waitPid, wanted)
+
   const current = readState()
   if (current && (await probe(current.port))) {
     const health = await probe(current.port)
@@ -120,7 +126,7 @@ async function spawnBoard(port, host) {
   mkdirSync(HOME, { recursive: true })
   const fd = openSync(LOG, 'a')
   const child = spawn(process.execPath, [
-    join(HERE, 'serve.mjs'), '--host', host, '--port', String(port), '--home', HOME,
+    join(HERE, 'serve.mjs'), '--host', host, '--port', String(port), '--home', HOME, ...forwardArgs(),
   ], {
     cwd: HERE,
     detached: true,
@@ -139,7 +145,43 @@ async function spawnBoard(port, host) {
 }
 
 /**
- * 探活只认自己的看板：端口可能被别人占了，`/healthz` 上的 `app` 标记必须对上。
+ * 等一个进程死掉、并（给了 port 时）它占的端口真的空了。
+ *
+ * 两个条件都要：pid 没了但端口还没被内核放掉时，listen 依旧会 EADDRINUSE，
+ * 而 start-board 的端口轮询会默默把看板挤到 7318——分享出去的那条链接就活不过一次重启。
+ */
+async function waitForPid(pid, port) {
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    if (!pidAlive(pid) && (!port || !(await probe(port)))) return
+    await sleepAsync(200)
+  }
+}
+
+function pidAlive(pid) {
+  if (!pid) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    // EPERM = 进程在、但不归我管（比如换了用户起的）—— 当它活着，别去抢端口
+    return err?.code === 'EPERM'
+  }
+}
+
+/** `serve.mjs` 自己的非默认开关：重启时要原样带回去，否则看板会静默丢掉这些设置。 */
+function forwardArgs() {
+  const extra = []
+  const root = flag('--root')
+  const loopScript = flag('--loop-script')
+  if (root) extra.push('--root', root)
+  if (loopScript) extra.push('--loop-script', loopScript)
+  if (args.includes('--no-auth')) extra.push('--no-auth')
+  return extra
+}
+
+/**
+ * 探活只认自己的看板：端口可能被别人占了，`/healthz` 上报 `app` 标记必须对上。
  * 绑通配和绑 loopback 的看板在 127.0.0.1 上都答，所以一个目标就够。
  */
 async function probe(port) {
@@ -191,6 +233,10 @@ function flag(name) {
 
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function sleepAsync(ms) {
+  return new Promise((done) => setTimeout(done, ms))
 }
 
 await main()

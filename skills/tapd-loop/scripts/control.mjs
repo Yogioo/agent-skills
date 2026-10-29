@@ -38,6 +38,19 @@ const MIN_POLL_SEC = 30
 const MAX_POLL_SEC = 24 * 60 * 60
 const LIST_TIMEOUT_MS = 90_000
 const TAIL_BYTES = 8 * 1024
+
+/**
+ * 机器自己造的分支：合入入口必须认得它们。
+ *
+ *   tapd-loop-failed/<卡>    失败现场快照（提交说明里就写着「未完成，勿合入」）
+ *   tapd-loop-orphan/<卡>    被强杀 / 断电的批次留下的脏工作区，开工前存下来的
+ *   tapd-loop-unpushed/<卡>  已经提交、但推送前挂了，从当前分支挪出去的
+ *
+ * 前两种是「只给人看」的存档，自动和手动合入都不该碰。第三种是「合入再推」这条路
+ * 正常要用的东西，所以只拦自动（人点「合入」正是它的恢复手段）。
+ */
+const ARCHIVE_BRANCH = /^tapd-loop-(failed|orphan)\//
+const KEPT_BRANCH = /^tapd-loop-unpushed\//
 // 多工位并行后 run 目录攒得快：窗口太小会把还在跑的批次挤出扫描范围，判成「没人在跑」，
 // 于是同一个工位被开第二批。8 够单工位用，多工位必须放大。
 const PROBE_DIRS = 64
@@ -2034,8 +2047,16 @@ function resolveBash() {
     if (state.unity !== 'on') return { skipped: 'no-unity' }
     if (config.autoPush?.enabled && Number(state.ahead) > 0) return { skipped: 'ahead', ahead: Number(state.ahead) }
 
-    const candidates = stationState(config)
+    const all = stationState(config)
       .filter((station) => Boolean(station.idle) && station.exists && station.isRepo && Number(station.pending) > 0)
+    // 停在存档分支上的工位直接不算候选：让它进候选就是每轮都失败一次、退避拉到 30 分钟，
+    // 而页面只会写「a：30 分钟后再试」——看着像代码有问题，实际上是它压根不该合。
+    const parked = all.filter((station) => ARCHIVE_BRANCH.test(station.branch) || KEPT_BRANCH.test(station.branch))
+    const candidates = all.filter((station) => !parked.includes(station))
+    if (!candidates.length && parked.length) {
+      memory.autoMerge.lastResult = `${parked.map((one) => `${one.name}（${one.branch}）`).join('、')} 停在存档分支上，自动合入不碰：要合先在工位里切回工作分支`
+      return { skipped: 'archive-branch', parked: parked.map((one) => ({ name: one.name, branch: one.branch })) }
+    }
     const ready = candidates.find((station) => now >= Number(memory.autoMerge.stations[station.name]?.nextAt || 0))
     if (!ready) return { skipped: candidates.length ? 'station-backoff' : 'clean', pending: candidates.length }
 
@@ -2106,6 +2127,23 @@ function resolveBash() {
 
     const branch = gitOut(station.path, ['rev-parse', '--abbrev-ref', 'HEAD'])
     if (!branch || branch === 'HEAD') return { ok: false, error: `${name} 读不到当前分支（detached？）` }
+    // 合入源一直是「工位当前 HEAD」。一旦有人为了接着干活把工位切到失败现场分支上，
+    // 自动合入就会去合一条明写着「未完成，勿合入」的快照——2026-10-28 17:18 那次就是：
+    // 17:18:02 切到 tapd-loop-failed/<卡>，17:18:18 定时器醒了，去 pick 那个存档分支，
+    // 白跑一趟还只报一句 cherry-pick empty。所以存档类分支在入口就拒，不再指望事后看懂日志。
+    if (ARCHIVE_BRANCH.test(branch)) {
+      const kind = /^tapd-loop-failed\//.test(branch) ? '失败现场' : '孤儿存档'
+      return {
+        ok: false,
+        error: `${name} 现在停在${kind}分支 ${branch} 上，那不是待合入的分支（存档只给人看）。先切回它的工作分支再合：git -C "${station.path}" switch <feat/…>`,
+      }
+    }
+    if (byAuto && KEPT_BRANCH.test(branch)) {
+      return {
+        ok: false,
+        error: `${name} 停在 ${branch}（提交过但没推出去的存档分支），自动合入不碰它：确认要合就手动点「合入」，或者先切回工作分支`,
+      }
+    }
     const pending = pendingCount(main, branch)
     if (!pending) return { ok: true, pending: 0, note: `${branch} 上没有未合入提交` }
     if (gitOut(main, ['status', '--porcelain', '--untracked-files=no'])) {

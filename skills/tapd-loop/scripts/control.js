@@ -16,6 +16,15 @@ let refView = null
 let serverSkew = 0
 let saveTimer = 0
 let started = false
+/** 看板进程被这个页面停掉 / 正在重启：之后不再轮询（服务端已经不在了），按钮也锁住。 */
+let boardGone = false
+
+/**
+ * 跟服务端 `control.mjs` 的 ARCHIVE_BRANCH / KEPT_BRANCH 对齐。
+ * 存档分支（失败现场 / 孤儿存档）只能看不能合；没推出去那条只拦自动合入，人手动合是恢复手段。
+ */
+const ARCHIVE_BRANCH = /^tapd-loop-(failed|orphan)\//
+const KEPT_BRANCH = /^tapd-loop-unpushed\//
 
 /** 点过「打开 Unity」的工位：启动要几分钟，这期间卡片显示「正在启动」（本地状态，刷新即丢）。 */
 const unityPending = new Map()
@@ -493,6 +502,9 @@ function renderStations(s) {
     // 在跑就先把运行状态报出来：卡片名优先用标题，19 位 id 在人眼里跟随机数一样。
     const cardLabel = running ? (station.cardTitle || station.card || '') : ''
     const pending = Number(station.pending) > 0
+    // 停在存档分支上时报「有 N 个提交待合入」是误导：那 N 个是失败现场的快照，不是待办。
+    const archived = ARCHIVE_BRANCH.test(station.branch)
+    const kept = KEPT_BRANCH.test(station.branch)
     let body
     if (running) {
       const tail = paused ? '跑完不会再派新卡' : '跑完自动回到空闲'
@@ -507,6 +519,10 @@ function renderStations(s) {
         : `${esc(trouble)}` + (station.behind ? ` · 落后 ${esc(String(station.behind))}` : '') + '<br>清一下就能接着干'
     } else if (booting) {
       body = '首次导入约 4.5 分钟。超过 10 分钟还这样，点「检查端点」看看是不是没带控制开关'
+    } else if (archived) {
+      body = `停在存档分支 ${esc(station.branch)} 上<br>失败现场，只给人看：先切回工作分支再合`
+    } else if (kept) {
+      body = `${esc(station.branch)} 上 ${esc(String(station.pending))} 个提交没推出去<br>确认要合就点「合入」，合完会补推 + 回写`
     } else if (pending) {
       body = `有 ${esc(String(station.pending))} 个提交待合入主树`
     } else {
@@ -553,10 +569,10 @@ function renderStations(s) {
         buttons.push(`<button data-sprobe="${esc(station.name)}" title="${esc(STIP.sprobe)}">检查端点</button>`)
       } else if (paused) {
         // 暂停的工位：开关在标题行，这里只留还能干的（合入、删）。
-        if (pending) buttons.push(`<button data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>`)
+        if (pending && !archived) buttons.push(`<button data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>`)
         buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`)
       } else {
-        if (pending) buttons.push(`<button class="primary" data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>`)
+        if (pending && !archived) buttons.push(`<button class="primary" data-smerge="${esc(station.name)}" title="${esc(STIP.smerge)}">合入 ${esc(String(station.pending))}</button>`)
         buttons.push(`<button class="primary" data-srun="${esc(station.name)}" title="${esc(STIP.srun)}">接一单</button>`)
         buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`)
       }
@@ -897,6 +913,7 @@ function paintCountdown() {
 }
 
 async function poll() {
+  if (boardGone) return
   const res = await apiJson('api/control')
   if (res.ok && res.data) render(res.data)
 }
@@ -1000,6 +1017,83 @@ async function stop() {
     say(`已置停止标记：${res.data.file || ''}（下一张卡之前停，不杀当前卡）`, 'warn')
   }
   await poll()
+}
+
+/**
+ * 停掉看板进程本身。
+ *
+ * 跟「本批跑完就停」不是一回事：那个只写一个停止文件给 loop.mjs 在卡与卡之间读；
+ * 这个是把整个网页的后端干掉，刷新页面也回不来，要用 start-board.mjs 再起一次
+ * （地址和密钥不变：密钥存在 board-key 里，端口在 board.json 里）。
+ */
+async function boardStop() {
+  if (!window.confirm('停掉看板进程？\n\n网页会立刻失去连接，之后要跑 start-board.mjs 才会再起来。\n正在跑的批次 / 合入不受影响（它们本来就 detach 着）。')) return
+  const res = await apiJson('api/board', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'stop' }),
+  })
+  if (!res.ok) {
+    say(res.data?.error || `停不了（HTTP ${res.status}）`, 'bad')
+    return
+  }
+  markBoardGone('看板已停。要用 start-board.mjs 再起（地址不变）。')
+}
+
+/**
+ * 重启看板进程：服务端先回包、再拉起一个「等我这具尸体凉了再起」的新进程，然后自己退出。
+ * 页面这边只管等它回来，回来就整页刷新（新进程的配置可能变了）。
+ */
+async function boardRestart() {
+  if (!window.confirm('重启看板进程？\n\n端口和分享链接不变，页面会自己等它回来再刷新。\n正在跑的批次不受影响。')) return
+  const res = await apiJson('api/board', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'restart' }),
+  })
+  if (!res.ok) {
+    say(res.data?.error || `重启不了（HTTP ${res.status}）`, 'bad')
+    return
+  }
+  markBoardGone('看板正在重启，等它回来…')
+  if (await waitBoardBack(60_000)) location.reload()
+  else say('重启后 60 秒还没连上：看一眼 ~/.tapd-loop/board.log，或跑 start-board.mjs --status 查。', 'bad')
+}
+
+/** 先把页面标成「后端没了」：轮询停掉、两个按钮锁住、顶部说清现在是哪一步。 */
+function markBoardGone(text) {
+  boardGone = true
+  const meta = el('meta')
+  if (meta) meta.textContent = text
+  for (const id of ['cBoardStop', 'cBoardRestart']) {
+    const button = el(id)
+    if (!button) continue
+    button.disabled = true
+    button.title = text
+  }
+  say(text, 'warn')
+}
+
+/** 等看板回来：直接打 /healthz（不要密钥），探到就把决定权交回给调用方。 */
+function waitBoardBack(timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  return new Promise((done) => {
+    const tick = async () => {
+      try {
+        const res = await fetch(`healthz?t=${Date.now()}`, { cache: 'no-store' })
+        if (res.ok) {
+          const data = await res.json()
+          if (data?.app === 'tapd-loop') return done(true)
+        }
+      } catch {
+        // 还在起来，下一轮再看
+      }
+      if (Date.now() > deadline) return done(false)
+      setTimeout(tick, 700)
+    }
+    // 先等一拍：服务端是「回包 → 300ms 后退出 → 新进程起」，立刻探测只会打到自己
+    setTimeout(tick, 900)
+  })
 }
 
 /** job.kind → 人话。工位和主树共用一套。 */
@@ -1255,6 +1349,9 @@ export function mountControl() {
   })
   el('cQueue')?.addEventListener('click', () => { queue(true).catch(() => {}) })
   el('cStop')?.addEventListener('click', () => { stop().catch(() => {}) })
+  // 这两个动的是看板进程本身，不是 loop 批次：走 /api/board（serve.mjs 里自己实现）。
+  el('cBoardStop')?.addEventListener('click', () => { boardStop().catch(() => {}) })
+  el('cBoardRestart')?.addEventListener('click', () => { boardRestart().catch(() => {}) })
   el('cAuto')?.addEventListener('click', () => { toggleAuto().catch(() => {}) })
   el('cPickOne')?.addEventListener('click', () => { dispatchNow().catch(() => {}) })
   el('cStationCreate')?.addEventListener('click', () => {

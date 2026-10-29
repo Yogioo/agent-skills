@@ -158,6 +158,12 @@ th:nth-child(4),td:nth-child(4){width:15ch;white-space:nowrap}
 #viewbar button{background:#11161f;color:#c9d1d9;border:1px solid #21262d;border-radius:6px;padding:4px 14px;font:inherit;font-size:12.5px;cursor:pointer}
 #viewbar button:hover{border-color:#30363d;color:#e6edf3}
 #viewbar button.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+/* 停/重启看板：跟上面两个弹窗开关不是一类东西（它们动的是进程），所以靠右、红框。 */
+#viewbar .spacer{flex:1 1 auto}
+#viewbar button.danger{border-color:#5a1f1f;color:#ff9d96}
+#viewbar button.danger:hover{border-color:#da3633;color:#ff7b72}
+#viewbar button:disabled{opacity:.45;cursor:default}
+#viewbar button:disabled:hover{border-color:#5a1f1f;color:#ff9d96}
 #statsPanel .stats-body{margin-top:10px}
 #statsPanel .chips{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
 #statsPanel .chip{border:1px solid #21262d;border-radius:6px;padding:4px 10px;font-size:12px;color:#c9d1d9;background:#11161f;white-space:nowrap}
@@ -183,7 +189,7 @@ export function pageHtml() {
   return pageHead('tapd-loop', SHELL_CSS) + `
 <body>
 <h1>tapd-loop</h1><div id="meta">连接中…</div>
-<div id="viewbar"><button id="openStats" title="全局吞吐 / 重试 / 失败原因（数据来自 ~/.tapd-loop/index.jsonl）">统计</button><button id="openAdvanced" title="项目 / 处理人 / 工位 / 指定工单">高级设置</button></div>
+<div id="viewbar"><button id="openStats" title="全局吞吐 / 重试 / 失败原因（数据来自 ~/.tapd-loop/index.jsonl）">统计</button><button id="openAdvanced" title="项目 / 处理人 / 工位 / 指定工单">高级设置</button><span class="spacer"></span><button id="cBoardRestart" class="danger" title="重启看板进程本身：页面会自己等它回来再刷新，端口和分享链接不变（正在跑的批次是 detach 的，不受影响）">重启看板</button><button id="cBoardStop" class="danger" title="停掉看板进程本身：网页立刻断，之后要跑 start-board.mjs 才会再起来（不复用「本批跑完就停」，那个只写停止文件）">停看板</button></div>
 <div id="warn"></div>
 <section id="ctl" class="ctl-ui">
   <div class="hero">

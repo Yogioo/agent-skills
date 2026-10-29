@@ -13,8 +13,8 @@
  * 只回一句 401，看着像功能坏了。
  */
 
-import { execFile } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { execFile, spawn } from 'node:child_process'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir, networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -174,6 +174,19 @@ async function handle(req, res, url) {
     // 只有「带 error 的拒绝」才算 400；补回写这种「部分提交找不到卡片」是结果，不是失败。
     return sendJson(res, result.error ? 400 : 200, { ...result, ...(await boardStatus()) })
   }
+  if (path === '/api/board') {
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+    const body = await readJsonBody(req)
+    const action = String(body.action || '').trim()
+    if (action !== 'stop' && action !== 'restart') {
+      return sendJson(res, 400, { ok: false, error: `未知动作：${action || '(空)'}（stop / restart）` })
+    }
+    // 先把回包发出去、再动自己的进程：进程一死这个请求就没人答了，页面上表现为
+    // 「点了没反应，然后轮询开始失败」。
+    sendJson(res, 200, { ok: true, action, pid: process.pid, port: PORT, host: HOST, url: PRIMARY_URL })
+    afterReply(action)
+    return
+  }
   if (path === '/api/stations') {
     if (req.method === 'GET') return sendJson(res, 200, { ok: true, ...(await boardStatus()) })
     if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'GET/POST only' })
@@ -257,6 +270,56 @@ async function boardStatus() {
       lan: Boolean(SHARE_URL),
     },
   }
+}
+
+/**
+ * 停 / 重启看板进程自己（页面右上角那两个红框按钮）。
+ *
+ * 为什么要留 300ms：回包和退出挤在同一个 tick 里，socket 往往还没 flush 完进程就没了。
+ *
+ * 重启为什么不直接 spawn 一个新的 serve.mjs：端口还在自己手里，新进程 listen 会拿到
+ * EADDRINUSE，或者 start-board 探活时探到的还是这具还没死的旧进程、回一句 reused:true
+ * 然后什么都不起（页面看着重启成功，其实还是旧进程）。所以交给 start-board 的
+ * `--wait-pid`：它先等到本进程没了、端口空了，再正常拉起，端口就不会漂到 7318。
+ */
+function afterReply(action) {
+  setTimeout(() => {
+    if (action === 'restart') {
+      const childArgs = [
+        join(HERE, 'start-board.mjs'), '--host', HOST, '--port', String(PORT), '--home', HOME,
+        '--wait-pid', String(process.pid),
+      ]
+      if (ROOT !== join(HOME, 'runs')) childArgs.push('--root', ROOT)
+      if (LOOP !== join(HERE, 'loop.mjs')) childArgs.push('--loop-script', LOOP)
+      if (!AUTH_REQUIRED && !isLoopbackHost(HOST)) childArgs.push('--no-auth')
+      try {
+        relaunch(childArgs)
+      } catch (err) {
+        console.error(JSON.stringify({ error: 'restart-spawn-failed', message: String(err?.message || err) }))
+      }
+    } else {
+      // 跟 `start-board.mjs --stop` 一个语义：删掉 board.json。下次 start-board 会重新
+      // 探测/拉起，密钥留在 board-key 里所以地址不变。
+      try {
+        rmSync(join(HOME, 'board.json'), { force: true })
+      } catch { /* 删不掉也不影响我们已经要退出 */ }
+    }
+    process.exit(0)
+  }, 300)
+}
+
+/** detached 起一个不跟着自己死的子进程，输出追加进 board.log（跟 start-board 一致）。 */
+function relaunch(childArgs) {
+  mkdirSync(HOME, { recursive: true })
+  const fd = openSync(join(HOME, 'board.log'), 'a')
+  const child = spawn(process.execPath, childArgs, {
+    cwd: HERE,
+    detached: true,
+    windowsHide: true,
+    stdio: ['ignore', fd, fd],
+  })
+  child.unref()
+  closeSync(fd)
 }
 
 function publicQueue(queue) {
