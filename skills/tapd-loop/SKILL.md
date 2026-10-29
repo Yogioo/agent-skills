@@ -208,6 +208,8 @@ node <技能根>/scripts/start-board.mjs --port 7400 --host 192.168.1.5
 
 自动合入的门槛都是硬性的：主树干净 + 没冲突 + Unity 在线 + 没有主树任务在跑，一次只合一个工位（verify 只有一块 Unity，两棵树同时 pick 会互相踩）。冲突时 `--resolve` 保留现场：**表格先按显示值三方叠**（`xlsx-cell-diff merge`，`git show :1:/:2:/:3:` 取三方版本），两边改的是不同格就直接合掉、`git add` 后继续；剩下的文本冲突才起 agent 解。只有**同一格两边都改**、或 **sheet/行/列增删** 才算真冲突，拦下来等人（退避拉满 30 分钟）。所以「表格冲突必须人工合」已经不成立了。
 
+**合入成功后工位分支会自动归位**（`reset --hard origin/<target>`）：cherry-pick 换了 SHA、已存在的文件改动还会被跳过，分支留着 `git cherry` 会永远报 `+`，卡片一直显示「有 N 个提交待合入」而点进去只能跑出一句「整批都是空提交」。所以：①合入 `status done` 时板子直接把工位归位（工位有未提交改动、或分支是存档类则跳过）；②待合入计数除了 `git cherry` 还会按内容再判一次（它改过的路径在主树里已经一样 → 不算待合入）。手工收拾则：`git -C <工位> fetch origin && git -C <工位> reset --hard origin/<target>`。
+
 **合入源 = 工位当前 HEAD 的那条分支**，所以存档分支在入口就被挡（2026-10-28 的教训：有人为了接着干活把工位切到 `tapd-loop-failed/<卡>`，30 秒后自动合入就去合那条写着「未完成，勿合入」的快照，最后只报一句 `cherry-pick is now empty`）：
 
 - `tapd-loop-failed/*`、`tapd-loop-orphan/*` —— 自动和手动都拒（`control.mjs` 的 `ARCHIVE_BRANCH`），页面上这类工位不显示「合入 N」，改写成「停在存档分支 …… 先切回工作分支」。`Tools/Worktree/collect.mjs` 也拦（`assertMergeableRef`，在 `sync` 之前就拒，不动主树）；真要取其中某条提交就传 sha（`collect.mjs <sha>` 不受限）。

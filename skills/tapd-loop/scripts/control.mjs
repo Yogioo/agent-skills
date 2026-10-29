@@ -409,6 +409,33 @@ export function mergeXlsxConflicts(main, files) {
 }
 
 /**
+ * 这笔提交的成果是不是已经在 base 里了（按内容比，不看 SHA / patch-id）。
+ * 空提交算「已经在里面」——没东西可合。
+ * 路径必须用 -z 取：带中文/# 的路径不加 -z 会被双引号包住，paths" 匹配不到文件，
+ * git diff 就“没差异”，于是真的待合入也会被判成已合入（静默少算）。
+ */
+function contentAlreadyIn(main, base, sha) {
+  const paths = gitOut(main, ['show', '--name-only', '-z', '--format=', sha])
+    .split('\0').filter(Boolean)
+  if (!paths.length) return true
+  return gitRun(main, ['diff', '--quiet', base, sha, '--', ...paths])
+}
+
+async function contentAlreadyInAsync(main, base, sha) {
+  const paths = (await gitOutAsync(main, ['show', '--name-only', '-z', '--format=', sha]))
+    .split('\0').filter(Boolean)
+  if (!paths.length) return true
+  return await gitRunAsync(main, ['diff', '--quiet', base, sha, '--', ...paths])
+}
+
+/** 只关心成败的 git 命令（异步版：页面轮询不能卡事件循环）。 */
+async function gitRunAsync(cwd, args) {
+  return await new Promise((done) => {
+    execFile('git', args, { cwd, windowsHide: true, timeout: 20_000 }, (err) => done(!err))
+  })
+}
+
+/**
  * 最近几个 run 目录的头尾各读一小段，判断「现在有没有一批在跑」。
  * 不整份读 progress.jsonl：长跑能有几百 KB，而这里每几秒就要问一次。
  */
@@ -1631,11 +1658,17 @@ function resolveBash() {
     const bases = [...new Set([upstreamOf(main), 'HEAD'].filter(Boolean))]
     let pending = null
     for (const base of bases) {
+      // 两边树一模一样 = 分支上没有任何主树没有的内容，直接判 0。
+      if (gitRun(main, ['diff', '--quiet', base, branch])) return 0
       const out = gitOut(main, ['cherry', base, branch])
-      const plus = new Set((out ? out.split('\n') : [])
+      const plus = (out ? out.split('\n') : [])
         .filter((line) => line.startsWith('+'))
-        .map((line) => line.slice(1).trim()))
-      pending = pending ? new Set([...pending].filter((sha) => plus.has(sha))) : plus
+        .map((line) => line.slice(1).trim())
+      // git cherry 只认 patch-id：合入走 cherry-pick（SHA 变了，已存在的文件改动还会被跳过），
+      // 同一份成果永远报 `+`。所以每题再看「它改过的那些路径在主树里是不是已经一样」，
+      // 一样就当已合入，否则卡片会一直挂着一个点进去只能跑空的「合入 1」。
+      const real = new Set(plus.filter((sha) => !contentAlreadyIn(main, base, sha)))
+      pending = pending ? new Set([...pending].filter((sha) => real.has(sha))) : real
       if (!pending.size) return 0
     }
     return pending ? pending.size : 0
@@ -1648,11 +1681,16 @@ function resolveBash() {
     const bases = [...new Set([upstream, 'HEAD'].filter(Boolean))]
     let pending = null
     for (const base of bases) {
+      if (await gitRunAsync(main, ['diff', '--quiet', base, branch])) return 0
       const out = await gitOutAsync(main, ['cherry', base, branch])
-      const plus = new Set((out ? out.split('\n') : [])
+      const plus = (out ? out.split('\n') : [])
         .filter((line) => line.startsWith('+'))
-        .map((line) => line.slice(1).trim()))
-      pending = pending ? new Set([...pending].filter((sha) => plus.has(sha))) : plus
+        .map((line) => line.slice(1).trim())
+      const real = new Set()
+      for (const sha of plus) {
+        if (!(await contentAlreadyInAsync(main, base, sha))) real.add(sha)
+      }
+      pending = pending ? new Set([...pending].filter((sha) => real.has(sha))) : real
       if (!pending.size) return 0
     }
     return pending ? pending.size : 0
@@ -2259,6 +2297,9 @@ function resolveBash() {
       // 回写按「主树 HEAD 动了没」判（writeBackMerged 自己会查），不看退出码。
       onSettled: (status, code, summary) => {
         const back = writeBackMerged({ stationName: name, branch, main, before, via: byAuto ? '自动合入' : '' })
+        // 合入成功 = 内容已经在主树里了。分支留着只会让卡片一直显示「待合入」（cherry-pick 换了 SHA、
+        // patch-id 对不上），下一次还要白 pick 一遍。顺手把工位归位到 origin/<target>。
+        if (status === 'done') recycleStation(station, main, branch)
         if (byAuto) {
           if (status === 'done') autoMergeRecord(name, { ok: true, merged: (back?.results || []).length })
           // 冲突不算「这个工位不行」：现场已经交给解冲突的 agent，只等 2 分钟别抢在它前面。
@@ -2277,6 +2318,33 @@ function resolveBash() {
         return started
       },
     })
+  }
+
+  /**
+   * 合入成功后把工位分支归位到 origin/<target>。
+   *
+   * 为什么必要：collect 走的是 cherry-pick（SHA 会变，而且「文件已经存在」的改动会被跳过），
+   * 合完那一笔的 patch-id 跟工位分支上的原提交对不上，`git cherry` 就一直报 `+`，
+   * 卡片挂着「有 1 个提交待合入」—— 点进去只会跑出一句「整批都是空提交」。
+   *
+   * 只做安全的那种：工位工作区得干净，分支不能是存档类（失败现场 / 未推送存档）。
+   */
+  function recycleStation(station, main, branch) {
+    const path = String(station?.path || '').trim()
+    if (!path || !branch) return { ok: false, error: '没有工位路径 / 分支，跳过归位' }
+    if (ARCHIVE_BRANCH.test(branch) || KEPT_BRANCH.test(branch)) return { ok: false, error: `${branch} 是存档分支，不动它` }
+    if (gitOut(path, ['status', '--porcelain', '--untracked-files=no'])) return { ok: false, error: '工位上有未提交改动，先不归位' }
+    const target = String(loopConfig(main)?.run?.targetBranch || 'develop')
+    if (!gitRun(path, ['fetch', 'origin'])) return { ok: false, error: 'git fetch 失败，归位没做' }
+    if (!gitRun(path, ['reset', '--hard', `origin/${target}`])) return { ok: false, error: 'git reset --hard 失败' }
+    const at = gitOut(path, ['rev-parse', '--short', 'HEAD'])
+    appendTrace(home, {
+      t: Date.now(),
+      kind: 'station_recycle',
+      station: String(station?.name || ''),
+      note: `${branch} → origin/${target} @ ${at}`,
+    })
+    return { ok: true, at }
   }
 
   /** 主树是不是停在 cherry-pick 中间态；返回冲突文件和其中的表格。 */
