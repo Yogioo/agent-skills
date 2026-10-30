@@ -331,6 +331,7 @@ function runStatusOrDiff(options) {
             structural: item.structural.length,
             rows: [...new Set(item.cells.map((cell) => cell.row).filter(Boolean))],
             sheets: [...new Set(item.cells.map((cell) => cell.sheet).filter(Boolean))],
+            ...(item.warnings?.length ? { warnings: item.warnings } : {}),
           })),
       }
     : { results }
@@ -432,10 +433,13 @@ function runConflicts(options) {
     workbookName: three.workbook,
   })
   const payload = { workbook: three.workbook, ...result }
+  const appended = result.inserted.rows.length || result.inserted.columns.length
   return {
     payload,
     text: renderConflicts([payload]),
-    code: result.structural.length ? EXIT.structural : result.conflicts.length ? EXIT.conflict : EXIT.ok,
+    code: result.structural.length || appended
+      ? EXIT.structural
+      : result.conflicts.length ? EXIT.conflict : EXIT.ok,
   }
 }
 
@@ -447,10 +451,15 @@ function runMerge(options) {
     filters: filtersOf(options),
     workbookName: three.workbook,
   })
-  if (result.structural.length) {
+  // 行/列新增需要「插入行/列并复制样式」的写入能力；本 CLI 只做单元格 overlay，
+  // 所以这里仍然拒绝，并由 DigitDoor 的 xlsx-merge（C#）接管。
+  const appended = result.inserted.rows.length || result.inserted.columns.length
+  if (result.structural.length || appended) {
     return {
       payload: { workbook: three.workbook, ...result },
-      text: renderConflicts([{ workbook: three.workbook, ...result }]),
+      text: renderConflicts([{ workbook: three.workbook, ...result }]) + (appended
+        ? '需要追加行/列：用 DigitDoor 的 LubanData/xlsx-merge.bat merge（本 CLI 不写结构变动）\n'
+        : ''),
       code: EXIT.structural,
     }
   }

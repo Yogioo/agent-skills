@@ -300,7 +300,7 @@ test('formula compared by formula text, empty equals missing', () => {
   assertNoCells(diff.stdout)
 })
 
-test('duplicate primary key fails as input error', () => {
+test('duplicate primary key falls back to row numbers', () => {
   const dir = tempDir()
   const dup = [
     { id: 'same', zh: '一', en: 'a' },
@@ -308,9 +308,126 @@ test('duplicate primary key fails as input error', () => {
   ]
   const left = writeWorkbook(dir, 'd1.xlsx', languageCells(dup))
   const right = writeWorkbook(dir, 'd2.xlsx', languageCells(dup))
-  const diff = capture(['diff', '--left', left, '--right', right])
-  assert.equal(diff.code, EXIT.input)
-  assert.match(diff.stderr, /Duplicate primary key/)
+  const same = capture(['diff', '--left', left, '--right', right, '--json'])
+  assert.equal(same.code, EXIT.ok, same.stderr)
+  assert.equal(JSON.parse(same.stdout).results[0].cells.length, 0)
+  assert.match(same.stdout, /主键列 id 有重复值/)
+
+  const changed = languageCells(dup.map((row, i) => (i === 0 ? { ...row, zh: '改' } : row)))
+  const rightChanged = writeWorkbook(dir, 'd3.xlsx', changed)
+  const diff = capture(['diff', '--left', left, '--right', rightChanged, '--json'])
+  const result = JSON.parse(diff.stdout).results[0]
+  assert.equal(result.cells.length, 1)
+  assert.equal(result.cells[0].row, 'R4')
+  assert.equal(result.warnings.length, 1)
+})
+
+function doorCells(keyName, rows) {
+  const header = [
+    { ref: 'A1', text: '##var' },
+    { ref: 'B1', text: keyName },
+    { ref: 'C1', text: 'Value' },
+    { ref: 'A2', text: '##type' },
+    { ref: 'B2', text: 'int' },
+    { ref: 'C2', text: 'int' },
+    { ref: 'A3', text: '##' },
+    { ref: 'B3', text: 'ID' },
+    { ref: 'C3', text: '数值' },
+  ]
+  const data = rows.flatMap((row, i) => {
+    const r = i + 4
+    return [
+      { ref: `B${r}`, text: row.key },
+      { ref: `C${r}`, text: row.value },
+    ]
+  })
+  return [{ name: 'Door', cells: [...header, ...data] }]
+}
+
+test('key column is the first field after ##var when it is not named id', () => {
+  const dir = tempDir()
+  const before = [{ key: '1001', value: '1' }, { key: '1002', value: '2' }]
+  const after = [{ key: '1001', value: '1' }, { key: '1003', value: '3' }, { key: '1002', value: '2' }]
+  const left = writeWorkbook(dir, 'k1.xlsx', doorCells('DoorId', before))
+  const right = writeWorkbook(dir, 'k2.xlsx', doorCells('DoorId', after))
+  const diff = capture(['diff', '--left', left, '--right', right, '--json'])
+  assert.equal(diff.code, EXIT.ok, diff.stderr)
+  const result = JSON.parse(diff.stdout).results[0]
+  assert.deepEqual(result.structural.map((item) => item.row), ['1003'])
+  assert.equal(result.cells.length, 0)
+  assert.equal(result.warnings.length, 0)
+})
+
+test('key column with repeated values falls back to row numbers', () => {
+  const dir = tempDir()
+  const rows = [{ key: '1', value: '1' }, { key: '1', value: '2' }]
+  const left = writeWorkbook(dir, 'r1.xlsx', doorCells('SeasonId', rows))
+  const right = writeWorkbook(dir, 'r2.xlsx', doorCells('SeasonId', rows.map(
+    (row, i) => (i === 1 ? { ...row, value: '9' } : row),
+  )))
+  const diff = capture(['diff', '--left', left, '--right', right, '--json'])
+  assert.equal(diff.code, EXIT.ok, diff.stderr)
+  const result = JSON.parse(diff.stdout).results[0]
+  assert.equal(result.cells.length, 1)
+  assert.equal(result.cells[0].row, 'R5')
+  assert.match(result.warnings[0], /SeasonId/)
+})
+
+test('three-way: remote-only row and column additions are appended, not refused as structural', () => {
+  const dir = tempDir()
+  const rows = [{ key: '1001', value: '1' }, { key: '1002', value: '2' }]
+  const base = writeWorkbook(dir, 'b.xlsx', doorCells('DoorId', rows))
+  const local = writeWorkbook(dir, 'l.xlsx', doorCells('DoorId', rows))
+
+  const added = doorCells('DoorId', [...rows, { key: '1003', value: '3' }])
+  const extraColumn = [
+    { ref: 'D1', text: 'Extra' },
+    { ref: 'D2', text: 'int' },
+    { ref: 'D3', text: '额外' },
+    { ref: 'D4', text: '10' },
+    { ref: 'D5', text: '20' },
+    { ref: 'D6', text: '30' },
+  ]
+  const remote = writeWorkbook(dir, 'r.xlsx', [{ name: 'Door', cells: [...added[0].cells, ...extraColumn] }])
+
+  const conflicts = capture(['conflicts', '--base', base, '--local', local, '--remote', remote, '--json'])
+  assert.equal(conflicts.code, EXIT.structural)
+  const payload = JSON.parse(conflicts.stdout)
+  assert.deepEqual(payload.structural, [])
+  assert.deepEqual(payload.inserted.rows.map((item) => item.row), ['1003'])
+  assert.deepEqual(payload.inserted.columns.map((item) => item.column), ['Extra'])
+  assert.equal(payload.conflicts.length, 0)
+
+  const text = capture(['conflicts', '--base', base, '--local', local, '--remote', remote])
+  assert.match(text.stdout, /Append rows/)
+  assert.match(text.stdout, /Append columns/)
+})
+
+ test('three-way: a row only local added is kept without any structural noise', () => {
+  const dir = tempDir()
+  const rows = [{ key: '1001', value: '1' }, { key: '1002', value: '2' }]
+  const base = writeWorkbook(dir, 'b2.xlsx', doorCells('DoorId', rows))
+  const local = writeWorkbook(dir, 'l2.xlsx', doorCells('DoorId', [...rows, { key: '1009', value: '9' }]))
+  const remote = writeWorkbook(dir, 'r2.xlsx', doorCells('DoorId', rows))
+  const conflicts = capture(['conflicts', '--base', base, '--local', local, '--remote', remote, '--json'])
+  assert.equal(conflicts.code, EXIT.ok, conflicts.stderr)
+  const payload = JSON.parse(conflicts.stdout)
+  assert.deepEqual(payload.structural, [])
+  assert.deepEqual(payload.inserted.rows, [])
+  assert.equal(payload.conflicts.length, 0)
+})
+
+test('three-way: remote deletion is still structural', () => {
+  const dir = tempDir()
+  const rows = [{ key: '1001', value: '1' }, { key: '1002', value: '2' }]
+  const base = writeWorkbook(dir, 'b3.xlsx', doorCells('DoorId', rows))
+  const local = writeWorkbook(dir, 'l3.xlsx', doorCells('DoorId', rows))
+  const remote = writeWorkbook(dir, 'r3.xlsx', doorCells('DoorId', [rows[0]]))
+  const conflicts = capture(['conflicts', '--base', base, '--local', local, '--remote', remote, '--json'])
+  assert.equal(conflicts.code, EXIT.structural)
+  const payload = JSON.parse(conflicts.stdout)
+  assert.deepEqual(payload.structural.map((item) => item.row), ['1002'])
+  assert.deepEqual(payload.inserted.rows, [])
 })
 
 test('merge resolutions file takes remote value', () => {
