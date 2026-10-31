@@ -6,7 +6,7 @@ import {
 } from '/assets/client.mjs'
 import { apiFetch, withKey } from '/auth.js'
 import { minuteBucket, selectionGuard } from '/dom-guard.js'
-import { mountControl } from '/control.js'
+import { mountControl, notify } from '/control.js'
 
 const rowsEl = document.getElementById('rows')
 const meta = document.getElementById('meta')
@@ -47,7 +47,22 @@ function saveDiffMode() {
 let currentDiff = ''
 let autoscroll = true
 
-const PHASE = { claim: '占住卡片', fetch: '抓取工单与图片', fetched: '已抓取', running: '内循环运行中', timeout: '超时' }
+const PHASE = {
+  claim: '占住卡片',
+  fetch: '抓取工单与图片',
+  fetched: '已抓取',
+  salvage: '清理上一批残留',
+  sync: '同步基线（git pull）',
+  'after-sync': '导表/生成物',
+  running: '内循环运行中',
+  // turn_end 之后、card_done 之前的真实阶段：以前不区分，
+  // 一律显示「内循环运行中」，一次 Unity 测试就能骗人十几分钟。
+  'after-turn': 'AI 已交卷，后续处理中',
+  verify: '验证门（编译+跑测试）',
+  commit: '提交中',
+  publish: '推送（sync + push）',
+  timeout: '超时',
+}
 const STATUS = {
   running: ['▶', '运行中', 'state-run'],
   done: ['●', '完成', 'ok'],
@@ -60,14 +75,160 @@ const STATUS = {
   skipped: ['⊘', '跳过', 'dim'],
 }
 
+
+/**
+ * 全链路：把「外循环这一批」和「跨批次的合入」串成一张表。
+ *
+ * 为什么单独一块：卡片弹窗里原来只有内循环时间线（AI 那一轮的工具调用），
+ * 验证门、提交、推送、合入主树都不在那儿——出了问题的人只能猜这张卡走到哪一步了。
+ */
+const CHAIN_PHASE = {
+  salvage: '清理上一批残留',
+  sync: '同步基线（git pull）',
+  'after-sync': '导表 / 生成物',
+  claim: '占住卡片（afk-claimed）',
+  fetch: '抓取工单',
+  fetched: '工单已抓取',
+  verify: '验证门',
+  commit: '提交',
+  publish: '推送（sync + push）',
+}
+
+function buildChain(d) {
+  const progress = (d.progress || []).filter((e) => e && e.event)
+  const startedAt = Number((progress.find((e) => e.event === 'card_start') || {}).t || 0)
+  const rows = []
+  const add = (at, label, note = '', cls = '') => rows.push({ at: Number(at) || 0, label, note: String(note || ''), cls })
+  for (const e of progress) {
+    const at = e.t
+    switch (e.event) {
+      case 'card_start':
+        add(at, '开始', [e.title, e.priorityLabel, e.statusLabel].filter(Boolean).join(' · '), 'ok')
+        break
+      case 'card_phase': {
+        const phase = String(e.phase || '')
+        if (CHAIN_PHASE[phase]) add(at, CHAIN_PHASE[phase], phase === 'fetched' ? `评论 ${e.comments ?? 0} · 图片 ${e.images ?? 0}` : '')
+        break
+      }
+      case 'card_sync':
+        add(at, '同步基线完成', e.moved ? `${String(e.from || '').slice(0, 10)} → ${String(e.to || '').slice(0, 10)}` : `${String(e.to || '').slice(0, 10)}（已是最新）`)
+        break
+      case 'card_after_sync':
+        add(at, '导表完成', `${Math.round(Number(e.elapsedMs || 0) / 1000)}s`)
+        break
+      case 'turn_start':
+        add(at, 'AI 开始（内循环）', [e.cli, e.model && e.model !== '(default)' ? `模型 ${e.model}` : '', e.thinking && e.thinking !== '(default)' ? `思考 ${e.thinking}` : ''].filter(Boolean).join(' · '))
+        break
+      case 'turn_end':
+        add(at, 'AI 交卷', [e.code != null ? `exit ${e.code}` : '', e.timedOut ? '⚠ 超时' : ''].filter(Boolean).join(' · '), e.timedOut ? 'bad' : 'ok')
+        break
+      case 'verify_repair_start':
+        add(at, `第 ${e.round} 轮 AI 修复`, `验证 exit ${e.code}`)
+        break
+      case 'verify_repair_end':
+        add(at, `第 ${e.round} 轮修复结束`, e.ok ? (e.touched ? `改了 ${e.touched} 个文件` : '没动文件') : String(e.reason || ''), e.ok ? 'ok' : 'bad')
+        break
+      case 'card_done':
+        add(at, e.status === 'preview' ? '完成（预览，未提交）' : '完成', e.commit ? `提交 ${String(e.commit).slice(0, 10)}` : '', 'ok')
+        break
+      case 'card_failed':
+        add(at, `失败${e.attempt ? `（第 ${e.attempt}/${e.maxAttempts || '?'} 次）` : ''}${e.requeued ? ' · 已自动放回队列' : ''}`, e.reason, 'bad')
+        break
+      case 'card_skipped':
+        add(at, '跳过', e.reason, 'bad')
+        break
+      case 'card_blocked':
+        add(at, '被挡（整批停）', e.reason, 'bad')
+        break
+      case 'card_crashed':
+        add(at, '收尾异常', e.reason, 'bad')
+        break
+      default:
+        break
+    }
+  }
+  rows.sort((a, b) => a.at - b.at)
+  // 每步耗时 = 到下一步的距离；最后一步如果卡已经结束就是 0（不是“到现在”），
+  // 还在跑才用“到现在”——否则一张一小时前完成的卡会一直显示「已 60m」。
+  const ended = progress.some((e) => ['card_done', 'card_failed', 'card_skipped', 'card_blocked', 'card_crashed'].includes(e.event))
+  const now = Date.now()
+  const batch = rows.map((row, i) => {
+    const next = rows[i + 1]
+    const end = next ? next.at : (ended ? row.at : now)
+    return { ...row, offset: startedAt ? row.at - startedAt : 0, spent: Math.max(0, end - row.at) }
+  })
+  // 跨批次的那半段（合入主树 / 推送 / 人工终止）单独一组：
+  // 它们可能发生在几个小时前甚至别的批次里，混进本批的「偏移/耗时」只会误导人。
+  const cross = (d.trace || [])
+    .filter((e) => ['merged', 'batch_killed', 'job_done', 'job_failed'].includes(String(e.kind || '')))
+    .sort((a, b) => Number(a.t) - Number(b.t))
+    .map((e) => ({
+      at: Number(e.t) || 0,
+      label: e.kind === 'merged' ? '合入主树' : e.kind === 'batch_killed' ? '人工终止了批次' : (e.kind === 'job_done' ? '主树任务完成' : '主树任务失败'),
+      note: [e.sha ? `提交 ${String(e.sha).slice(0, 10)}` : '', e.note].filter(Boolean).join(' · '),
+      cls: e.kind === 'job_failed' || e.kind === 'batch_killed' ? 'bad' : '',
+    }))
+  return { batch, cross }
+}
+
+function chainCount(d) {
+  const chain = buildChain(d)
+  return chain.batch.length + chain.cross.length
+}
+
+const chainRowHtml = (time, label, spent, note, cls) =>
+  `<div class="chainrow ${cls || ''}">` +
+  `<span class="ct">${esc(time)}</span>` +
+  `<span class="cl">${esc(label)}</span>` +
+  `<span class="cd">${esc(spent)}</span>` +
+  `<span class="cn" title="${esc(note)}">${esc(note)}</span>` +
+  '</div>'
+
+function chainHtml(d) {
+  const chain = buildChain(d)
+  if (!chain.batch.length && !chain.cross.length) return '<div class="dim">这一批里没有留下可展示的步骤。</div>'
+  const parts = []
+  if (chain.batch.length) {
+    parts.push('<div class="chainhead">本批次（AI 那一轮之前 → 之后）</div>')
+    parts.push('<div class="chain">' + chain.batch.map((row) => chainRowHtml(
+      `+${dur(row.offset)}`,
+      row.label,
+      row.spent >= 1000 ? dur(row.spent) : '',
+      row.note,
+      row.cls,
+    )).join('') + '</div>')
+  }
+  if (chain.cross.length) {
+    parts.push('<div class="chainhead">跨批次（合入主树 / 推送 / 人工干预）</div>')
+    parts.push('<div class="chain">' + chain.cross.map((row) => chainRowHtml(
+      rel(row.at),
+      row.label,
+      '',
+      row.note,
+      row.cls,
+    )).join('') + '</div>')
+  }
+  return parts.join('')
+}
+
 function st(s) {
   const hit = STATUS[s] || ['·', s || '未知', 'dim']
   return `<span class="${hit[2]}">${hit[0]} ${esc(hit[1])}</span>`
 }
 
 function what(c) {
-  if (c.status === 'running') return PHASE[c.phase] || '运行中'
-  return c.note || PHASE[c.phase] || '—'
+  const phase = String(c.phase || '')
+  // 修复轮的 phase 是动态的（verify-repair-1/2），按前缀认，别一条条罗列。
+  const repair = /^verify-repair-(\d+)$/.exec(phase)
+  const label = repair
+    ? `验证没过，第 ${repair[1]} 轮 AI 修复中`
+    : (PHASE[phase] || '')
+  if (c.status !== 'running') return c.note || label || '—'
+  // 阶段已经跑了多久：一个阶段停太久就该有人去看（AFK 里最怕的就是“看着像在动”）。
+  const since = Number(c.phaseAt || 0)
+  const spent = since ? dur(Date.now() - since) : ''
+  const tail = spent && Date.now() - since > 60_000 ? ` · 已 ${spent}` : ''
+  return (label || '运行中') + tail
 }
 
 function elapsed(c) {
@@ -453,7 +614,43 @@ function renderCard(sel) {
       document.getElementById('mhead').innerHTML = '<h3>' + esc(card.title || sel.cardId) + '</h3><div class="sub">' + esc(card.id) + ' · ' +
         (d.detail ? esc(d.detail.statusLabel + ' · ' + d.detail.priorityLabel + ' · ' + d.detail.owner) : '') + ' · ' + esc(elapsed(card)) + ' · ' +
         st(card.status || 'queued') + (card.note ? ' · ' + esc(card.note) : '') + '</div>' +
-        (runInfo ? '<div class="sub">' + runInfo + '</div>' : '')
+        (runInfo ? '<div class="sub">' + runInfo + '</div>' : '') +
+        // 批次还活着就给一个人能按的终止键：出了问题不应该只能等人去找进程号。
+        // 杀的是整批（loop 没提供单卡终止：它一张一张跑，停这一批就等于停这张卡）。
+        (run && run.alive
+          ? '<div class="sub"><button type="button" class="danger" id="mkillrun" title="强杀这一批（含这张卡）：不等它收尾，工作区半截改动留到下一批开工前存档，TAPD 上留 afk-claimed">■ 终止这一批</button></div>'
+          : '')
+      const killBtn = document.getElementById('mkillrun')
+      if (killBtn) {
+        killBtn.onclick = () => {
+          const label = card.title || sel.cardId
+          if (!window.confirm(`停掉「${label}」这一批？\n\n` +
+            '会强杀批次进程（含它的内循环子代理），不等它自己收尾：\n' +
+            '· 工作区里的半截改动留着 —— 下一批开工前会存成 tapd-loop-orphan/<卡> 分支再清掉\n' +
+            '· TAPD 上这张卡留着 afk-claimed —— 想再被接单得用 loop.mjs --retry <卡>')) return
+          killBtn.disabled = true
+          killBtn.textContent = '正在终止…'
+          apiFetch('api/stations', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action: 'kill', runId: sel.runId, card: sel.cardId, workdir: (run && run.workdir) || '' }),
+          })
+            .then((r) => r.json())
+            .then((res) => {
+              if (res && res.ok) notify(`已终止这一批（pid ${res.killed?.pid}）`, 'ok')
+              else {
+                notify((res && res.error) || '停不掉', 'bad')
+                killBtn.disabled = false
+                killBtn.textContent = '■ 终止这一批'
+              }
+            })
+            .catch(() => {
+              notify('停不掉：请求失败', 'bad')
+              killBtn.disabled = false
+              killBtn.textContent = '■ 终止这一批'
+            })
+        }
+      }
       if (d.error) {
         mbody.innerHTML = '<div class="bad">读不到：' + esc(d.error) + '</div>'
         return
@@ -462,6 +659,12 @@ function renderCard(sel) {
       if (sig === cardSig) return
       cardSig = sig
       const html = []
+      // 全链路放第一个、默认展开：这是“这张卡从头到尾发生了什么”的主视图，
+      // 内循环时间线只是其中一段（AI 那一轮），验证/提交/推送/合入都不在那里。
+      if ((d.progress || []).length || (d.trace || []).length) {
+        const chainKey = sel.runId + '|' + sel.cardId + '|chain'
+        html.push(paneHtml(chainKey, '全链路 · ' + chainCount(d) + ' 步', chainHtml(d), paneState[chainKey] !== false))
+      }
       if (d.cardMd) {
         // 出网时 /img/ 也要带密钥（<img> 带不了 header，只能进 query）。
         const cardMd = String(d.cardMd).replace(/\]\(images\/([^)\s]+)\)/g,

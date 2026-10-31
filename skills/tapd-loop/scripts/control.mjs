@@ -1,6 +1,6 @@
 import { createTapd } from './tapd.mjs'
 import { runTurn } from './turn.mjs'
-import { appendTrace } from './trace-index.mjs'
+import { appendTrace, INDEX_NAME } from './trace-index.mjs'
 
 /**
  * 看板的控制面：按一下就跑、按一下停、定时查看 TAPD 并自动接单。
@@ -33,6 +33,10 @@ export const CONTROL_FILE = 'board-control.json'
 export const KEY_FILE = 'board-key'
 /** 批次的 stdout/stderr 落在 <home>/board-batches/batch-<时间戳>.log。 */
 export const BATCH_DIR = 'board-batches'
+/** 看板上点过「已处理」的卡：卡 → 时间戳。只影响这份清单，不动 TAPD。 */
+export const NEEDS_HUMAN_DONE = 'needs-human-done.json'
+/** TAPD 卡片现状的缓存（卡 → { at, state }）：清单每 3 秒轮询，不能每次都问 TAPD。 */
+const cardStateCache = new Map()
 
 const MAX_TASKS_CAP = 20
 const MIN_POLL_SEC = 30
@@ -464,6 +468,14 @@ function allRuns(runsRoot, limit = PROBE_DIRS) {
     const tail = tailText(file, TAIL_BYTES)
     if (tail.includes('"loop_end"')) continue
     if (!pidAlive(Number(start.pid))) continue
+    // 进程号会被系统复用：杀掉的那批过一会儿可能被另一个进程顶掉同一个 pid，光看 pidAlive
+    // 会把早结束的 run 永远算成在跑（2026-10-31 实测：主树莫名显示「还有批次在跑」，
+    // 主树选项也被锁住）。所以只在目录安静一阵子之后才去查命令行：正常在跑的一批
+    // 每 15 秒一条心跳，mtime 很新，走快路径不陪这份开销。
+    if (quietFor(file, 120_000)) {
+      const look = pidIsLoop(Number(start.pid))
+      if (look.known && !look.isLoop) continue
+    }
     const card = cardFromTail(tail)
     out.push({
       kind: 'run',
@@ -593,6 +605,171 @@ function pidAlive(pid) {
   } catch (err) {
     return err.code === 'EPERM'
   }
+}
+
+/** 同步睡一小会儿（等进程真的死透）。Atomics.wait 在主线程可用，不起定时器。 */function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  } catch {
+    // SharedArrayBuffer 被禁了就算了：下面照样回去确认——只是确认得早一点
+  }
+}
+
+/** 文件多少毫秒没被写过了。拿不到时间就当刚写过（走快路径）。 */
+function quietFor(file, ms) {
+  try {
+    return Date.now() - statSync(file).mtimeMs > ms
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 从全局索引的条目里挑出「需要人处理」的卡。
+ *
+ * 规则只有一条：这张卡**最后一个决定性结局**是失败/被挡。`card_done` 算已解决。
+ * `card_skipped` / `card_interrupted` / `card_start` 这些不改变结论（那只是一次未遂的尝试），
+ * 所以“失败了 → 被重试一次 → 重试时带 afk-claimed 被 skip”不会让人误以为已经处理完了。
+ *
+ * entries 是 index.jsonl 解析后的数组（旧→新，但这里不靠顺序，全按 t 排）。
+ */
+export function pickNeedsHuman(entries = [], { since = 0, limit = 50 } = {}) {
+  const decided = new Map()
+  const sorted = [...entries]
+    .filter((e) => e && e.card && Number(e.t) >= since)
+    .sort((a, b) => Number(b.t) - Number(a.t))
+  for (const e of sorted) {
+    const id = String(e.card)
+    if (decided.has(id)) continue // 新的先到：第一条决定性结局就是这张卡的现状
+    const kind = String(e.kind || '')
+    if (kind === 'card_done') decided.set(id, null)
+    else if (kind === 'card_failed' || kind === 'card_blocked') decided.set(id, e)
+  }
+  const out = []
+  for (const [id, entry] of decided) {
+    if (!entry) continue
+    out.push({
+      card: id,
+      kind: String(entry.kind),
+      reason: String(entry.note || '').slice(0, 200),
+      at: Number(entry.t) || 0,
+      runId: String(entry.runId || ''),
+      station: String(entry.station || ''),
+      title: String(entry.title || ''),
+    })
+  }
+  return out.sort((a, b) => b.at - a.at).slice(0, limit)
+}
+
+/**
+ * 把「需要人处理」的候选再筛一道：**真的人工还没处理**的才留下。
+ *
+ * 只靠本地索引不行：人会直接在 TAPD 上把卡流转到已完成/策划验收，本地看不到，
+ * 清单就会一直挂着一堆早就处理完的卡（2026-10-31 实测：5 张全部已完成）。
+ *
+ * 留下的条件（两个都要）：
+ *   1. 状态还是可接单的（开发中/实现中）——人流转走了就说明处理过了；
+ *   2. 标签还在 `afk-failed`——没这个标签就说明已经被人撕掉重排了。
+ * 问不到 TAPD（网络/配置）就**留着**：宁可多挂一条，不能把真要处理的藏起来。
+ *
+ * `dismissed` 是看板上点过「已处理」的（卡 → 时间戳）：失败时间比它新才会重新冒出来。
+ */
+export function filterNeedsHuman(rows = [], {
+  claimableStatuses = [],
+  failedLabel = 'afk-failed',
+  stateOf = () => ({ known: false }),
+  dismissed = {},
+} = {}) {
+  const claimable = new Set((claimableStatuses || []).map(String))
+  const out = []
+  for (const row of rows) {
+    const seen = Number(dismissed?.[row.card] || 0)
+    if (seen && seen >= Number(row.at || 0)) continue
+    const state = stateOf(row.card) || { known: false }
+    if (!state.known) { out.push(row); continue }
+    const failed = (state.labels || []).map(String).includes(failedLabel)
+    if (!failed) continue
+    if (claimable.size && !claimable.has(String(state.status || ''))) continue
+    out.push({ ...row, statusLabel: String(state.statusLabel || ''), verified: true })
+  }
+  return out
+}
+
+/**
+ * 这个是不是一个 loop.mjs 进程。
+ *
+ * Windows 上进程号会被复用：杀掉的那批过一会儿可能被别的进程顶掉同一个 pid。
+ * 光看 pidAlive 会把早结束的批次永远算成在跑，更糟的是 kill 会去杀一个无关进程。
+ * 查不到（powershell 超时、无权限、非 Windows 的非 /proc 系统）就回 known:false，
+ * 调用方按「不确认也不否定」处理，也就是保持旧行为。
+ *
+ * 结果按 pid 缓 60 秒：状态接口每 3 秒轮询一次，而一次 powershell ≈200~500ms，
+ * 不缓存的话几条「pid 被顶掉」的死 run 就能把轮询拖垮。kill 传 fresh:true 强制重查——
+ * 靠缓存的结果去杀进程，万一缓存期间 pid 又换了人，就杀错了。
+ */
+const loopPidCache = new Map()
+
+function pidIsLoop(pid, { fresh = false } = {}) {
+  const target = Number(pid)
+  if (!target) return { known: false, isLoop: false }
+  const cached = loopPidCache.get(target)
+  if (!fresh && cached && Date.now() - cached.at < 60_000) return cached.look
+  const look = detectLoopPid(target)
+  loopPidCache.set(target, { at: Date.now(), look })
+  if (loopPidCache.size > 200) {
+    const now = Date.now()
+    for (const [key, value] of loopPidCache) if (now - value.at > 60_000) loopPidCache.delete(key)
+  }
+  return look
+}
+
+function detectLoopPid(target) {
+  try {
+    if (process.platform === 'win32') {
+      const out = execFileSync('powershell', [
+        '-NoProfile', '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${target}").CommandLine`,
+      ], { encoding: 'utf8', windowsHide: true, timeout: 15_000 })
+      const text = String(out || '').trim()
+      // 查得到但空字符串 = 这一瞬间进程已经不在了
+      if (!text) return { known: true, isLoop: false }
+      return { known: true, isLoop: /loop\.mjs/i.test(text) }
+    }
+    const text = readFileSync(`/proc/${target}/cmdline`, 'utf8')
+    return { known: true, isLoop: /loop\.mjs/.test(text) }
+  } catch {
+    return { known: false, isLoop: true }
+  }
+}
+
+/**
+ * 强杀一个进程树。
+ *
+ * Windows 上 node 没法给别的进程发真 SIGINT（process.kill 对别的 pid 就是 TerminateProcess），
+ * 所以走 taskkill /T：不求 loop 自己收尾（它会写 card_interrupted），只要进程真的没了。
+ * POSIX 上先试进程组（批次是 detached spawn 的，pgid = pid）。
+ */
+function killTree(pid) {
+  const target = Number(pid)
+  if (!target) return { ok: false, error: '没有进程号' }
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('taskkill', ['/PID', String(target), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+    } else {
+      try {
+        process.kill(-target, 'SIGKILL')
+      } catch {
+        process.kill(target, 'SIGKILL')
+      }
+    }
+  } catch (err) {
+    // taskkill 对已经退出的 pid 返回非零：那不是失败，交给下面统一确认。
+    if (pidAlive(target)) return { ok: false, error: String(err?.message || err) }
+  }
+  // 等它真死再回话：回完包还能被写一行事件，页面下一轮就会把它画回「还在跑」。
+  for (let i = 0; i < 40 && pidAlive(target); i += 1) sleepSync(100)
+  if (pidAlive(target)) return { ok: false, error: `${target} 还活着（可能没权限）` }
+  return { ok: true }
 }
 
 function stamp() {
@@ -839,6 +1016,8 @@ export function createControl(opts) {
       main: mainState(config.workdir),
       lastMerge: raw().lastMerge || null,
       jobs: listJobs(),
+      // 看板顶部那个「需要人处理」清单：最近 14 天里最后结局是失败的卡，正在跑的排除。
+      needsHuman: needsHumanList(),
       lastBatch: memory.lastBatch || raw().lastBatch || null,
       // 主树自动验证并推送的现场：开关、退避、上次结果。
       autoPush: {
@@ -978,6 +1157,12 @@ export function createControl(opts) {
     // 报错不带本机绝对路径：看板是远程用的，开发机是黑箱，路径只会增加噪音。
     if (!existsSync(workdir)) return { ok: false, error: '主树工作目录不存在（去「高级设置」里改「项目（主树）」）' }
     if (!gitOut(workdir, ['rev-parse', '--git-dir'])) return { ok: false, error: '这个主树工作目录不是 git 仓库' }
+    // 指定一张卡时不许默不作声地跑在主树上：主树是共享分支，跑完直接提交，
+    // autoPush / autoMerge 开着还会被推上去（2026-10-31：页面上点「接一张」就成了这样）。
+    // 要走这条路得显式带 allowMain（页面上选「主树」并再过一次确认），命令行没了面板也绕不过去。
+    if (card && samePath(workdir, read().workdir) && !input.allowMain) {
+      return { ok: false, error: '指定一张卡时不能直接跑在主树上（主树是共享分支，自动推送会把它推上去）：先选一棵工位，或在页面上明确选「主树」' }
+    }
     const running = busy(workdir)
     if (running) {
       return { ok: false, error: `这个工位已经有一批在跑（${running.runId || running.pid}），等它跑完或先点停止`, running }
@@ -1053,6 +1238,55 @@ export function createControl(opts) {
    * 多工位后要能指定停哪个：{ workdir } 停一个，{ all: true } 停全部活批次 + 所有已注册工位。
    * 默认（什么都不传）停当前面板选中的那个，和以前一样。
    */
+  /**
+   * 手动终止一批（工位卡片上的「停掉这一批」/ 卡片弹窗里的「终止这一批」）。
+   *
+   * 跟 stop() 不是一回事：stop() 只写停止文件，loop.mjs 在卡与卡之间才读它，而工位批次
+   * 是一张一批（--card 把 maxTasks 强制成 1），那个标记永远读不到——从页面上看就是「点了没反应」。
+   * 这里是真的杀进程（连它的内循环子进程）。2026-10-31 加的：出了问题的时候人得有控制权，
+   * 不能只能等人来找进程号。
+   *
+   * 代价写清楚（确认框里也写了）：强杀不走 loop 的收尾，所以
+   *   · 工作区留着半截改动 → 下一批开工前 salvage 会存成 tapd-loop-orphan/<卡> 分支再清掉；
+   *   · TAPD 上留着 afk-claimed → 想再被接单要 loop.mjs --retry <卡>。
+   */
+  function killRun({ pid = 0, runId = '', card = '', workdir = '' } = {}) {
+    const all = runningAll()
+    const byPid = Number(pid) || 0
+    const hit = (byPid && all.find((item) => Number(item.pid) === byPid))
+      || (runId && all.find((item) => String(item.runId || '') === String(runId)))
+      || (card && all.find((item) => String(item.card || '') === String(card) && (!workdir || samePath(item.workdir, workdir))))
+      || (workdir ? all.find((item) => samePath(item.workdir, workdir)) : null)
+    if (!hit) return { ok: false, error: '找不到要停的批次：它可能刚跑完，刷新一下再看' }
+    // 杀之前先确认这个 pid 真的是 loop.mjs：进程号被复用时，一按就杀掉一个无关进程。
+    const look = pidIsLoop(hit.pid, { fresh: true })
+    if (look.known && !look.isLoop) {
+      return { ok: false, error: `进程号 ${hit.pid} 已经被别的进程复用了，这批早就不在跑（刷新页面就好）` }
+    }
+    const result = killTree(hit.pid)
+    if (!result.ok) return { ok: false, error: `停不掉 ${hit.pid}：${result.error}` }
+    // 收尸：自己 spawn 的记录清掉，下一轮轮询就不会再把它画成「干活中」。
+    const saved = raw()
+    const batches = (Array.isArray(saved.batches) ? saved.batches : (saved.batch ? [saved.batch] : []))
+      .filter((item) => Number(item?.pid) !== Number(hit.pid))
+    writeJson(controlFile, { ...saved, batch: undefined, batches })
+    const killed = {
+      pid: Number(hit.pid),
+      runId: String(hit.runId || ''),
+      card: String(hit.card || ''),
+      workdir: String(hit.workdir || ''),
+      title: String(hit.cardTitle || ''),
+    }
+    appendTrace(home, {
+      kind: 'batch_killed',
+      runId: killed.runId,
+      card: killed.card,
+      note: `手动终止 pid ${killed.pid}`,
+      station: basename(killed.workdir || ''),
+    })
+    return { ok: true, killed }
+  }
+
   function stop(input = {}) {
     const config = sanitizeControl(input, read())
     const targets = new Set()
@@ -1787,6 +2021,117 @@ function resolveBash() {
     return new Set((Array.isArray(raw().flowed) ? raw().flowed : []).map(String))
   }
 
+  /** 卡片标题：索引里经常没带（只有 card_start 之类才写），就去卡片目录的 card.json 拿。 */
+  function cardTitleOf(runId, card) {
+    if (!runId || !card) return ''
+    try {
+      const meta = JSON.parse(readFileSync(join(runsRoot, runId, card, 'card.json'), 'utf8'))
+      return String(meta?.card?.title || meta?.detail?.title || '')
+    } catch {
+      return ''
+    }
+  }
+
+  /**
+   * 「需要人处理」清单。数据先看全局索引（单文件、append-only，比逼 TAPD 便宜），
+   * 再拿 TAPD 现状核实一道（带 10 分钟缓存）：人可能已经直接在 TAPD 上把卡流转完了。
+   * 正在跑的卡先排除：它可能只是上一次试过失败、这次正在重做。
+   */
+  function needsHumanList({ days = 14, limit = 30 } = {}) {
+    const since = Date.now() - Math.max(1, Number(days) || 14) * 86400_000
+    const entries = []
+    try {
+      // 只解最后几千行：索引可以很长，而一道两周前的失败早该处理完了
+      for (const line of readFileSync(join(home, INDEX_NAME), 'utf8').split('\n').slice(-4000)) {
+        if (!line) continue
+        try { entries.push(JSON.parse(line)) } catch { /* 半截行跳过 */ }
+      }
+    } catch {
+      return []
+    }
+    const live = new Set(runningAll().map((item) => String(item.card || '')).filter(Boolean))
+    const main = read().workdir
+    let workspaceId = ''
+    let failedLabel = 'afk-failed'
+    let claimableStatuses = ['developing', 'status_11']
+    try {
+      const client = tapdClient(main)
+      workspaceId = String(client.workspaceId || '')
+      failedLabel = String(client.labels?.failedLabel || 'afk-failed')
+      claimableStatuses = loopConfig(main)?.task?.statuses || claimableStatuses
+    } catch { /* 没配就按默认 */ }
+
+    const candidates = pickNeedsHuman(entries, { since, limit })
+      .filter((row) => !live.has(row.card))
+    const rows = filterNeedsHuman(candidates, {
+      claimableStatuses,
+      failedLabel,
+      stateOf: (card) => cardStateOf(card, main),
+      dismissed: readJson(join(home, NEEDS_HUMAN_DONE)) || {},
+    })
+    return rows.map((row) => ({
+      ...row,
+      title: row.title || cardTitleOf(row.runId, row.card),
+      url: workspaceId ? `https://www.tapd.cn/tapd_fe/${workspaceId}/story/detail/${row.card}` : '',
+    }))
+  }
+
+  /**
+   * 卡片在 TAPD 上的现状，带 10 分钟缓存。
+   * 看板每 3 秒轮询一轮，一卡一请求会把 TAPD 打爆；而这张清单通常就几条，缓存 10 分钟完全够。
+   */
+  function cardStateOf(card, main) {
+    const hit = cardStateCache.get(card)
+    if (hit && Date.now() - hit.at < 10 * 60_000) return hit.state
+    let state = { known: false }
+    try {
+      const c = tapdClient(main).getCard(card)
+      state = {
+        known: true,
+        status: String(c.status || ''),
+        statusLabel: String(c.statusLabel || ''),
+        labels: Array.isArray(c.labels) ? c.labels.map(String) : [],
+      }
+    } catch {
+      state = { known: false }
+    }
+    cardStateCache.set(card, { at: Date.now(), state })
+    if (cardStateCache.size > 200) {
+      const now = Date.now()
+      for (const [key, value] of cardStateCache) if (now - value.at > 10 * 60_000) cardStateCache.delete(key)
+    }
+    return state
+  }
+
+  /**
+   * 手动「已处理」：只从这份清单里划掉（本地文件），**不动 TAPD**。
+   * 记的是时间戳，所以这张卡以后再失败一次，还会重新冒出来。
+   */
+  function dismissNeedsHuman({ card } = {}) {
+    const id = String(card || '').trim()
+    if (!/^\d{6,}$/.test(id)) return { ok: false, error: '卡片 id 不认' }
+    const file = join(home, NEEDS_HUMAN_DONE)
+    const map = readJson(file) || {}
+    map[id] = Date.now()
+    writeJson(file, map)
+    return { ok: true, card: id }
+  }
+
+  /**
+   * 看板上的「重跑」：等同 `loop.mjs --retry <卡>`——只碰标签（撕 afk-*、加回 ready-for-agent），
+   * 不动状态、不动处理人。卡上还带 afk-claimed 时 loop 会拒（可能正在跑），那就把原因摆给页面。
+   */
+  async function retryCard({ card } = {}) {
+    const id = String(card || '').trim()
+    if (!/^\d{6,}$/.test(id)) return { ok: false, error: '卡片 id 不认' }
+    const main = read().workdir
+    if (!main) return { ok: false, error: '先配「项目（主树）」工作目录' }
+    const result = await execLoop(['--workdir', main, '--retry', id], main)
+    if (!result.ok) return { ok: false, error: result.error }
+    if (result.json && result.json.ok === false) return { ok: false, error: result.json.reason || '没改成' }
+    return { ok: true, card: id, labels: result.json?.after || [] }
+  }
+
   /**
    * 把一批主树提交回写到 TAPD：评论 +（配了 run.doneStatus 时）状态流转 + 处理人交回创建人。
    * writeBackMerged 和补回写（backfillMain）共用这一段。
@@ -2099,12 +2444,15 @@ function resolveBash() {
       const mine = kind.startsWith('main-') || kind === 'merge' || kind === 'merge-resume' || kind === 'resolve'
       if (!mine) return false
       if (job.alive === true || (job.status === 'running' && !job.pid)) return true
+      // resolve 是看板进程内的异步 Promise（job.pid 记的就是看板自己）：看板一重启它必然已经没了。
+      // 对它不存在“子进程还在 pick/verify/push”这种可能，所以不给宽限期——
+      // 2026-10-31 实测：一条断掉的 resolve 把自动合入和自动推送整整挡了 15 分钟。
+      if (String(job.kind) === 'resolve') return false
       // 记录还写着 running、但 pid 已经看不到了：多半是「看板重启时它还在跑」。
       // 那个子进程是 detached 的，可能真的还在 pick/verify/push develop——宽限期内照样算忙，
       // 否则自动推送和自动合入会同时再起一个 collect 撞上去（实测撞过一次：两个 collect
       // 同时 pick + verify + push 同一个 develop）。过了宽限期就当它早结束了，不无限挡路。
-      return job.status === 'interrupted' && now - Number(job.startedAt || 0) < ORPHAN_JOB_GRACE_MS
-    })
+      return job.status === 'interrupted' && now - Number(job.startedAt || 0) < ORPHAN_JOB_GRACE_MS    })
   }
 
   /**
@@ -2645,6 +2993,10 @@ function resolveBash() {
     write,
     start,
     stop,
+    killRun,
+    retryCard,
+    dismissNeedsHuman,
+    needsHumanList,
     tick,
     queueFor,
     list,

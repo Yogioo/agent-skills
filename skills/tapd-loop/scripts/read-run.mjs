@@ -66,7 +66,7 @@ export function readFileInfo(home, wanted, { bytes = 64 * 1024 } = {}) {
   }
 }
 
-export function readCard(root, runId, cardId) {
+export function readCard(root, runId, cardId, { home = '' } = {}) {
   const dir = join(root, safeName(runId), safeName(cardId))
   if (!existsSync(dir)) return null
   const cardFile = join(dir, 'card.json')
@@ -81,7 +81,56 @@ export function readCard(root, runId, cardId) {
     verify: readText(join(dir, 'verify.log')),
     logTail: tail(readText(join(dir, 'pi.log')), 4000),
     arms: listArms(dir),
+    // 全链路：外循环这一批里跟本卡有关的事件（阶段 / 同步 / 验证 / 修复轮 / 结局）
+    progress: progressFor(root, runId, cardId),
+    // 跨批次的那半段（合入主树、推送、失败重试）：只有全局索引里有
+    trace: home ? traceFor(home, cardId) : [],
   }
+}
+
+/** 本批次 progress.jsonl 里跟这张卡有关的事件（外循环视角）。 */
+function progressFor(root, runId, cardId) {
+  const file = join(root, safeName(runId), 'progress.jsonl')
+  if (!existsSync(file)) return []
+  const id = String(cardId)
+  const out = []
+  for (const line of readText(file).split('\n')) {
+    if (!line.trim()) continue
+    let event
+    try {
+      event = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const owner = String(event.id || event.card || '')
+    if (owner && owner !== id) continue
+    // 只留能说明“进展”的：心跳太吵，queue 是批次级的汇总
+    if (event.event === 'heartbeat' || event.event === 'queue') continue
+    out.push(event)
+  }
+  return out.slice(-200)
+}
+
+/** 全局索引里这张卡的记录（合入 / 推送 / 失败重试 / 手动终止）。 */
+function traceFor(home, cardId) {
+  const file = join(home, 'index.jsonl')
+  if (!existsSync(file)) return []
+  const id = String(cardId)
+  const keep = new Set(['merged', 'card_done', 'card_failed', 'card_blocked', 'batch_killed', 'job_done', 'job_failed'])
+  const out = []
+  for (const line of readText(file).split('\n')) {
+    if (!line.trim()) continue
+    let event
+    try {
+      event = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (String(event.card || '') !== id) continue
+    if (!keep.has(String(event.kind || ''))) continue
+    out.push(event)
+  }
+  return out.slice(-40)
 }
 
 export function readArm(root, runId, cardId, armName) {
@@ -225,7 +274,7 @@ function aggregate(progress, dir) {
     if (!id) continue
     let card = cards.get(id)
     if (!card) {
-      card = { id, title: '', status: 'queued', phase: '', startedAt: 0, endedAt: 0, lastEventAt: 0, note: '', commit: '', durations: [] }
+      card = { id, title: '', status: 'queued', phase: '', phaseAt: 0, turnEndedAt: 0, startedAt: 0, endedAt: 0, lastEventAt: 0, note: '', commit: '', durations: [] }
       cards.set(id, card)
     }
     if (event.t) card.lastEventAt = event.t
@@ -236,9 +285,13 @@ function aggregate(progress, dir) {
       card.priorityLabel = event.priorityLabel || ''
       card.statusLabel = event.statusLabel || ''
     }
-    if (event.event === 'card_phase') card.phase = event.phase
+    if (event.event === 'card_phase') {
+      card.phase = event.phase
+      card.phaseAt = event.t || card.lastEventAt
+    }
     if (event.event === 'turn_start') {
       card.phase = 'running'
+      card.phaseAt = event.t || card.lastEventAt
       card.cli = event.cli || ''
       card.provider = event.provider || ''
       card.model = event.model || ''
@@ -246,7 +299,12 @@ function aggregate(progress, dir) {
     }
     if (event.event === 'turn_end') {
       card.lastTurnMs = event.durationMs
-      if (event.timedOut) card.phase = 'timeout'
+      // AI 这一轮结束了（进程退了），但卡还没完：后面还有验证门 / 提交 / 推送。
+      // 以前这里不动 phase，于是一直到 card_done 之前都显示「内循环运行中」——
+      // 实测最久会骗人十几分钟（验证门跑 Unity 测试）。
+      card.phase = event.timedOut ? 'timeout' : 'after-turn'
+      card.phaseAt = event.t || card.lastEventAt
+      card.turnEndedAt = event.t || card.lastEventAt
     }
     if (event.event === 'card_done' || event.event === 'card_failed' || event.event === 'card_skipped' || event.event === 'card_interrupted') {
       card.status = event.event.slice(5)
@@ -261,6 +319,18 @@ function aggregate(progress, dir) {
     if (!card.title) {
       const meta = readJson(join(dir, card.id, 'card.json'))
       card.title = meta?.card?.title || meta?.detail?.title || ''
+    }
+    // AI 结束之后的阶段，用磁盘证据补上：这批可能是旧代码起的（没有 verify 阶段事件），
+    // 但「验证门的日志比 AI 结束还新」就说明它现在正在验证。界面一直说「内循环中」，
+    // 人和 AFK 都判断不了该不该管——所以宁可扫一眼文件，也要把阶段说准。
+    // 磁盘上的阶段文件优先：loop 每次切阶段都会写它（比事件流可靠，验证门跑半小时也不怕）。
+    // 老批次没有这个文件，就退回按事件 + verify.log 推断。
+    const stage = readJson(join(dir, card.id, 'stage.json'))
+    if (stage && stage.phase && card.status === 'running') {
+      card.phase = String(stage.phase)
+      card.phaseAt = Number(stage.at) || card.phaseAt
+    } else if (card.phase === 'after-turn') {
+      card.phase = inferAfterTurn(dir, card)
     }
   }
   return [...cards.values()].sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0))
@@ -392,4 +462,35 @@ function birthtime(dir) {
 
 function safeName(value) {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '')
+}
+
+/**
+ * AI 已交卷（after-turn）之后，这棵树现在到底在干什么。
+ *
+ * 只看两样磁盘证据，都是验证门自己写的：
+ *   repair-<n>/   修复轮目录（有就是「验证没过，正在让 AI 改」）
+ *   verify.log    验证门的输出（比 AI 结束还新 = 正在验证）
+ * 推断不出来就保持 after-turn（界面说「AI 已结束，后续处理中」）。
+ */
+function inferAfterTurn(dir, card) {
+  const since = Number(card.turnEndedAt || card.phaseAt || 0)
+  if (!since) return card.phase
+  const cardDir = join(dir, card.id)
+  let entries = []
+  try {
+    entries = readdirSync(cardDir)
+  } catch {
+    return card.phase
+  }
+  const mtime = (name) => {
+    try { return statSync(join(cardDir, name)).mtimeMs || 0 } catch { return 0 }
+  }
+  const rounds = entries
+    .filter((name) => /^repair-\d+$/.test(name))
+    .map((name) => ({ name, at: mtime(name) }))
+    .filter((one) => one.at >= since)
+    .sort((a, b) => a.at - b.at)
+  if (rounds.length) return rounds[rounds.length - 1].name.replace('repair-', 'verify-repair-')
+  if (mtime('verify.log') >= since) return 'verify'
+  return card.phase
 }

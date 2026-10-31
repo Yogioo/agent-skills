@@ -53,6 +53,68 @@ th:nth-child(4),td:nth-child(4){width:15ch;white-space:nowrap}
 .toast.dim{border-left-color:#30363d;color:#a9b4c0}
 .toast.in{animation:toastIn .16s ease-out}
 @keyframes toastIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+/* 「接这张」先选树：一層遮罩 + 一张列表。工位排前面，主树最后一项。 */.wdpick{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;background:#000000a8;padding:20px}
+.wdpick .wdbox{background:#0d1117;border:1px solid #30363d;border-radius:10px;box-shadow:0 20px 60px #000000c0;
+  width:min(640px,100%);max-height:min(80vh,660px);display:flex;flex-direction:column;gap:10px;padding:14px 16px}
+.wdpick .wdhead{font-size:14px;color:#e6edf3}
+.wdpick .wdsub{font-size:12px;color:#8b949e;overflow-wrap:anywhere;margin-top:-4px}
+.wdpick .wdnote{font-size:12px;color:#e3b341;background:#241d0e;border:1px solid #d2992255;border-radius:6px;padding:6px 10px}
+.wdpick .wdlist{display:flex;flex-direction:column;gap:8px;overflow:auto;min-height:0}
+.wdpick .wdopt{display:grid;grid-template-columns:1fr auto;gap:2px 10px;text-align:left;font:inherit;color:#c9d1d9;
+  background:#11161f;border:1px solid #21262d;border-radius:8px;padding:9px 12px;cursor:pointer}
+.wdpick .wdopt:hover:not(:disabled){border-color:#58a6ff;background:#131b26}
+.wdpick .wdopt.rec{border-color:#1f6feb;box-shadow:inset 3px 0 0 #1f6feb}
+.wdpick .wdopt.main{border-color:#5a1f1f}
+.wdpick .wdopt.main:hover:not(:disabled){border-color:#da3633}
+.wdpick .wdopt:disabled{opacity:.5;cursor:not-allowed}
+.wdpick .wdopt:focus-visible{outline:2px solid #388bfd;outline-offset:2px}
+.wdpick .wdname{font-size:13px;color:#e6edf3}
+.wdpick .wdpath{grid-column:1/2;font-family:ui-monospace,Consolas,monospace;font-size:11px;color:#6e7681;overflow-wrap:anywhere}
+.wdpick .wdstate{grid-column:2/3;grid-row:1/3;align-self:center;font-size:11.5px;white-space:nowrap}
+.wdpick .wdstate.ok{color:#7ee787}
+.wdpick .wdstate.warn{color:#e3b341}
+.wdpick .wdstate.bad{color:#ff9d96}
+.wdpick .wdstate.dim{color:#8b949e}
+.wdpick .wdfoot{display:flex;justify-content:flex-end}
+.wdpick .wdfoot button{background:#11161f;color:#c9d1d9;border:1px solid #21262d;border-radius:6px;padding:5px 14px;font:inherit;cursor:pointer}
+.wdpick .wdfoot button:hover{border-color:#30363d;color:#e6edf3}
+/* 卡弹窗头部那个「终止这一批」：红框、小一号，跟控制面板里的危险按钮同一套长相。 */
+#mhead .danger{background:#11161f;color:#ff9d96;border:1px solid #5a1f1f;border-radius:6px;padding:3px 12px;font:inherit;font-size:12px;cursor:pointer;margin-top:6px}
+#mhead .danger:hover:not(:disabled){border-color:#da3633;color:#ff7b72}
+#mhead .danger:disabled{opacity:.5;cursor:default}
+/* 工位卡片上的「停掉这一批」：跟其他动作同大小，但红框，不能跟「接一单」看成一回事。 */
+.ctl-ui .card-actions button.danger{color:#ff9d96;border-color:#5a1f1f}
+.ctl-ui .card-actions button.danger:hover:not(:disabled){border-color:#da3633;color:#ff7b72}
+/* 「需要人处理」清单：顶部一条红框条，默认收起，点开看每张卡 + 一个「重跑」。 */
+#cNeedsHuman:empty{display:none}
+#cNeedsHuman{margin:0 0 10px;border:1px solid #5a1f1f;background:#1a1013;border-radius:8px;padding:8px 12px;font-size:12.5px;color:#c9d1d9}
+#cNeedsHuman .nh-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+#cNeedsHuman .nh-toggle{background:transparent;border:0;color:#ff9d96;font:inherit;font-size:13px;cursor:pointer;padding:0}
+#cNeedsHuman .nh-toggle:hover{color:#ff7b72}
+#cNeedsHuman .nh-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+#cNeedsHuman .nhrow{display:grid;grid-template-columns:13ch minmax(0,1fr) auto auto auto;gap:10px;align-items:center}
+#cNeedsHuman .nhrow .nhid{color:#8b949e;font-family:ui-monospace,Consolas,monospace;font-size:11px}
+#cNeedsHuman .nhrow .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#e6edf3}
+#cNeedsHuman .nhrow .why{color:#8b949e;font-size:11.5px;max-width:34ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#cNeedsHuman button.nh-act{background:#11161f;color:#c9d1d9;border:1px solid #21262d;border-radius:6px;padding:2px 10px;font:inherit;font-size:12px;cursor:pointer}
+#cNeedsHuman button.nh-act:hover{border-color:#30363d;color:#e6edf3}
+#cNeedsHuman button.nh-act[disabled]{opacity:.5;cursor:default}
+/* 卡片弹窗里的「全链路」表：时间偏移 / 步骤 / 耗时 / 备注。 */
+.chainhead{margin:10px 0 4px;font-size:11px;color:#6e7681;letter-spacing:.5px}
+.chainhead:first-child{margin-top:0}
+/* 全链路是主视图，别让它自己限高：表格长就让外层 panes 滚，不要把最后几步截掉。 */
+details.pane[data-pane$="|chain"] .body{max-height:none}
+.chain{display:flex;flex-direction:column;gap:0;font-size:12px}
+.chainrow{display:grid;grid-template-columns:7.5ch max-content 7ch minmax(0,1fr);gap:10px;align-items:baseline;
+  padding:3px 0;border-bottom:1px solid #161b22}
+.chainrow:last-child{border-bottom:0}
+.chainrow .ct{color:#6e7681;font-family:ui-monospace,Consolas,monospace;text-align:right;font-size:11px;white-space:nowrap}
+.chainrow .cl{color:#c9d1d9;white-space:nowrap}
+.chainrow .cd{color:#8b949e;text-align:right;font-variant-numeric:tabular-nums;font-size:11px}
+.chainrow .cn{color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chainrow.ok .cl{color:#7ee787}
+.chainrow.bad .cl{color:#ff9d96}
+.chainrow.bad .cn{color:#f0a3a3}
 #ctl .cards{display:grid;gap:10px;margin:0 0 12px;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr))}
 #ctl .cards:empty{display:none}
 #ctl .card{background:#11161f;border:1px solid #21262d;border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:9px;max-width:560px;min-width:0}
@@ -190,6 +252,7 @@ export function pageHtml() {
 <body>
 <h1>tapd-loop</h1><div id="meta">连接中…</div>
 <div id="viewbar"><button id="openStats" title="全局吞吐 / 重试 / 失败原因（数据来自 ~/.tapd-loop/index.jsonl）">统计</button><button id="openAdvanced" title="项目 / 处理人 / 工位 / 指定工单">高级设置</button><span class="spacer"></span><button id="cBoardRestart" class="danger" title="重启看板进程本身：页面会自己等它回来再刷新，端口和分享链接不变（正在跑的批次是 detach 的，不受影响）">重启看板</button><button id="cBoardStop" class="danger" title="停掉看板进程本身：网页立刻断，之后要跑 start-board.mjs 才会再起来（不复用「本批跑完就停」，那个只写停止文件）">停看板</button></div>
+<div id="cNeedsHuman"></div>
 <div id="warn"></div>
 <section id="ctl" class="ctl-ui">
   <div class="hero">
@@ -250,7 +313,7 @@ export function pageHtml() {
       <span>指定工单</span>
       <input id="cRef" placeholder="贴 TAPD 需求链接（…/story/detail/…），或直接填需求 id" spellcheck="false">
       <button id="cRefPeek" title="只读：认一下这张卡现在的状态、标签、能不能接（不认领、不评论）">看看这张</button>
-      <button id="cRefRun" title="只跑这一张：认领 + 跑内循环 + 回写（会真改 TAPD、真提交代码）">接这张</button>
+      <button id="cRefRun" title="只跑这一张：先选在哪棵树上跑（工位 / 主树，主树要再确认一次），再认领 + 跑内循环 + 回写（会真改 TAPD、真提交代码）">接这张</button>
     </div>
     <div id="cRefBox"></div>
     <div class="row">

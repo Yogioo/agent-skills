@@ -36,7 +36,7 @@ const AUTH_REQUIRED = !isLoopbackHost(HOST) && !args.includes('--no-auth')
 const KEY = ensureKey(HOME)
 const LOOP = argValue('--loop-script') || join(HERE, 'loop.mjs')
 /** 只改控制文件、不必回完整看板状态的动作（回包里省掉一次全工位探测）。 */
-const LIGHT_ACTIONS = new Set(['pause', 'forget'])
+const LIGHT_ACTIONS = new Set(['pause', 'forget', 'kill'])
 const control = createControl({ home: HOME, runsRoot: ROOT, loopScript: LOOP })
 
 /**
@@ -105,7 +105,9 @@ async function handle(req, res, url) {
   const own = { '/app.js': 'page-app.js', '/control.js': 'control.js', '/auth.js': 'auth.js', '/fileview.js': 'fileview.js', '/dom-guard.js': 'dom-guard.js' }[path]
   if (own) return sendAsset(res, readAsset(join(HERE, own)))
 
-  if (!path.startsWith('/api/')) return send(res, 404, 'not found')
+  // /img/ 也得放行到下面（它拿密钥走 query，因为 <img> 带不了 header）。
+  // 以前这里只放行 /api/，于是下面的 /img/ 路由永远走不到：卡片弹窗里的图一直是 404。
+  if (!path.startsWith('/api/') && !path.startsWith('/img/')) return send(res, 404, 'not found')
   if (!authorized(req, url)) {
     sendJson(res, 401, { ok: false, error: '需要访问密钥：用看板打印出来的带 ?k= 的链接打开，或设 x-tapd-loop-key 头' })
     return
@@ -115,7 +117,7 @@ async function handle(req, res, url) {
     return sendJson(res, 200, { ok: true, runs: listRuns(ROOT) })
   }
   if (path === '/api/card') {
-    const card = readCard(ROOT, url.searchParams.get('run') || '', url.searchParams.get('id') || '')
+    const card = readCard(ROOT, url.searchParams.get('run') || '', url.searchParams.get('id') || '', { home: HOME })
     return sendJson(res, card ? 200 : 404, card || { ok: false, error: 'card not found' })
   }
   if (path === '/api/file') {
@@ -139,6 +141,20 @@ async function handle(req, res, url) {
       return sendJson(res, 200, { ok: true, ...(await boardStatus()) })
     }
     return sendJson(res, 405, { ok: false, error: 'GET/POST only' })
+  }
+  if (path === '/api/retry') {
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+    const body = await readJsonBody(req)
+    // 只碰标签：等同 loop.mjs --retry <卡>（撕 afk-*、加回 ready-for-agent）。
+    const result = await Promise.resolve(control.retryCard(body))
+    return sendJson(res, result.ok ? 200 : 400, { ...result, ...(await boardStatus()) })
+  }
+  if (path === '/api/dismiss') {
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+    const body = await readJsonBody(req)
+    // 只从「需要人处理」清单里划掉（本地文件），不动 TAPD。
+    const result = control.dismissNeedsHuman(body)
+    return sendJson(res, result.ok ? 200 : 400, { ...result, ...(await boardStatus()) })
   }
   if (path === '/api/queue') {
     const config = control.read()
@@ -198,7 +214,9 @@ async function handle(req, res, url) {
         : action === 'register' ? control.registerStation(body)
           : action === 'pause' ? control.pauseStation(body)
           : action === 'forget' ? control.forgetStation(body)
-            : action === 'clean' ? control.cleanStation(body)
+            // kill 是真的杀进程（含内循环子代理）；stop 那个停止文件对工位批次永远读不到。
+            : action === 'kill' ? control.killRun(body)
+              : action === 'clean' ? control.cleanStation(body)
               : action === 'merge' ? control.mergeStation(body)
                 : action === 'resolve' ? control.resolveMerge(body)
                   : action === 'mainpush' ? control.pushMain(body)
@@ -207,7 +225,7 @@ async function handle(req, res, url) {
                         : action === 'mainprobe' ? control.probeUnity({ path: body.path || '', name: body.name || '' })
                           : action === 'mainbackfill' ? control.backfillMain(body)
                             : action === 'mainclean' ? control.cleanMain(body)
-                          : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / pause / forget / clean / merge / resolve / mainpush / mainverify / mainunity / mainprobe / mainbackfill / mainclean）` })
+                          : { ok: false, error: `未知动作：${action || '(空)'}（create / remove / register / pause / forget / kill / clean / merge / resolve / mainpush / mainverify / mainunity / mainprobe / mainbackfill / mainclean）` })
     // pause / forget 只改控制文件：回包不必把每个工位的 Unity 端点 + git 状态重探一遍
     // （实测 0.7~1.6 秒，勾一下「接活」要等这么久就叫迟钝）。页面只看 ok，真实状态走 3 秒轮询。
     if (LIGHT_ACTIONS.has(action) && result.ok) {

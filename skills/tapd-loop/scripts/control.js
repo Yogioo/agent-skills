@@ -532,7 +532,8 @@ function renderStations(s) {
       srun: '在这个工位上开一批：自动从 TAPD 拉一张标了 ready-for-agent 的卡，跑完自动回写。',
       smerge: `把这个工位分支上 ${station.pending} 个未合入提交 cherry-pick 进主树，然后导表 → 验证门 → 推送 → 回写 TAPD。冲突会停下来等人（表格冲突必须手合）。`,
       sdel: '删掉这棵 worktree。还有未合入提交、或有批次在跑时会被拦住。',
-      slive: '接活开关：勾上 = 调度器会把就绪卡派给它；取消 = 暂停，不再派新卡（正在跑的那一张照常跑完，工具从不杀进程）。',
+      slive: '接活开关：勾上 = 调度器会把就绪卡派给它；取消 = 暂停，不再派新卡（正在跑的那一张照常跑完；要停手上那张，用旁边的「停掉这一批」）。',
+      skill: '真的杀掉这个工位上正在跑的那一批（含内循环子代理），不等它收尾。工作区半截改动、TAPD 上的 afk-claimed 都会留着，页面上会告诉你怎么收。',
       sunity: '用 -unityPuerExecControl 启动这个工位的 Unity Editor（验证门要连它，首次导入约 4.5 分钟）。',
       sprobe: 'ping 一次这个工位的 Unity 控制端点（/health），区分「文件在但连不上」和真在线。',
       sclean: 'git restore 掉这个工位里没提交的改动（未跟踪文件不动）。',
@@ -559,9 +560,11 @@ function renderStations(s) {
     const autoWatch = Boolean(s?.config?.watch?.enabled)
     const showToggle = autoWatch || paused
     const buttons = []
-    // 正在跑的工位不放动作按钮（会打断 agent）；接活开关在标题行，不受影响。
-    if (!running) {
-      if (trouble) {
+    // 正在跑的工位：不摆「接一单 / 合入」这类会打架的动作，但必须给人一个亲手停下来的口子——
+    // 出问题的时候只能等人去找进程号，那就不叫控制权了。
+    if (running) {
+      buttons.push(`<button class="danger" data-skill="${esc(station.name)}" title="${esc(STIP.skill)}">停掉这一批</button>`)
+    } else if (trouble) {
         if (unityOff) buttons.push(`<button class="primary" data-sunity="${esc(station.name)}" title="${esc(STIP.sunity)}">打开 Unity</button>`)
         else if (station.dirty) buttons.push(`<button class="primary" data-sclean="${esc(station.name)}" title="${esc(STIP.sclean)}">清理改动</button>`)
         buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}"${station.idle ? '' : ' disabled'}>${unityOff || station.dirty ? '删掉' : '删掉这个工位'}</button>`)
@@ -576,7 +579,6 @@ function renderStations(s) {
         buttons.push(`<button class="primary" data-srun="${esc(station.name)}" title="${esc(STIP.srun)}">接一单</button>`)
         buttons.push(`<button data-sdel="${esc(station.name)}" title="${esc(STIP.sdel)}">删掉</button>`)
       }
-    }
     const actions = buttons.join('')
     // 框颜色：在跑优先。在跑的时候工作区必然是脏的（agent 正在改文件），trouble 里那条
     // 「有没提交的改动」不是问题，不能因此把框画成红的——那会让人以为工位坏了。
@@ -645,6 +647,9 @@ function renderStations(s) {
   for (const btn of box.querySelectorAll('button[data-sdel]')) {
     btn.onclick = () => { removeStation(find(btn.getAttribute('data-sdel'))).catch(() => {}) }
   }
+  for (const btn of box.querySelectorAll('button[data-skill]')) {
+    btn.onclick = () => { killBatch(find(btn.getAttribute('data-skill'))).catch(() => {}) }
+  }
   for (const btn of box.querySelectorAll('button[data-joblog]')) {
     // 日志不再是“把绝对路径打到提示里”，而是一个按钮 → 弹窗看尾部。
     btn.onclick = () => openFile(btn.getAttribute('data-joblog'))
@@ -680,6 +685,108 @@ function renderSummary(s) {
   box.innerHTML = parts.join(' · ')
 }
 
+/**
+ * 顶部「需要人处理」清单：最近 14 天里最后结局是失败/被挡的卡，带一个「重跑」。
+ *
+ * AFK 跑一晚最需要的就这两件：早上能一眼看到“哪几张卡在等我”，以及不用去命令行把卡放回队列。
+ * 默认收起（只想知道数量的话不用展开），展开状态记在本地。
+ */
+const NEEDS_HUMAN_KEY = 'tapd-loop-needs-human-open'
+let needsHumanOpen = false
+try { needsHumanOpen = localStorage.getItem(NEEDS_HUMAN_KEY) === '1' } catch {}
+
+/** 失败发生多久了。清单里跨好几天，只显示几点钟会让人以为是今天。 */
+function relTime(at) {
+  const ms = Date.now() - Number(at || 0)
+  if (!at) return '-'
+  if (ms < 60_000) return '刚刚'
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} 分钟前`
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)} 小时前`
+  return `${Math.round(ms / 86_400_000)} 天前`
+}
+
+function renderNeedsHuman(s) {
+  const box = el('cNeedsHuman')
+  if (!box) return
+  const list = Array.isArray(s.needsHuman) ? s.needsHuman : []
+  if (!list.length) {
+    box.innerHTML = ''
+    return
+  }
+  const head = `<div class="nh-head"><button class="nh-toggle" id="cNhToggle">${needsHumanOpen ? '▾' : '▸'} 需要人处理 ${list.length} 张</button>` +
+    '<span class="dim">已用 TAPD 现状核实过：还停在「可接单状态」且仍带 afk-failed 的才会列在这里（核实时失败就先保留）</span></div>'
+  const rows = list.map((row) => '<div class="nhrow">' +
+    `<span class="nhid" title="${esc(row.card)}">${esc(String(row.card).slice(-7))}</span>` +
+    `<span class="t" title="${esc(row.title || '')}">${esc(row.title || '（无标题）')}</span>` +
+    `<span class="why" title="${esc(row.reason || '')}">${esc(row.reason || row.kind)}</span>` +
+    `<span class="dim" title="${esc(new Date(row.at).toLocaleString())}">${esc(relTime(row.at))}</span>` +
+    `<span><button class="nh-act" data-nhdone="${esc(row.card)}" title="只从这份清单里划掉（不动 TAPD）：账上已经处理完、TAPD 早就流转了、不想再看它。下次再失败会重新冒出来">已处理</button> ` +
+    `<button class="nh-act" data-nhretry="${esc(row.card)}" title="loop.mjs --retry：撕 afk-claimed/afk-delivered/afk-failed，加回 ready-for-agent（不动状态和处理人）">重跑</button> ` +
+    (row.url
+      ? `<a class="nh-act" style="text-decoration:none" href="${esc(row.url)}" target="_blank" rel="noreferrer" title="在 TAPD 打开">TAPD</a>`
+      : '') +
+    '</span>' +
+    '</div>').join('')
+  box.innerHTML = head + (needsHumanOpen ? `<div class="nh-list">${rows}</div>` : '')
+  el('cNhToggle').onclick = () => {
+    needsHumanOpen = !needsHumanOpen
+    try { localStorage.setItem(NEEDS_HUMAN_KEY, needsHumanOpen ? '1' : '0') } catch {}
+    renderNeedsHuman(view || s)
+  }
+  for (const btn of box.querySelectorAll('button[data-nhretry]')) {
+    btn.onclick = () => { retryCard(btn.getAttribute('data-nhretry'), btn).catch(() => {}) }
+  }
+  for (const btn of box.querySelectorAll('button[data-nhdone]')) {
+    btn.onclick = () => { dismissNeedsHuman(btn.getAttribute('data-nhdone'), btn).catch(() => {}) }
+  }
+}
+
+/** 从清单里划掉（只动本地文件，不动 TAPD）。 */
+async function dismissNeedsHuman(card, btn) {
+  if (btn) {
+    btn.disabled = true
+    btn.textContent = '…'
+  }
+  const res = await apiJson('api/dismiss', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ card }),
+  })
+  if (!res.ok || !res.data?.ok) {
+    say(res.data?.error || `划掉失败（HTTP ${res.status}）`, 'bad')
+    if (btn) {
+      btn.disabled = false
+      btn.textContent = '已处理'
+    }
+  } else {
+    say(`已从清单里划掉 ${String(card).slice(-7)}（TAPD 没动）`, 'ok')
+  }
+  await poll()
+}
+
+/** 把卡放回队列（等同 loop.mjs --retry <卡>）：只改标签，不动状态和处理人。 */
+async function retryCard(card, btn) {
+  if (btn) {
+    btn.disabled = true
+    btn.textContent = '重跑中…'
+  }
+  const res = await apiJson('api/retry', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ card }),
+  })
+  if (!res.ok || !res.data?.ok) {
+    say(res.data?.error || `放回队列失败（HTTP ${res.status}）`, 'bad')
+    if (btn) {
+      btn.disabled = false
+      btn.textContent = '重跑'
+    }
+  } else {
+    say(`已把 ${String(card).slice(-7)} 放回队列（标签：${(res.data.labels || []).join(' | ') || '无'}）`, 'ok')
+  }
+  await poll()
+}
+
 function renderQueue(s) {
   const box = el('cQueueBox')
   if (!box) return
@@ -697,7 +804,7 @@ function renderQueue(s) {
     ? q.ready.map((card) => '<div class="qrow"><span class="qid">' + esc(card.id) + '</span>' +
       '<span class="qtitle" title="' + esc(card.title) + '">' + esc(card.title) + '</span>' +
       '<span class="dim">' + esc(card.priorityLabel || '') + '</span>' +
-      '<button data-card="' + esc(card.id) + '">接这张</button></div>').join('')
+      '<button data-card="' + esc(card.id) + '" data-title="' + esc(card.title || '') + '" title="跑之前先选在哪棵树上（工位 / 主树）">接这张</button></div>').join('')
     : ''
   const rejected = q.ok && q.rejected.length
     ? '<details class="qrej"><summary>被状态挡住的 ' + q.rejected.length + ' 张</summary>' +
@@ -707,7 +814,7 @@ function renderQueue(s) {
     : ''
   box.innerHTML = '<div class="qhead">' + head + '</div>' + rows + rejected
   for (const btn of box.querySelectorAll('button[data-card]')) {
-    btn.onclick = () => run(btn.getAttribute('data-card'))
+    btn.onclick = () => pickAndRunCard(btn.getAttribute('data-card'), btn.getAttribute('data-title') || '')
   }
 }
 
@@ -845,6 +952,7 @@ function controlSignature(s) {
     runs: (s.runs || []).map(withMinutes),
     jobs: (s.jobs || []).map(withMinutes),
     queue: s.queue,
+    needsHuman: s.needsHuman,
     board: s.board,
     autoPush: s.autoPush,
     autoMerge: s.autoMerge,
@@ -863,13 +971,16 @@ function paintControl(s) {
   renderMain(s)
   renderRunning(s)
   renderQueue(s)
+  renderNeedsHuman(s)
   renderShare(s)
   // 多工位：按「当前选中的这个工位有没有批次」决定按钮，而不是全机有没有。
   // loop 记的 workdir 是反斜杠、面板里的可能是正斜杠，直接比会把「判断不了」当成空闲。
   const runs = Array.isArray(s.runs) ? s.runs : (s.running ? [s.running] : [])
   const busyHere = runs.some((item) => samePath(item.workdir, s.config.workdir))
   if (el('cRun')) el('cRun').disabled = busyHere
-  if (el('cRefRun')) el('cRefRun').disabled = busyHere || !s.config.workdir
+  // 「接这张」自己会先选树（工位 / 主树），所以主树忙不忙不构成禁用理由——只有一棵可选的树都没有时才禁用。
+  const anyTarget = Boolean(s.config.workdir) || (Array.isArray(s.stations) && s.stations.length > 0)
+  if (el('cRefRun')) el('cRefRun').disabled = !anyTarget
   if (el('cQueue')) el('cQueue').disabled = !s.config.workdir
   // 停止文件只对「主树上那个多卡批次」有意义：loop.mjs 在卡与卡之间才读它，
   // 工位批次永远一张一批，写了也读不到。所以只在主树自己有批次时才能点。
@@ -951,18 +1062,202 @@ async function queue(refresh) {
   await poll()
 }
 
-async function run(card) {
+/**
+ * 「接这张」先问清楚在哪棵树上跑。
+ *
+ * 2026-10-31 的教训：这个按钮直接用了面板里那个「工作目录」，而那里填的是主树，
+ * 于是点一下就在主树上开工了（主树 autoPush / autoMerge 还开着，等于往共享分支推）。
+ * 现在点完先弹一层列表：工位排前面（默认落在第一棵空闲的），主树放最后、点它还要再确认一次。
+ *
+ * 只换这一次 POST 里的 workdir，不动面板里的设置——那个字段是「主树是谁」，改它等于改项目。
+ */
+let pickLastWorkdir = ''
+
+/** 候选树：工位在前，主树最后。problem 非空就是这棵现在不能选（原因直接显示给人看）。 */
+function workdirTargets() {
+  const s = view || {}
+  const stations = Array.isArray(s.stations) ? s.stations : []
+  const runs = Array.isArray(s.runs) ? s.runs : (s.running ? [s.running] : [])
+  const busyAt = (path) => runs.some((item) => samePath(item.workdir, path))
+  const targets = stations.map((station) => {
+    const running = Boolean(station.busy ?? !station.idle) || busyAt(station.path)
+    const problem = running ? '这棵上有批次在跑'
+      : !station.exists ? '目录不见了'
+        : !station.isRepo ? '这不是一个 git 仓库'
+          : station.dirty ? '工作区有没提交的改动'
+            : ''
+    return {
+      kind: 'station',
+      name: String(station.name || '工位'),
+      path: String(station.path || ''),
+      paused: Boolean(station.paused),
+      unity: String(station.unity || ''),
+      problem,
+    }
+  }).filter((target) => target.path)
+  const main = String(s.config?.workdir || '').trim()
+  if (main) {
+    targets.push({
+      kind: 'main',
+      name: '主树',
+      path: main,
+      paused: false,
+      unity: String(s.main?.unity || ''),
+      problem: busyAt(main) ? '主树上还有批次在跑' : '',
+    })
+  }
+  return targets
+}
+
+function pickWorkdir({ title = '' } = {}) {
+  const targets = workdirTargets()
+  if (!targets.length) {
+    say('还没有可用的树：先在「高级设置」里配主树，或者建一个工位', 'bad')
+    return Promise.resolve(null)
+  }
+  return new Promise((resolve) => {
+    const remembered = targets.find((target) => target.path === pickLastWorkdir && target.kind === 'station' && !target.problem)
+    // 只把工位当「推荐」项。主树永远不会被选中高亮：它本来就是个危险选项，
+    // 再打上「推荐」框就是在推人往那边走（没有空闲工位时尤其不能这么干）。
+    const suggested = remembered || targets.find((target) => target.kind === 'station' && !target.problem) || null
+    const stationCount = targets.filter((target) => target.kind === 'station').length
+    const note = stationCount && !suggested
+      ? '<div class="wdnote">工位现在都用不了（原因见下）。要么等它们跑完，要么明确选主树——那是共享分支。</div>'
+      : ''
+    const rows = targets.map((target, index) => {
+      const state = target.problem
+        ? `<span class="wdstate bad">${esc(target.problem)}</span>`
+        : target.kind === 'main'
+          ? '<span class="wdstate bad">共享分支 · 会直接提交</span>'
+          : target.paused
+            ? '<span class="wdstate dim">已暂停 · 手动接不受影响</span>'
+            : target.unity === 'off'
+              ? '<span class="wdstate warn">Unity 没开</span>'
+              : '<span class="wdstate ok">空闲</span>'
+      const cls = `wdopt${target.kind === 'main' ? ' main' : ''}${target === suggested ? ' rec' : ''}`
+      const name = target.kind === 'main' ? '主树（不推荐）' : target.name
+      return `<button type="button" class="${cls}" data-i="${index}"${target.problem ? ' disabled' : ''} title="${esc(target.path)}">` +
+        `<span class="wdname">${esc(name)}</span>` +
+        `<span class="wdpath">${esc(target.path)}</span>${state}</button>`
+    }).join('')
+
+    const layer = document.createElement('div')
+    layer.className = 'wdpick'
+    layer.innerHTML =
+      '<div class="wdbox" role="dialog" aria-modal="true" aria-label="选在哪棵树上跑">' +
+      '<div class="wdhead">在哪棵树上跑这张卡？</div>' +
+      (title ? `<div class="wdsub">${esc(title)}</div>` : '') +
+      note +
+      `<div class="wdlist">${rows}</div>` +
+      '<div class="wdfoot"><button type="button" class="wdcancel">取消</button></div>' +
+      '</div>'
+
+    let done = false
+    const finish = (value) => {
+      if (done) return
+      done = true
+      document.removeEventListener('keydown', onKey, true)
+      layer.remove()
+      resolve(value)
+    }
+    const onKey = (event) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      finish(null)
+    }
+    document.addEventListener('keydown', onKey, true)
+
+    for (const btn of layer.querySelectorAll('button[data-i]')) {
+      btn.onclick = () => {
+        const target = targets[Number(btn.getAttribute('data-i'))]
+        if (!target || target.problem) return
+        // 主树要再点一次确认：它就是这次事故的入口，不能跟工位一样一点就走。
+        if (target.kind === 'main' && !window.confirm(
+          `在主树上跑这张卡？\n\n${target.path}\n\n主树是共享分支：跑完直接提交，autoPush / autoMerge 开着时还会被推上去。\n建议选一棵工位。`)) return
+        pickLastWorkdir = target.path
+        finish(target)
+      }
+    }
+    layer.querySelector('.wdcancel').onclick = () => finish(null)
+    layer.onclick = (event) => { if (event.target === layer) finish(null) }
+    document.body.appendChild(layer)
+    layer.querySelector('button[data-i]:not([disabled])')?.focus()
+  })
+}
+
+/** 一次 run 的 POST。target 为空就用面板里的工作目录（「按当前项目开跑一批」那条路）。 */
+async function startBatch({ card = '', ref = '', target = null } = {}) {
   await save()
-  const res = await apiJson('api/run', {
+  const body = { ...form(), ...(target ? { workdir: target.path, allowMain: target.kind === 'main' } : {}) }
+  if (ref) body.ref = ref
+  else body.card = card
+  return apiJson('api/run', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ...form(), card: card || '' }),
+    body: JSON.stringify(body),
   })
+}
+
+async function run(card) {
+  const res = await startBatch({ card: card || '' })
   if (!res.ok) {
     say(res.data?.error || `起不来（HTTP ${res.status}）`, 'bad')
   } else {
     const where = res.data.batch?.workdir || form().workdir
     say(`已开跑${card ? `（只跑 ${card}）` : ''}：${where}`, 'ok')
+  }
+  await poll()
+}
+
+/** 就绪队列 / 指定工单上的「接这张」：先选树，再开跑。 */
+async function pickAndRunCard(card, title) {
+  const target = await pickWorkdir({ title: title || (card ? `需求 ${card}` : '') })
+  if (!target) return
+  const res = await startBatch({ card: card || '', target })
+  if (!res.ok) {
+    say(res.data?.error || `起不来（HTTP ${res.status}）`, 'bad')
+  } else {
+    const where = res.data.batch?.workdir || target.path
+    const at = target.kind === 'main' ? '主树' : target.name
+    say(`已开跑${card ? `（只跑 ${card}）` : ''}：${at} ${where}`, 'ok')
+  }
+  await poll()
+}
+
+/**
+ * 手动终止一批。
+ *
+ * 跟上面那个「本批跑完就停」不是一回事：那个只写停止文件，loop.mjs 在卡与卡之间读，
+ * 而工位批次是一张一批（--card 把 maxTasks 强制成 1），那个标记永远读不到。
+ * 这里跑服务端的 action:'kill'：真杀进程（含内循环子代理）。
+ *
+ * 从卡弹窗里叫的时候没有 station，就传 runId / card / workdir。
+ */
+async function killBatch(station, { runId = '', card = '', workdir = '', title = '' } = {}) {
+  const where = station?.name || title || workdir || '这一批'
+  if (!window.confirm(
+    `停掉 ${where}？\n\n` +
+    '会强杀批次进程（含它的内循环子代理），不等它自己收尾：\n' +
+    '· 工作区里的半截改动留着 —— 下一批开工前会存成 tapd-loop-orphan/<卡> 分支再清掉\n' +
+    '· TAPD 上这张卡留着 afk-claimed —— 想再被接单得用 loop.mjs --retry <卡>\n\n' +
+    '如果是「跑完这张就别再接新卡」，那个用上面的「本批跑完就停」。')) return
+  const res = await apiJson('api/stations', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      action: 'kill',
+      ...(station?.name ? { name: station.name } : {}),
+      ...(station?.path || workdir ? { workdir: station?.path || workdir } : {}),
+      ...(runId ? { runId } : {}),
+      ...(card ? { card } : {}),
+    }),
+  })
+  const killed = res.data?.killed || null
+  if (!res.ok || !res.data?.ok) {
+    say(res.data?.error || `停不掉（HTTP ${res.status}）`, 'bad')
+  } else {
+    say(`已终止${killed?.card ? `卡片 ${killed.card} ` : ''}那一批（pid ${killed?.pid}）${killed?.workdir ? '：' + killed.workdir : ''}`,
+      'ok')
   }
   await poll()
 }
@@ -986,13 +1281,10 @@ async function runRef() {
     say('先贴一个 TAPD 链接或需求 id', 'warn')
     return
   }
-  await save()
+  const target = await pickWorkdir({ title: refView?.card?.title || ref })
+  if (!target) return
   say('正在确认这张卡…', 'dim')
-  const res = await apiJson('api/run', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ...form(), ref }),
-  })
+  const res = await startBatch({ ref, target })
   if (!res.ok) {
     // 卡本身的状态问题（已经有机器标签、状态不接）也走这里：把原因摆出来，别让人猜。
     refView = res.data?.card ? { ok: true, id: res.data.card.id || '', card: res.data.card } : refView
@@ -1309,6 +1601,14 @@ function watchDispatchSettled(started) {
       // 复查失败就算了：主提示已经报过「已派」
     }
   }, 5000)
+}
+
+/**
+ * 给弹窗那边（page-app.js）用的消息条。卡片弹窗里按「终止这一批」的结果也得有人在看得见的地方说一声，
+ * 不能只在控制面板里弹。
+ */
+export function notify(text, cls = 'dim') {
+  say(text, cls)
 }
 
 export function mountControl() {
