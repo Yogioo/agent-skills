@@ -205,6 +205,23 @@ async function main() {
     } catch {
       // 进度写不进去不能阻止干活
     }
+    // 阶段也落一份到卡片目录（stage.json）：看板靠它说准「现在到底在哪一步」。
+    // 光靠事件流不够：验证门要跑好几十分钟且中间不发事件，人就只能看到一个含糊的阶段
+    // （以前一律显示「内循环中」，AFK 时根本判断不了该不该管）。
+    // 写失败绝不影响干活：读不到就退回按事件流展示。
+    if (data.id) {
+      const phase = event === 'card_phase' ? String(data.phase || '')
+        : event === 'turn_start' ? 'running'
+          : event === 'turn_end' ? (data.timedOut ? 'timeout' : 'after-turn')
+            : ''
+      if (phase) {
+        try {
+          writeFileSync(join(runDir, String(data.id), 'stage.json'), JSON.stringify({ phase, at: t, event }) + '\n', 'utf8')
+        } catch {
+          // 目录还没建出来之类：无所谓
+        }
+      }
+    }
     // 旁路：同时往全局索引追加一行（trace.mjs 只读这个文件）。
     // progress.jsonl 是「一批一份」，想跨批次查某张卡得先知道 runId、再遍历 grep。
     if (isNoise({ event })) return
@@ -213,6 +230,12 @@ async function main() {
   const stopFile = cfg.run.stopFile || join(workdir, STOP_NAME)
   const ledger = []
   let failures = 0
+  // 同一处错误连挂几张（`run.stopOnSameFailure`）。只算不同的卡：同一张卡自己重试失败不算连续。
+  const stopOnSameFailure = Math.max(0, Number(cfg.run.stopOnSameFailure) || 0)
+  let lastSignature = ''
+  let lastSignatureCard = ''
+  let sameSignatureCards = 0
+  let sameFailureNote = ''
 
   if (args.dryRun) {
     console.log(JSON.stringify({ dryRun: true, workdir, runDir, stopFile, sources: cfg.sources, cfg, ready: tapd.listReady(), rejected: tapd.listRejected() }, null, 2))
@@ -321,16 +344,37 @@ async function main() {
       log('loop_blocked', { reason: outcome.note })
       break
     }
-    if (outcome.status === 'failed') failures += 1
+    if (outcome.status === 'failed') {
+      // 自己放回队列的那次（还有重跑额度）不算「这张卡废了」，不能拿去撞 maxFailures——
+      // 否则一张卡第一次失败就把整批撞停了，跟“失败不打断批次”直接矛盾。
+      if (!outcome.requeued) failures += 1
+      // 同一处错误连挂几张不同的卡：基本就是门禁／环境坏了，停批并把人招过来。
+      const sig = String(outcome.signature || '')
+      if (sig && sig === lastSignature && outcome.id !== lastSignatureCard) sameSignatureCards += 1
+      else if (sig) { lastSignature = sig; sameSignatureCards = 1 }
+      else { lastSignature = ''; sameSignatureCards = 0 }
+      lastSignatureCard = sig ? outcome.id : ''
+      if (stopOnSameFailure > 0 && sig && sameSignatureCards >= stopOnSameFailure) {
+        sameFailureNote = `${sameSignatureCards} 张不同的卡红在同一处（${sig}），多半是门禁／环境坏了，先停下`
+        log('loop_blocked', { reason: sameFailureNote, signature: sig })
+        break
+      }
+    } else {
+      // 中间跑了别的结果（成功／跳过）就不算“连续”了
+      lastSignature = ''
+      lastSignatureCard = ''
+      sameSignatureCards = 0
+    }
   }
 
   const reason = existsSync(stopFile) ? 'stop-file'
     : ledger.some((entry) => entry.status === 'blocked') ? 'blocked'
-      : taskCount >= cfg.run.maxTasks ? 'max-tasks'
-        : failures >= cfg.run.maxFailures ? 'max-failures'
-          : 'empty-queue'
+      : sameFailureNote ? 'same-failure'
+        : taskCount >= cfg.run.maxTasks ? 'max-tasks'
+          : failures >= cfg.run.maxFailures ? 'max-failures'
+            : 'empty-queue'
   clearInterval(beat)
-  log('loop_end', { reason })
+  log('loop_end', { reason, note: sameFailureNote || undefined })
   const reportFile = writeReport(runDir, workdir, ledger, { reason, rejected: tapd.listRejected() })
   console.log(JSON.stringify({
     attempted: ledger.length,
@@ -377,6 +421,12 @@ async function runCard(card, ctx) {
   }
   const baseline = git.head()
 
+  // 失败收尾要用的上下文：cfg（读 maxCardAttempts）、attempt（第几次）、signature（失败签名）。
+  // attempt / signature 要读到卡之后、验证之后才确定，所以用一个能改的盒子揣着，
+  // 调 finishFailed 时取当前值——省得到处改调用签名。
+  const failState = { attempt: 1, signature: '' }
+  const failCtx = (extra = {}) => ({ tapd, git, baseline, log, args: ctx.args, cfg, ...failState, ...extra })
+
   log('card_phase', { id: card.id, phase: 'claim' })
   const claim = ctx.args.noWrite ? { ok: true } : tapd.claim(card.id)
   if (!claim.ok) {
@@ -390,11 +440,12 @@ async function runCard(card, ctx) {
     detail = await tapd.getDetail(card.id, { imageDir: join(dir, 'images') })
   } catch (err) {
     log('card_failed', { id: card.id, reason: `读取需求失败: ${err.message}` })
-    return finishFailed(card, `读取需求失败: ${err.message}`, dir, startedAt, { tapd, git, baseline, log, args: ctx.args })
+    return finishFailed(card, `读取需求失败: ${err.message}`, dir, startedAt, failCtx())
   }
   log('card_phase', { id: card.id, phase: 'fetched', comments: detail.commentCount, images: detail.images.length })
 
   const attempt = (detail.body.match(/\[tapd-loop\] 失败/g) || []).length + 1
+  failState.attempt = attempt
   const cardMd = buildCardMd(detail)
   const cardMdPath = join(dir, 'card.md')
   writeFileSync(cardMdPath, cardMd, 'utf8')
@@ -410,16 +461,20 @@ async function runCard(card, ctx) {
   const briefFile = writeBrief(dir, brief)
   writeFileSync(join(dir, 'card.json'), JSON.stringify({ card, detail }, null, 2), 'utf8')
 
+  // 会话 id 捕下来：验证没过时要把失败输出回灌给同一个会话（verifyRepair），
+  // 复用同一个 session 才能让它接着自己的上下文改，而不是从零重新理解这张卡。
+  const sessionId = `tapd-${card.id}-${Date.now()}`
   const turn = runTurn({
     workdir,
     promptFile: briefFile,
     outDir: dir,
     skillPath: cfg.run.skillPath,
-    sessionId: `tapd-${card.id}-${Date.now()}`,
+    sessionId,
     model: cfg.run.model,
     provider: cfg.run.provider,
     thinking: cfg.run.thinking,
     timeoutMs: cfg.run.timeoutSec * 1000,
+    stallSec: cfg.run.turnStallSec,
   })
   log('turn_start', {
     id: card.id,
@@ -432,7 +487,7 @@ async function runCard(card, ctx) {
     skill: cfg.run.skillPath,
   })
 
-  return turn.then((result) => {
+  return turn.then(async (result) => {
     log('turn_end', { id: card.id, code: result.code, timedOut: result.timedOut, durationMs: result.durationMs })
     const settled = readSettled(result.eventsPath)
     const changed = git.changedSince(baseline)
@@ -440,19 +495,59 @@ async function runCard(card, ctx) {
     const link = cardLink(ctx.boardUrl, runDir, card.id)
     const evidence = link ? `现场：${link}` : ''
 
-    if (result.timedOut) return finishFailed(card, `超时 ${cfg.run.timeoutSec}s。${evidence}`, dir, startedAt, { tapd, git, baseline, log, args: ctx.args })
-    if (!settled.settled || settled.aborted) {
-      return finishFailed(card, `内循环没有正常结束（settled=${settled.settled}, aborted=${settled.aborted}）。${evidence}`, dir, startedAt, { tapd, git, baseline, log, args: ctx.args })
+    if (result.stalled) {
+      // 和超时分开报：超时是“干了很久”，卡死是“什么都没干”。
+      return finishFailed(card, `卡住不动：${cfg.run.turnStallSec}s 没有任何新输出（进程还活着，但什么都没发生），已杀掉换下一张。${evidence}`, dir, startedAt, failCtx())
     }
-    if (!changed) return finishFailed(card, `内循环结束了，但工作区没有任何改动。${evidence}`, dir, startedAt, { tapd, git, baseline, log, args: ctx.args })
+    if (result.timedOut) return finishFailed(card, `超时 ${cfg.run.timeoutSec}s。${evidence}`, dir, startedAt, failCtx())
+    if (!settled.settled || settled.aborted) {
+      return finishFailed(card, `内循环没有正常结束（settled=${settled.settled}, aborted=${settled.aborted}）。${evidence}`, dir, startedAt, failCtx())
+    }
+    if (!changed) return finishFailed(card, `内循环结束了，但工作区没有任何改动。${evidence}`, dir, startedAt, failCtx())
 
     if (cfg.run.verify) {
-      const verify = runVerify(cfg.run.verify, workdir, dir)
+      log('card_phase', { id: card.id, phase: 'verify' })
+      let verify = runVerifyWithEnvRetry(cfg, workdir, dir, log)
+      const repair = cfg.run.verifyRepair || {}
+      const maxRounds = Math.max(0, Number(repair.maxRounds) || 0)
+      let round = 0
+      // 只有「代码类」失败才值得让 AI 再改：环境问题重试是等机器，门禁没验重试是修尺子，
+      // 两者都不应该把 AI 拉进来改业务代码。
+      while (verify.ok === false && !verify.envProblem && !verify.gateProblem && repair.enabled && round < maxRounds) {
+        round += 1
+        log('card_phase', { id: card.id, phase: `verify-repair-${round}` })
+        const attemptRepair = await runVerifyRepair(card, {
+          round,
+          maxRounds,
+          verify,
+          cfg,
+          git,
+          workdir,
+          dir,
+          sessionId,
+          log,
+        })
+        if (!attemptRepair.ok) {
+          failState.signature = readVerifySignature(dir)
+          return finishFailed(card, `验证没过，第 ${round} 轮修复被挡下了：${attemptRepair.reason}。${evidence}`, dir, startedAt, failCtx())
+        }
+        verify = runVerifyWithEnvRetry(cfg, workdir, dir, log)
+      }
       if (!verify.ok) {
-        return finishFailed(card, `验证命令失败（exit ${verify.code}）。${evidence}`, dir, startedAt, { tapd, git, baseline, log, args: ctx.args })
+        // 环境问题（Unity 没起来 / 端点超时）与「代码写坏了」是两回事，原因里要分清楚：
+        // 人看到 afk-failed 时会去想“是不是 AI 把代码写错了”，而这里根本不是。
+        const why = verify.envProblem
+          ? `验证没做完：环境问题（exit ${verify.code}，已重跑 ${verify.attempts - 1} 次）。这不是代码问题`
+          : verify.gateProblem
+            ? `验证门禁自己没验成（exit ${verify.code}：要跑测试却一个用例都没跑到）。这不是这张卡的代码问题`
+            : `验证命令失败（exit ${verify.code}）${round ? `，已让 AI 自查修复 ${round} 轮` : ''}`
+        // 失败签名带出去：批次层靠它判“连着两张卡红的到底是不是同一处”。
+        failState.signature = readVerifySignature(dir)
+        return finishFailed(card, `${why}。${evidence}`, dir, startedAt, failCtx())
       }
     }
 
+    log('card_phase', { id: card.id, phase: 'commit' })
     let commit = git.head()
     if (ctx.args.noWrite) {
       log('card_done', { id: card.id, status: 'preview', durationMs: result.durationMs })
@@ -464,9 +559,13 @@ async function runCard(card, ctx) {
     // diff 先落盘：rebased 把 sha 换掉之后，旧 commit 对象可能已经不可达。
     try { writeFileSync(join(dir, 'diff.txt'), git.diff(commit), 'utf8') } catch {}
 
-    const published = ctx.args.noWrite
-      ? { ok: true, pushed: false, reason: 'no-write 模式不推' }
-      : publish(card, { git, cfg, log })
+    let published
+    if (ctx.args.noWrite) {
+      published = { ok: true, pushed: false, reason: 'no-write 模式不推' }
+    } else {
+      log('card_phase', { id: card.id, phase: 'publish' })
+      published = publish(card, { git, cfg, log })
+    }
     if (!published.ok) {
       return finishFailed(card, `提交成功但没能推送：${published.reason}。${evidence}`, dir, startedAt, {
         tapd, git, baseline, log, args: ctx.args, keepCommit: git.head(),
@@ -508,6 +607,11 @@ function finishFailed(card, reason, dir, startedAt, ctx) {
   // 但也不能就这么留在当前分支上：下一张卡的 push 会把它一起带上去，而 TAPD 上已经写了「未推送」。
   // 所以存到一个带名字的分支，当前分支退回这个提交的父节点。
   const kept = ctx.keepCommit || ''
+  // 「这是第几次」与「还准不准自动重跑」：没到 maxCardAttempts 就只放回队列，不打 afk-failed。
+  const attempt = Math.max(1, Number(ctx.attempt) || 1)
+  const maxAttempts = Math.max(1, Number(ctx.cfg?.run?.maxCardAttempts) || 1)
+  const doRequeue = !ctx.args.noWrite && shouldRequeue({ attempt, maxCardAttempts: maxAttempts })
+  const signature = String(ctx.signature || '')
   const savedRef = kept ? ctx.git.keepAside(`tapd-loop-unpushed/${card.id}`, kept) : ''
   // 没提交就失败的（超时 / verify 红 / pi 自己退出）以前直接 reset --hard，几个小时的活当场蒸发。
   // 现在先原样存成 tapd-loop-failed/<卡号> 分支，再回滚：工作区还是干净的（不污染下一张卡），
@@ -528,6 +632,10 @@ function finishFailed(card, reason, dir, startedAt, ctx) {
   ctx.log?.('card_failed', {
     id: card.id,
     reason,
+    attempt,
+    maxAttempts,
+    requeued: doRequeue,
+    signature,
     kept: kept.slice(0, 10),
     savedRef,
     salvagedRef: snapshot?.ref || '',
@@ -536,29 +644,138 @@ function finishFailed(card, reason, dir, startedAt, ctx) {
   try {
     if (!ctx.args.noWrite) {
       const lines = [
-        `[tapd-loop] 失败：${reason}`,
+        `[tapd-loop] 失败（第 ${attempt}/${maxAttempts} 次）：${reason}`,
         savedRef
           ? `改动已提交但没能推送，存在本地分支 \`${savedRef}\`（${kept.slice(0, 10)}），当前分支已退回。解决后合入再推，然后把标签换回来。`
           : snapshot
             ? `改动没丢：已原样存到本地分支 \`${snapshot.ref}\`（${snapshot.sha.slice(0, 10)}），工作区已回滚到 ${ctx.baseline.slice(0, 10)}。看改动：\`git diff ${ctx.baseline.slice(0, 10)}..${snapshot.ref}\`。`
             : `基线已回滚到 ${ctx.baseline.slice(0, 10)}。`,
-        // 失败时连 ready 一起摘了（tapd.fail）：同一张卡不要被下一批自动拉起来踩同一个坑。
-        // 所以这条评论必须告诉人怎么把它放回队列。
-        `已摘掉 \`${ctx.tapd.labels.readyLabel}\`，这张卡不会再被自动拉起。要重跑：\`loop.mjs --workdir <仓库> --retry ${card.id}\`（把 ready 加回来），或者在 TAPD 上手工恢复 ready-for-agent。`,
       ]
-      ctx.tapd.fail(card.id, lines.join('\n\n'))
+      if (doRequeue) {
+        // 还有额度：只撕 claimed，留着 ready，下一轮自动再来一次。不打 afk-failed。
+        lines.push(`已自动放回队列（同一张卡最多自动跑 ${maxAttempts} 次，这是第 ${attempt} 次），不用人管。下一轮会重做这张卡；不想让它再跑就把它从 TAPD 上摘掉 \`${ctx.tapd.labels.readyLabel}\`。`)
+        ctx.tapd.requeue(card.id, lines.join('\n\n'))
+      } else {
+        // 额度用完了：走老的失败收尾（撑 claimed + ready，打 afk-failed）。
+        lines.push(`已摘掉 \`${ctx.tapd.labels.readyLabel}\`，这张卡不会再被自动拉起。要重跑：\`loop.mjs --workdir <仓库> --retry ${card.id}\`（把 ready 加回来），或者在 TAPD 上手工恢复 ready-for-agent。`)
+        ctx.tapd.fail(card.id, lines.join('\n\n'))
+      }
     }
   } catch (err) {
     reason += `（回写 TAPD 也失败: ${err.message}）`
   }
-  return row(card, 'failed', savedRef
+  const out = row(card, 'failed', savedRef
     ? `${reason}（改动在 ${savedRef}）`
     : snapshot
       ? `${reason}（改动在 ${snapshot.ref}）`
       : reason, dir, startedAt)
+  // 带出去给批次循环：同一处错误连挂几张就停批。
+  out.attempt = attempt
+  out.requeued = doRequeue
+  out.signature = signature
+  return out
 }
 
-function runVerify(command, workdir, dir) {
+/**
+ * 验证没过 → 把失败的输出回灌给同一个会话，让它自己改到通过（最多 maxRounds 轮）。
+ *
+ * 以前验证是在内循环结束之后才跑的，AI 根本看不到自己错在哪，于是只有两条路：
+ * 要么卡直接判失败（把能修好的活打死），要么人手工收。
+ *
+ * 两道護栅：
+ *   1. 修复轮不许碰 `verifyRepair.forbidPaths`（默认 `.workflow/`）——改尺子就等于作弊；
+ *   2. 这一轮根本没改动（改完还是原样）也立陡停，不拿剩下的轮次白烧钱。
+ *
+ * 返回 { ok } 表示可以重新跑验证；{ ok:false, reason } 表示立刻按失败收尾。
+ */
+async function runVerifyRepair(card, { round, maxRounds, verify, cfg, git, workdir, dir, sessionId, log }) {
+  const repair = cfg.run.verifyRepair || {}
+  const forbidden = Array.isArray(repair.forbidPaths) ? repair.forbidPaths : []
+  const verifyLogPath = join(dir, 'verify.log')
+  let tail = ''
+  try {
+    const text = readFileSync(verifyLogPath, 'utf8')
+    tail = text.split('\n').slice(-150).join('\n')
+  } catch {
+    tail = `（读不到 verify.log，exit ${verify.code}）`
+  }
+  const before = new Set(git.dirtyFiles())
+  const prompt = [
+    '# 验证门没过：把这张卡改到通过',
+    '',
+    `这是第 ${round}/${maxRounds} 轮修复。上一轮你把活干完了，但验证命令没通过（exit ${verify.code}）。`,
+    '这是**代码问题**，不是环境问题——环境问题外循环会自己重试，不会找你。',
+    '',
+    '## 规矩（破一条这张卡就直接判失败）',
+    '',
+    forbidden.length ? `- 不许改这些路径：${forbidden.join('、')}（验证门 / 规则 / 钩子：那是判卷的尺子）` : '',
+    '- 不许删测试、不许加 `[Ignore]` / `#pragma warning disable` / `#if false` 之类让测试闭嘴的手段',
+    '- 不许改跑这张卡的验证命令',
+    '- 修不动就说清楚为什么，不要乱改凑数',
+    '',
+    '改完**不要提交**，也不用自己跑完整验证（外循环会重新跑）。',
+    '最后一句直接回答：动了哪几个文件、为什么这么改。',
+    '',
+    '## 验证门的输出（末尾 150 行）',
+    '',
+    '```',
+    tail,
+    '```',
+  ].filter((line) => line !== '').join('\n')
+
+  const outDir = join(dir, `repair-${round}`)
+  mkdirSync(outDir, { recursive: true })
+  const promptFile = join(outDir, 'prompt.md')
+  writeFileSync(promptFile, prompt, 'utf8')
+
+  log('verify_repair_start', { id: card.id, round, code: verify.code })
+  const result = await runTurn({
+    workdir,
+    promptFile,
+    outDir,
+    // 不重传 skillPath：同一个 session 里技能正文已经在上下文里了，再叠一遍只会稀释重点。
+    sessionId,
+    model: cfg.run.model,
+    provider: cfg.run.provider,
+    thinking: cfg.run.thinking,
+    timeoutMs: (Number(repair.timeoutSec) || cfg.run.timeoutSec) * 1000,
+    stallSec: cfg.run.turnStallSec,
+  })
+  const settled = readSettled(result.eventsPath)
+  if (result.stalled) {
+    log('verify_repair_end', { id: card.id, round, ok: false, reason: '修复轮卡住不动' })
+    return { ok: false, reason: `第 ${round} 轮修复卡住了（${cfg.run.turnStallSec}s 没有新输出）` }
+  }
+  const after = git.dirtyFiles()
+  const touched = after.filter((p) => !before.has(p))
+  const hits = forbiddenTouches(after, forbidden)
+
+  if (hits.length) {
+    log('verify_repair_end', { id: card.id, round, ok: false, reason: '动了禁止路径', hits })
+    return { ok: false, reason: `它改了不该改的文件（${hits.slice(0, 3).join('、')}），不能靠着“改尺子”过关` }
+  }
+  if (!settled.settled || settled.aborted) {
+    log('verify_repair_end', { id: card.id, round, ok: false, reason: '修复轮没正常结束' })
+    return { ok: false, reason: `第 ${round} 轮修复的会话没正常结束（settled=${settled.settled}, aborted=${settled.aborted}）` }
+  }
+  if (!touched.length) {
+    log('verify_repair_end', { id: card.id, round, ok: false, reason: '没有新改动' })
+    return { ok: false, reason: `第 ${round} 轮修复没有动任何文件（它自己也说不清怎么改）` }
+  }
+  log('verify_repair_end', { id: card.id, round, ok: true, touched: touched.length })
+  return { ok: true }
+}
+
+/** 读卡片目录下的 verify.log，抽一个失败签名（读不到就空串）。 */
+function readVerifySignature(dir) {
+  try {
+    return failureSignature(readFileSync(join(dir, 'verify.log'), 'utf8'))
+  } catch {
+    return ''
+  }
+}
+
+function runVerify(command, workdir) {
   try {
     const output = decodeOutput(execFileSync(command, {
       cwd: workdir,
@@ -570,11 +787,61 @@ function runVerify(command, workdir, dir) {
       // 就会被系统配一个新控制台 —— 那就是人看到的 cmd 弹窗。
       windowsHide: true,
     }))
-    writeFileSync(join(dir, 'verify.log'), output, 'utf8')
-    return { ok: true, code: 0 }
+    return { ok: true, code: 0, output }
   } catch (err) {
-    writeFileSync(join(dir, 'verify.log'), `${decodeOutput(err.stdout)}\n${decodeOutput(err.stderr)}`, 'utf8')
-    return { ok: false, code: err.status ?? 1 }
+    return { ok: false, code: err.status ?? 1, output: `${decodeOutput(err.stdout)}\n${decodeOutput(err.stderr)}` }
+  }
+}
+
+/** 同步睡一会儿。不起定时器：这里已经在一个 await 链里等，多一个 timer 只会更难读。 */
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  } catch {
+    // SharedArrayBuffer 被禁就算了：退化成不等待（调用方本来就是重试，不是保证）
+  }
+}
+
+/**
+ * 跑验证门，认识「环境问题」退出码。
+ *
+ * 为什么要有这一层：验证脚本自己就把 0 / 1 / 2 分得很清楚（通过 / 代码问题 / 环境问题），
+ * 但外循环以前只问「是不是 0」。于是 Unity 端点卡一下，一张已经干完的卡就被记成失败：
+ * 存档分支 + 摘 ready-for-agent + 打 afk-failed。2026-10-31 的 5219 就是这么废的：
+ * 脚本 exit 2 并打印“这不是代码问题，改代码修不了”，外循环没读那句话。
+ *
+ * 约定由仓库配置给：`run.verifyEnvExitCodes: [2]`（默认空 = 保持旧行为，别的仓库不受影响），
+ * `run.verifyEnvRetries`（默认 2）、`run.verifyEnvRetryDelaySec`（默认 30）。
+ * 重跑能过就当没事；重跑完还是环境问题，才落回旧的失败收尾，但把「环境问题」写进原因，
+ * 让人一眼看出这不是代码写坏了。
+ */
+function runVerifyWithEnvRetry(cfg, workdir, dir, log = () => {}) {
+  const envCodes = (Array.isArray(cfg.run.verifyEnvExitCodes) ? cfg.run.verifyEnvExitCodes : []).map(Number)
+  // 门禁自己没验成（说好要跑测试却一个用例都没跑到）的退出码。这类失败不要重试：
+  // 它不会自己变好（TEST_MAP 写错、asmdef 改名），重试只是烧时间。
+  const gateCodes = (Array.isArray(cfg.run.verifyGateExitCodes) ? cfg.run.verifyGateExitCodes : []).map(Number)
+  const retries = Math.max(0, Number(cfg.run.verifyEnvRetries) || 0)
+  const delaySec = Math.max(0, Number(cfg.run.verifyEnvRetryDelaySec) || 0)
+  const parts = []
+  const isEnv = (result) => !result.ok && envCodes.includes(Number(result.code))
+
+  let attempt = 0
+  let verify = runVerify(cfg.run.verify, workdir)
+  parts.push(`=== 第 ${attempt + 1} 次：exit ${verify.code} ===\n${verify.output}`)
+  while (isEnv(verify) && attempt < retries) {
+    attempt += 1
+    log('verify_env_retry', { attempt, retries, code: verify.code, delaySec })
+    parts.push(`\n=== 环境问题（exit ${verify.code}），等 ${delaySec}s 后重跑第 ${attempt}/${retries} 次 ===`)
+    if (delaySec) sleepSync(delaySec * 1000)
+    verify = runVerify(cfg.run.verify, workdir)
+    parts.push(`=== 第 ${attempt + 1} 次：exit ${verify.code} ===\n${verify.output}`)
+  }
+  writeFileSync(join(dir, 'verify.log'), parts.join('\n'), 'utf8')
+  return {
+    ...verify,
+    attempts: attempt + 1,
+    envProblem: isEnv(verify),
+    gateProblem: !verify.ok && gateCodes.includes(Number(verify.code)),
   }
 }
 
@@ -686,6 +953,16 @@ export function createGit(cwd) {
     isClean: () => !run(['status', '--porcelain']),
     isDirty: () => Boolean(run(['status', '--porcelain'])),
     dirtyPaths: () => run(['status', '--porcelain']).split('\n').map((line) => line.trim()).filter(Boolean),
+    /** 工作区里被改过的文件路径（去掉 porcelain 的状态前缀、去掉 rename 的箭头、去掉引号）。 */
+    dirtyFiles: () => run(['status', '--porcelain'])
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const rest = line.slice(3).trim()
+        const arrow = rest.indexOf(' -> ')
+        return (arrow >= 0 ? rest.slice(arrow + 4) : rest).replace(/^"|"$/g, '')
+      }),
     changedSince: (rev) => Boolean(run(['status', '--porcelain'])) || run(['rev-parse', 'HEAD']) !== rev,
     commitAll: (message) => { run(['add', '-A']); run(['commit', '-m', message]); return run(['rev-parse', 'HEAD']) },
     /**
@@ -978,6 +1255,69 @@ function writeReport(runDir, workdir, ledger, meta) {
   return file
 }
 
+/**
+ * 修复轮的護栅：动到这些路径就立即中止。
+ *
+ * 为什么要外循环再拦一道（DigitDoor 的验证门自己也会拦 `.workflow/verify/`）：
+ * 让一个正在被验证的 Agent 去改“判卷的尺子”，是这类工作流里最容易出现的作弊形式，
+ * 而门禁侧拦截的后果是“验证失败”，看上去和“代码没改好”一模一样；
+ * 外循环自己拦下来才能给出一个说得清的原因，并在这一轮就撅死。
+ *
+ * 没配 forbidPaths 的仓库 = 不拦（保持旧行为）。
+ */
+export function forbiddenTouches(paths, patterns = []) {
+  // 比的时候统一正斜杠；报出去用原样的路径（人看日志/评论时那是他工作区里的写法）
+  const list = (paths || []).map((p) => ({ raw: String(p || ''), norm: String(p || '').replace(/\\/g, '/') }))
+  const hits = []
+  for (const p of list) {
+    for (const raw of patterns || []) {
+      const pat = String(raw || '').replace(/\\/g, '/')
+      if (!pat) continue
+      if (pat.endsWith('/') ? p.norm.startsWith(pat) : (p.norm === pat || p.norm.startsWith(`${pat}/`))) {
+        hits.push(p.raw)
+        break
+      }
+    }
+  }
+  return hits
+}
+
+/**
+ * 从验证输出里抽一个「失败签名」：同一处错误签名相同，不同错误不同。
+ *
+ * 用来回答一个外循环以前答不了的问题：“连着两张卡红的到底是不是同一件事？”
+ * 同一处错误连挂两张，基本就是门禁/环境坏了，继续跑只是在同一个坏基线上烧 token。
+ *
+ * 取的是第一条 `ERR [rule] 文件/用例名  message`，只留 rule + 位置（去掉行号、参数括号、长数字），
+ * 因为 message 里经常带卡号/时间戳/具体数值，直接比就永远对不上。
+ */
+export function failureSignature(output = '') {
+  const line = String(output || '')
+    .split('\n')
+    .map((text) => text.trim())
+    .find((text) => /^ERR\s+\[/.test(text))
+  if (!line) return ''
+  const rule = (/^ERR\s+\[([^\]]+)\]/.exec(line) || [])[1] || ''
+  const rest = line.replace(/^ERR\s+\[[^\]]+\]\s*/, '')
+  // 位置那一段后面是两个空格起的 message，只取位置
+  const head = (rest.split(/\s{2,}/)[0] || '')
+    .replace(/:\d+(\s|$)/, '')
+    .replace(/\(.*\)$/, '')
+    .replace(/\d{4,}/g, '#')
+    .trim()
+  return head ? `${rule}:${head}` : ''
+}
+
+/**
+ * 这张卡还有没有自动重跑的额度。
+ * `maxCardAttempts` = 同一张卡自动最多跑几次（默认 2，想改成 3 就写 3）。
+ * 第一次失败只把卡放回队列（不打 afk-failed），到次数才真打住交人。
+ */
+export function shouldRequeue({ attempt = 1, maxCardAttempts = 1 } = {}) {
+  const max = Math.max(1, Number(maxCardAttempts) || 1)
+  return Math.max(1, Number(attempt) || 1) < max
+}
+
 function loadConfig(workdir, args = {}) {
   const globalFile = join(HOME, 'config.json')
   const commonDir = gitCommonDir(workdir)
@@ -997,7 +1337,27 @@ function loadConfig(workdir, args = {}) {
       maxTasks: 1,
       maxFailures: 2,
       timeoutSec: 3600,
+      // 卡住看门狗：多少秒没有任何新输出就杀掉这颗卡（0 = 关，AFK 建议 1200 = 20 分钟）。
+      // 总时长仍由 timeoutSec 管：复杂卡跑一个多小时正常，但“活着却没动静”就是卡死了。
+      turnStallSec: 0,
       verify: '',
+      // 验证脚本用退出码区分「代码问题 / 环境问题」时，把环境那几种码写在这里：
+      // 命中就先自己重跑（等 Unity 缓过来），重跑能过就不算失败。空数组 = 保持旧行为。
+      verifyEnvExitCodes: [],
+      verifyEnvRetries: 2,
+      verifyEnvRetryDelaySec: 30,
+      // 验证脚本用退码表示「门禁自己没验成」（说好要跑测试却一个用例都没跑到）时写在这里：
+      // 不重试（重试不会好），失败原因改成「门禁没验，不是这张卡的代码问题」。
+      verifyGateExitCodes: [],
+      // 同一张卡自动最多跑几次：第 1 次失败只撕 afk-claimed、保留 ready（下一轮自动再来一次），
+      // 到次数才真正打 afk-failed 停下。“第几次”的计数来自卡上带「[tapd-loop] 失败」的评论条数。
+      maxCardAttempts: 2,
+      // 连续几张**不同的卡**红在同一处（签名相同）就停批；0 = 关。
+      // 同一个错连挂两张基本就是门禁／环境坏了，再跑只是烧 token。
+      stopOnSameFailure: 2,
+      // 验证没过时，把失败的输出回灌给同一个会话，让它自己改（默认关）。
+      // 以前验证是在内循环结束之后才跑的，AI 根本看不到自己错在哪，等于把修的机会扔了。
+      verifyRepair: { enabled: false, maxRounds: 2, timeoutSec: 0, forbidPaths: ['.workflow/'] },
       watch: false,
       pollSec: 60,
       skillPath: join(homedir(), '.agents', 'skills', 'yogioo-mode'),
@@ -1186,4 +1546,4 @@ if (invokedDirectly) {
   })
 }
 
-export { loadConfig, runGuard, finishFailed }
+export { loadConfig, runGuard, finishFailed, runVerifyWithEnvRetry }

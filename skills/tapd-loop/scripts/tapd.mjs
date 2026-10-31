@@ -506,6 +506,17 @@ export function createTapd(opts = {}) {
     },
 
     /**
+     * 自动重跑（`run.maxCardAttempts`）：只撕 `afk-claimed`，**保留 `ready-for-agent`**，
+     * 不打 `afk-failed`——下一轮 --list 会把它重新拉起来再试一次。
+     * 和 fail() 的区别只有一句话：这张卡还有自动重跑的额度。
+     */
+    requeue(id, note) {
+      removeLabels(id, [labels.claimedLabel])
+      writeLabels(id, [labels.readyLabel])
+      addComment(id, note)
+    },
+
+    /**
      * 把一张卡放回队列：撕所有机器标签（afk-claimed / afk-delivered / afk-failed）再加回 ready-for-agent。
      * 不动状态、不动处理人——验收流转仍然是人的事。
      * 还带 afk-claimed 的卡默认不动：那可能是别的批次正在跑，得显式 force；

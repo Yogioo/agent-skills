@@ -61,6 +61,9 @@ node <技能根>/scripts/loop.mjs --workdir <仓库> --retry <需求id> [--dry-r
   },
   "run": {
     "maxTasks": 1,
+    "maxFailures": 2,
+    "maxCardAttempts": 2,
+    "stopOnSameFailure": 2,
     "timeoutSec": 3600,
     "verify": "node tools/check.mjs",
     "skillPath": "C:/Users/EDY/.agents/skills/yogioo-mode",
@@ -72,6 +75,56 @@ node <技能根>/scripts/loop.mjs --workdir <仓库> --retry <需求id> [--dry-r
 ```
 
 `verify` 是每张卡跑完后外循环自己执行的命令，不通过就整张回滚。留空则只要求工作区有改动。
+
+`maxCardAttempts` / `stopOnSameFailure` 是“卡失败要不要把人叫过来”的两个数：前者 = 同一张卡自动最多跑几次（2 = 第一次失败自动放回队列、第二次才真打住；写 1 就是老行为），后者 = 连续几张**不同的卡**红在同一处就停批（0 = 关）。这两个数就是 AFK 跑通宵的主要保険：不判断失败原因，靠“再来一次”和“同一个错不连撞两张”把坍动和门禁/环境坏了分开。
+
+**`verify` 用退出码区分「代码坏了」和「环境没起来」时，要把后者告诉外循环**（`run.verifyEnvExitCodes`）：
+
+```json
+"run": {
+  "verify": "node .workflow/verify/verify_unity.mjs",
+  "verifyEnvExitCodes": [2],
+  "verifyEnvRetries": 3,
+  "verifyEnvRetryDelaySec": 60
+}
+```
+
+- `verifyEnvExitCodes`：这些退出码含义是「环境问题，不是这张卡的锅」。默认 `[]` = 旧行为（非 0 一律算失败）。
+- 命中后先睡 `verifyEnvRetryDelaySec` 再重跑，最多 `verifyEnvRetries` 轮；任意一轮过了就继续走成功路径（`verify.log` 里逐次留痕，`events.jsonl` 有 `verify_env_retry`）。
+- 重跑完仍是环境问题 → 才落回失败收尾，但失败原因写成「验证没做完：环境问题（exit 2，已重跑 3 次）。这不是代码问题」，并照旧存档到 `tapd-loop-failed/<卡>`、撕 ready、打 `afk-failed`（**不改标签语义**：环境失败仍然算失败，只是先自己再试几次）。
+- 非环境码（如 `1` 代码问题、超时）不重试：等一等不会让写错的代码变对。
+
+还有一类失败不属于这张卡：**门禁自己没验成**（说好要跑测试，却一个用例都没跑到——TEST_MAP / asmdef 改名、Unity 没加载到用例、测试进程没起来）。让它单用一个退出码，别和「代码坏了」混在一起：
+
+```json
+"run": { "verifyGateExitCodes": [3] }
+```
+
+- 命中**不重试**（重试不会好），但失败原因写成「验证门禁自己没验成（exit 3：要跑测试却一个用例都没跑到）。这不是这张卡的代码问题」，避免把人引到业务代码上去。
+- 2026-10-31 之前这类情况是**假绿**：验证脚本只写一条 `注：` 就 exit 0，一张没被验证过的卡会被当成“验收通过”。现在脚本里 `total=0` 直接算错（DigitDoor 的 `verify_unity.mjs` 已改成 exit 3）。
+
+### 验证没过时让 AI 自己修（`run.verifyRepair`）
+
+以前顺序是「AI 交卷 → 才跑验证 → 挂了直接判失败」，AI 根本看不到自己错在哪，修的机会被浪费。打开这个就把失败的输出回灌给**同一个会话**，让它接着自己的上下文改：
+
+```json
+"run": {
+  "verifyRepair": { "enabled": true, "maxRounds": 2, "forbidPaths": [".workflow/"] }
+}
+```
+
+- 只在**代码类失败**上触发：环境问题（先重试）与门禁没验（exit 3）不会把 AI 拉回来改业务代码。
+- 每轮把 `verify.log` 的末尾 150 行写进 `repair-<n>/prompt.md`，用同一个 `--session-id` 续跑（`repair-<n>/` 自己一份 `events.jsonl` / `pi.log`，不盖掉第一轮的）。
+- **两道護栅**：① 动了 `forbidPaths`（默认 `.workflow/`：验证门、规则、钩子）就立刻按失败收尾——“改尺子让它通过”不算本事；② 这一轮没动任何文件也立刻停，不拿剩下的轮次白烧钱。
+- 每轮结果进事件流：`verify_repair_start` / `verify_repair_end`（`round`、`ok`、`touched`），`finishFailed` 的原因里会写「已让 AI 自查修复 N 轮」。
+- 代价：token 与时间都会涨（一轮就是一个完整 turn），所以默认关、`maxRounds` 默认 2。
+
+为什么要有这条（2026-10-31 的 5219）：`verify_unity.mjs` 早就用 `0/1/2` 分开「通过 / 代码问题 / 环境问题」并打印「这不是代码问题，改代码修不了，留给人处理」——但那是写给内循环 agent 看的，外循环只问「是不是 0」。于是 Unity 端点抖一下，一张已经干完的卡就被记成失败。
+
+`turnStallSec` 是卡住看门狗：内循环多少秒**没有任何新输出**就判卡死并杀掉（0 = 关）。它和 `timeoutSec` 不是一回事：
+
+- `timeoutSec`（默认 3600，DigitDoor 配 7200）是总时长上限，给复杂卡的——实测最长一张卡 91 分钟且是成功的，所以阉得太短会误杀。
+- `turnStallSec`（默认 0，AFK 建议 1200）只看“进程活着但什么都不发生”。pi 干活时是持续往外写事件的，最长的一段静默通常是跑 Unity 测试（5～10 分钟），所以 20 分钟基本只可能是卡死。它干掉的那一颗卡算**失败**（走 `maxCardAttempts` 那套：有额度就自动重跑一次），失败原因里写「卡住不动：N 秒没有任何新输出」，跟“真超时”分开报。
 
 `sync` 打开后每张卡开工前先 `git pull --rebase`，让内循环从最新基线开工。只在卡边界拉，不在内循环跑着的时候拉。
 
@@ -110,11 +163,13 @@ TAPD 上给需求标了前后置关系（「A 完成后 B 才能开始」）时�
 5. 起一次 `pi --print --mode json`，技能的**正文由 pi 读进系统提示**（`--append-system-prompt <SKILL.md>`），brief 只描述这张卡与边界，不再叫它去读技能
 6. 判定：进程正常结束 → 有 git 改动（或新 commit）→ `verify` 通过
 7. 通过则提交；**提交之后再同步一次并 `git push`**（`publish`，默认关闭），然后撤 `afk-claimed`、加 `afk-delivered`、评论总结与最终提交号
-8. 判定失败则**先把工作区原样存成 `tapd-loop-failed/<卡片id>` 分支**，再 `git reset --hard <基线>` + `git clean -fd`，**撕 `afk-claimed` 和 `ready-for-agent`、加 `afk-failed`**，评论写清原因、改动存在哪个分支、以及「怎么重跑」
+8. 判定失败则**先把工作区原样存成 `tapd-loop-failed/<卡片id>` 分支**，再 `git reset --hard <基线>` + `git clean -fd`；然后看这张卡还有没有自动重跑的额度（`run.maxCardAttempts`，默认 2）：
+   - **还有额度**（第 1 次失败）：只撕 `afk-claimed`，**保留 `ready-for-agent`**、**不打 `afk-failed`**，评论写「第 1/2 次失败，已自动放回队列」；下一批会把它重新拉起来再试一次。
+   - **额度用完**（第 2 次）：才是老的失败收尾——撕 `afk-claimed` **和** `ready-for-agent`、打 `afk-failed`，评论写清原因、改动在哪个分支、以及「怎么重跑」。
 
 失败不等于白干：六个小时的活蒸发在 `reset --hard` 里比什么都贵。所以失败时先做一份存档提交（`--no-verify`，不走钩子），挂到 `tapd-loop-failed/<卡片id>`（同名已存在就 `-2`、`-3`…），再回滚到干净基线。工作区是干净的（不污染下一张卡），改动也还在：`git diff <基线>..tapd-loop-failed/<卡片id>`。`<runDir>/<卡片id>/diff.txt` 也留了一份。
 
-失败为什么连 `ready-for-agent` 一起摘（2026-10-27 定的）：失败通常是拆卡、改配置、看环境这类要人先过一手的事；留着 ready 只会让下一批把同一张卡再踩一遍，还多花钱多占工位。摘掉之后想重跑：
+失败为什么到次数就连 `ready-for-agent` 一起摘（2026-10-27 定，2026-10-31 加了“先自动再试一次”）：失败通常是拆卡、改配置、看环境这类要人先过一手的事；留着 ready 只会让下一批把同一张卡再踩一遍，还多花钱多占工位。但一次失败里有相当一部分是坍动（Unity 抖一下、门禁误报、AI 一次没写对），所以先自动再试一次（`run.maxCardAttempts`，默认 2；第几次的计数就是卡上带「[tapd-loop] 失败」的评论条数，所以跨机器、重启都不丢），到次数才真打住。额度用完想重跑：
 
 ```powershell
 node <技能根>/scripts/loop.mjs --workdir <仓库> --retry <需求id>            # 撕 afk-claimed/afk-delivered/afk-failed，加回 ready-for-agent
@@ -193,11 +248,16 @@ node <技能根>/scripts/start-board.mjs --port 7400 --host 192.168.1.5
 | 定时查看 TAPD 并接单 | 开关 + 间隔秒（30 秒起，默认 300），等于 CLI 的 `--watch` 配 `run.pollSec` |
 | 主树自动验证并推送 | 开关 + 间隔秒（30 秒起，默认 120）。主树领先 origin、没冲突、工作区干净、Unity 端点在线、没有别的主树任务在跑时，自己跑 `collect --resume`（导表 → verify → push → 回写 TAPD）；失败按 1/2/4/8/16/30 分钟退避，成功清零 |
 | 主树自动合入工位提交 | 开关 + 间隔秒（30 秒起，默认 120）。主树干净、没冲突、Unity 在线、没有主树任务在跑、自动推送开着时主树没有未推提交，就挑一个「空闲 + 有未合入提交」的工位跑 `collect.mjs <分支> --resolve`（pick → 导表 → verify → push → 回写）；一次只合一个，退避按工位各记各的。**默认关**：它往共享分支写东西 |
-| 指定工单：贴链接 + 查看这张 / 接这张开跑 | 先 `--show <id>` 看清楚，再 `--card <id>` 真跑（永远只跑一张） |
+| 指定工单：贴链接 + 查看这张 / 接这张 | 先 `--show <id>` 看清楚；点「接这张」**先弹一层「在哪棵树上跑」**（工位排前面、主树在最后且要再确认一次），选完才等同 `--card <id>` 真跑（永远只跑一张）。就绪队列每行的「接这张」走同一个选择层 |
 | 页面上方「统计」按钮 | 弹窗（`Esc`/点空白处关掉）；**全局（所有仓库）**，打开时才拉数据、30 秒刷一次；数据源 `~/.tapd-loop/index.jsonl`，接口 `GET /api/stats?days=N` |
 | 右上角「重启看板」 | 重启**看板进程本身**（`POST /api/board {action:'restart'}`）。服务端先回包、再拉起 `start-board.mjs --wait-pid <自己>`（等旧进程死、端口腾空）然后退出；页面自己轮询 `/healthz`，回来就整页刷新。**端口和分享链接不变**，正在跑的批次/合入是 detach 的、不受影响 |
 | 右上角「停看板」 | 停掉**看板进程本身**（`POST /api/board {action:'stop'}`）：删 `board.json` 后 `process.exit(0)`，等同 `start-board.mjs --stop`。网页立刻断，刷新也回不来，要用 `start-board.mjs` 再起（地址不变）。跟「本批跑完就停」不是一回事 |
 | 工位卡片上的「接活」开关（勾选框） | 勾上 = 调度器会派卡；取消 = 落一个持久的 `station.paused`，调度器直接跳过这个工位（**不影响**手上那张）；不是写停止文件 |
+| 顶部的「需要人处理 N 张」（红框条） | 两道筛：① 本地索引里最近 14 天**最后一个决定性结局是失败/被挡**（`card_done` 算解决，`card_skipped`/`card_interrupted` 不改变结论，正在跑的排除）；② **再拿 TAPD 现状核实**（带 10 分钟缓存）：状态已流转走、或 `afk-failed` 已被撕掉的，就不该再挂在这儿。问不到 TAPD 时**保留**（宁可多扰一次）。展开后每行带「重跑」（= `POST /api/retry`，等同 `loop.mjs --retry <卡>`：撕 afk-*、加回 ready-for-agent）、「已处理」（= `POST /api/dismiss`，只写本地 `~/.tapd-loop/needs-human-done.json`，**不动 TAPD**；记的是时间戳，这张卡以后再失败一次还会回来）和 TAPD 链接 |
+| 工位卡片上（在跑时）的「停掉这一批」 | 真杀进程（`POST /api/stations {action:'kill'}`，服务端 `taskkill /T /F`），连内循环子代理一起停。这是**唯一**能停掉手上那张卡的东西：`stop` 那个停止文件对工位批次永远读不到 |
+| 卡片弹窗里的「■ 终止这一批」 | 同一个接口，按 `runId` 定位。杀的是整批——loop 没有单卡终止，而工位批次本来一张一批，所以等于停这张卡 |
+
+**终止的代价**（确认框里也写了）：强杀不走 loop 的收尾，工作区里留着半截改动（下一批开工前 `salvage` 会存成 `tapd-loop-orphan/<卡>` 分支再清干净），TAPD 上留着 `afk-claimed`（想再被接单要 `--retry <卡>`）。杀之前服务端会先确认那个 pid 真的是 `loop.mjs`：Windows 会复用 pid，不复核就可能杀到一个无关进程；同理，一条早就结束的 run 也不会因为 pid 被顶掉而永远显示「在跑」。
 
 **一次只允许一批**：判活看 `progress.jsonl` 里的 pid，所以命令行起的批次也算，网页和 CLI 不会在同一个仓库上撞车。工作区不干净、目录不是 git 仓库、已经有一批在跑，都会在开跑前直接拒掉（不在 spawn 之后才失败）。
 
@@ -224,8 +284,12 @@ node <技能根>/scripts/start-board.mjs --port 7400 --host 192.168.1.5
 
 - **查看这张**只调 `--show`：不认领、不评论、不建 runDir，先看清楚标题/状态/标签
 - 认不出的链接会直说认不出；只在实在认不出时才退化成「取最长的一段数字」并标注猜的
-- **接这张开跑**之前会再确认一次：卡上已经有 `afk-claimed` / `afk-delivered` / `afk-failed`，或者状态不是开发中/实现中，就直接拒掉并写出原因——不会 spawn 一个「拉起来就被跳过」的批次
+- **接这张**之前会再确认一次：卡上已经有 `afk-claimed` / `afk-delivered` / `afk-failed`，或者状态不是开发中/实现中，就直接拒掉并写出原因——不会 spawn 一个「拉起来就被跳过」的批次
 - 真跑用的是 `--card <id>`，所以**只跑这一张**：`maxTasks` 被强制成 1（否则第二轮会重新把同一张卡拉出来再跳过一次）
+
+**「接这张」现在会先问「在哪棵树上跑」**（修的就是 2026-10-31 那次事故：它以前直接用面板里那个「工作目录」，填的通常是主树，于是一点就在主树上开工、还带着 autoPush/autoMerge 直接往共享分支推）：点完弹一层列表，工位在前（默认落在第一棵空闲的，并记住上一次选的），主树在最后、红框、还要再确认一次；工位忙 / 脏 / 目录不在时是禁用状态并写明原因。就绪队列每行的「接这张」走同一个选择层。
+
+服务端也有一道兜底：`/api/run` 带 `card`/`ref` 且 workdir 等于主树时必须显式带 `allowMain`（只有选择层点主树才带），否则直接 409 拒掉——命令行、别的前端也绕不过去。不选任何一棵就按 `Esc` 或点空白处，等于取消，什么都不会发生。
 
 「接单开跑」会顺手清掉上一次留下的停止标记：那个标记是「下一张之前停」的一次性开关，不清的话再点一次跑会在第一张卡之前直接退出，看着像坏了。
 
@@ -271,12 +335,15 @@ loop 每 15 秒写一条 `heartbeat`，收到 SIGINT / SIGTERM / SIGBREAK 时先
 ## 停止
 
 - 批次数到 `maxTasks`
-- 连续失败到 `maxFailures`
+- 判死的失败数到 `maxFailures`（自动放回队列的那种不算：它还没报废）
+- **同一处错误连挂几张不同的卡**（`run.stopOnSameFailure`，默认 2，0 = 关）：失败签名取自 `verify.log` 第一行 `ERR`，只留「规则 + 用例名/文件」，剔除行号、参数、工单号这些每次都变的东西。同一个错连挂两张基本就是门禁/环境坏了，再跑只是烧 token。`loop_end` 的 `reason` 记 `same-failure`，`note` 里带签名。
 - 前置失败（`blocked`）：同步冲突 / afterSync 红 / afterSync 留下改动，立刻停整批，不打 TAPD 标签
 - 队列为空（没有 `--watch` 时退出，有则轮询 `pollSec`）
 - 停止文件出现就退出：`<git-dir>/tapd-loop-stop`（主树是 `.git/tapd-loop-stop`，每棵树各自一份，停一棵不影响其他）。网页上的「停止」写的就是这个文件，「接单开跑」会把它清掉。注意跟页面右上角的「停看板」区分：那个停的是看板进程本身。
 
-**工位上没有「停这一张」这个操作，也不该有**：看板派卡永远是一张一批（`--card` 直接把 `maxTasks` 强制成 1），loop 只在卡与卡之间读停止文件，所以那个标记对工位批次永远读不到——写了也白写（旧版页面上那个「跑完这张就停」就是这样，点了等于没点）。
+**「停这一张」= 工位卡片上/卡片弹窗里的「终止」**：看板派卡永远是一张一批（`--card` 直接把 `maxTasks` 强制成 1），而 loop 只在卡与卡之间读停止文件，所以那个标记对工位批次永远读不到（旧版页面上那个「跑完这张就停」点了等于没点）。2026-10-31 起改了策略：**给人一个真能按的终止键**——`POST /api/stations {action:'kill'}` 直接杀进程树。原因是出了问题（卡跑歪、帧率打满、要腾机器）时人得有控制权，不能只能等人来找进程号。
+
+要的是「别再派新卡给它」而不是杀手上那张，那用「接活」开关（`station.paused`），别按终止。
 
 想让它别再领新卡：把工位卡片上的「接活」开关取消勾选 → 存进 `stations[].paused`，调度器（`tick`）直接跳过它，在跑的那张照常跑完；再勾上就接回去。要在跑的那张本身，只能去工位里杀进程（本工具从不主动杀）。
 

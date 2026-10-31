@@ -49,6 +49,10 @@ export function runTurn(opts) {
     provider = '',
     thinking = '',
     timeoutMs = 3600_000,
+    // 卡住看门狗：多少秒一个新输出都没有就判「卡死」并杀掉（0 = 关）。
+    // 和 timeoutMs 不是一回事：总时长允许长（复杂单跑一小时多正常），
+    // 但“进程还活着、什么都不发生”就是卡死了，等满总时长只是浪费工位。
+    stallSec = 0,
     extraArgs = [],
   } = opts
 
@@ -93,10 +97,29 @@ export function runTurn(opts) {
     })
 
     let timedOut = false
+    let stalled = false
     const timer = setTimeout(() => {
       timedOut = true
       killTree(child)
     }, timeoutMs)
+
+    // 看门狗：stdout/stderr 每有一点输出就刷新 lastActivity。pi 干活时是持续往外写的，
+    // 安静超过 stallSec 基本只能是卡住（最长的一段静默通常是 Unity 跑测试，5～10 分钟）。
+    const stallMs = Math.max(0, Number(stallSec) || 0) * 1000
+    let lastActivity = Date.now()
+    const touch = () => { lastActivity = Date.now() }
+    child.stdout.on('data', touch)
+    child.stderr.on('data', touch)
+    const watchdog = stallMs
+      ? setInterval(() => {
+        const idle = Date.now() - lastActivity
+        if (idle < stallMs || stalled) return
+        stalled = true
+        log.write(`\n[watchdog] ${Math.round(stallMs / 1000)}s 没有新输出，判定卡住，杀掉进程\n`)
+        killTree(child)
+      }, Math.min(30_000, Math.max(2_000, Math.floor(stallMs / 4))))
+      : null
+    watchdog?.unref?.()
 
     live.add(child)
     child.stdout.pipe(events)
@@ -110,6 +133,7 @@ export function runTurn(opts) {
 
     function finish(code, signal) {
       clearTimeout(timer)
+      if (watchdog) clearInterval(watchdog)
       live.delete(child)
       events.end()
       log.end()
@@ -117,6 +141,8 @@ export function runTurn(opts) {
         code,
         signal,
         timedOut,
+        stalled,
+        stallSec: Math.round(stallMs / 1000),
         durationMs: Date.now() - startedAt,
         eventsPath,
         logPath,
