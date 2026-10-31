@@ -1,6 +1,7 @@
 import { createTapd } from './tapd.mjs'
 import { runTurn } from './turn.mjs'
 import { appendTrace, INDEX_NAME } from './trace-index.mjs'
+import { writeBack } from './writeback.mjs'
 
 /**
  * 看板的控制面：按一下就跑、按一下停、定时查看 TAPD 并自动接单。
@@ -2166,18 +2167,31 @@ function resolveBash() {
         results.push({ cardId, sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: true, skipped: '已经回写过' })
         continue
       }
-      const note = (via
-        ? `[tapd-loop] 已推送到 ${target}（${via}）`
-        : `[tapd-loop] 已合入主树：${branch || target} → ${target}`) +
-        // 只报合入后的提交号：工位那个原始 sha 只活在本仓库对象库里，cherry-pick 后已经
-        // 不代表任何能查到的东西，写在工单上只会让人拿着查不到的 hash 去对代码。
-        `，合并后提交 ${String(after || sha).slice(0, 10)}。` +
-        (doneStatus ? `
-
-状态流转：${doneStatus}，处理人已交回创建人` : '')
       const one = { cardId, sha: sha.slice(0, 10), origin: origin.slice(0, 10), ok: true }
-      try {
-        tapd.addComment(cardId, note)
+      // 回写只有一份实现（同目录的 writeback.mjs）：评论 + 状态 + 交回创建人，
+      // 每步回读校验、按合并后 sha 幂等。以前这三段抄在这里，而命令行路径
+      // （collect.mjs / close.mjs）完全没有它们——「忘记流转 / 忘记改处理人」就是这么来的。
+      const written = writeBack({
+        tapd,
+        cardId,
+        mergedSha: after || sha,
+        originSha: origin,
+        from: branch || target,
+        target,
+        pushed: Boolean(via),
+        doneStatus,
+        via,
+      })
+      one.commentError = written.steps.comment?.error || ''
+      one.status = written.steps.status?.status || ''
+      one.statusSkipped = written.steps.status?.skipped || ''
+      one.statusError = written.steps.status?.error || ''
+      one.owner = written.steps.owner?.owner || ''
+      one.ownerSkipped = written.steps.owner?.skipped || ''
+      one.ownerError = written.steps.owner?.error || ''
+      one.ok = written.ok
+      if (!written.ok) one.errors = written.errors
+      if (written.steps.comment?.ok) {
         // 追溯旁路：「卡片 → 主树提交」的关联就记在这里（TAPD 评论只报新 sha，不写工位 sha）。
         appendTrace(home, {
           t: Date.now(),
@@ -2186,30 +2200,6 @@ function resolveBash() {
           sha: String(after || sha).slice(0, 10),
           note: `${branch || target} → ${target}${via ? '（推送）' : ''}`,
         })
-      } catch (err) {
-        one.ok = false
-        one.commentError = err.message
-      }
-      if (doneStatus) {
-        try {
-          const moved = tapd.setStatus(cardId, doneStatus)
-          one.status = moved.label || doneStatus
-          one.statusSkipped = moved.skipped || ''
-        } catch (err) {
-          one.ok = false
-          one.statusError = err.message
-        }
-      } else {
-        one.statusSkipped = '没配 run.doneStatus'
-      }
-      // 验收是创建人的事：状态流转的同时把处理人也交回去，否则卡会停在 agent 名上没人管。
-      try {
-        const handed = tapd.handToCreator(cardId)
-        one.owner = handed.owner || ''
-        one.ownerSkipped = handed.skipped || ''
-      } catch (err) {
-        one.ok = false
-        one.ownerError = err.message
       }
       if (one.ok) flowed.push(origin.toLowerCase())
       results.push(one)
