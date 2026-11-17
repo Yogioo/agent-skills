@@ -185,13 +185,7 @@ is a self-contained workflow: playbooks, principles and reply rules live under
 `skills/yogioo-mode/`, and every delegated step runs as an `agent-tools subagent`
 arm because Pi has no native subagent tool.
 
-The six legacy workflow skills keep their existing implementations and
-configuration. They are unrelated to the toolkit runtime and are not migrated by
-it: [afk-init](./skills/afk-init/SKILL.md), [afk-run](./skills/afk-run/SKILL.md),
-[afk-watch](./skills/afk-watch/SKILL.md),
-[afk-requirement-assistant](./skills/afk-requirement-assistant/SKILL.md),
-[exec-review](./skills/exec-review/SKILL.md),
-[to-questionnaire-web](./skills/to-questionnaire-web/SKILL.md).
+[to-questionnaire-web](./skills/to-questionnaire-web/SKILL.md) provides a standalone local questionnaire.
 
 ## Local development (live junctions)
 

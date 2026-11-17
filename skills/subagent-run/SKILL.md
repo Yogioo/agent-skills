@@ -40,11 +40,13 @@ agent-tools subagent probe --out-dir "$HOME/.afk/artifacts/$(basename "$PWD")/pr
 agent-tools subagent set --role "swarm workers" --value "cursor:auto"
 ```
 
-`--out-dir` is created fresh and holds the briefs, per-arm output and progress. Put it
-under the AFK home (`~/.afk/artifacts/<repo dir name>/<slug>/`; override the root with
-`AFK_HOME`), never inside the repository. One fan-out writes hundreds of megabytes of
-`events.jsonl`; in the repo that dirties `git status`, blocks worktree guards, and can be
-committed by accident.
+`--out-dir` is created fresh and holds per-arm output and progress. For ordinary work,
+put briefs and output outside the repository, for example under
+`~/.afk/artifacts/<repo dir name>/<slug>/` (`AFK_HOME` may override the root).
+When `HLWD_RUN_DIR` is set, `--out-dir` may be omitted: it defaults to
+`HLWD_RUN_DIR/arms/<first unused numeric batch>`, and the client uploads each arm's
+progress, report and session to the HLWD server for both web UIs. Do not commit run
+artifacts.
 
 Every command prints one JSON object. `run` also writes `<out-dir>/report.jsonl`,
 one record per arm, and `<out-dir>/<label>/` holds that arm's `output.txt`,

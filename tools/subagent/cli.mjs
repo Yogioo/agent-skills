@@ -155,6 +155,17 @@ function parseFlags(rest, allowed) {
   return options
 }
 
+function hlwdRunDir() {
+  const runDir = process.env.HLWD_RUN_DIR
+  if (!runDir) return null
+  const arms = join(runDir, 'arms')
+  for (let n = 1; n < 1000; n++) {
+    const candidate = join(arms, String(n))
+    if (!existsSync(candidate)) return candidate
+  }
+  invalid('HLWD_RUN_DIR/arms 已经用完了（1..999）')
+}
+
 function parseRun(rest) {
   // 曾经有过 `--no-board`：按次关掉登记与看板。删掉是因为它把「人看得到这次 run」
   // 变成了某个调用方（往往是个 agent）一次性的、静默的副作用。整机不要看板请用
@@ -165,7 +176,10 @@ function parseRun(rest) {
   const options = { command: 'run', approve: true }
   const parsed = parseFlags(rest, RUN_FLAGS)
   for (const [key, value] of Object.entries(parsed)) if (value !== undefined) options[key] = value
-  if (!options.outDir) invalid('Missing --out-dir')
+  // HLWD 轮次：调用方不给 --out-dir 时落在本轮的 arms/<首个空数字批次>，
+  // 这样子会话就跟这一轮的会话放在一起（服务器据此把臂挂在对应工单下）。
+  if (!options.outDir) options.outDir = hlwdRunDir()
+  if (!options.outDir) invalid('Missing --out-dir (or set HLWD_RUN_DIR to use <run>/arms/<n>)')
   if (!options.manifest) {
     if (!options.role && !options.model && !options.thinking && !options.provider) {
       invalid('Missing --role (or name a model directly with --model / --thinking / --provider)')

@@ -1,6 +1,6 @@
 ---
 name: tapd-loop
-description: 把 TAPD 需求当队列，自动跑「拉卡 → 内循环（yogioo-mode）→ git/验证判定 → 回写标签与评论」。不依赖 afk-run / exec-review。用户要无人值守跑 TAPD、或要一个自己的外循环时加载。
+description: 把 TAPD 需求当队列，自动跑「拉卡 → 内循环（yogioo-mode）→ git/验证判定 → 回写标签与评论」。用户要无人值守跑 TAPD、或要一个自己的外循环时加载。
 disable-model-invocation: true
 ---
 
